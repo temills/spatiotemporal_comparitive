@@ -1,0 +1,161 @@
+---
+title: "model p true"
+output: html_document
+---
+
+```{r, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.width=4, fig.height=3,fig.align = "center",cache=TRUE)
+library(ggplot2)
+library(reshape)
+library(grid)
+library(dplyr)
+library(gridExtra)
+library(lme4)
+library(reghelper)
+library(RColorBrewer)
+library(robustbase)
+library(tidylog)
+library(hash)
+library(rstan)
+library(png)
+library(gtable)
+
+inv_logit <- function(x) { exp(x)/(1+exp(x))}
+
+#should min/max_x be the same across funcs? doesn't matter, it's just arbitrary based on what the scale of the func is...
+
+#we want to scale xs and ys between 0 and 1. Ideally it'd be the same scale as people/monkeys, but that doesn't work bc models didn't have screen constraints
+#we just want to make sure that relative motor error between functions means the same thing for models as it does for people/monkeys
+
+get_stan_df <- function(df) {
+  stan_df <- df
+  stan_df <- stan_df %>%
+            filter(!is.na(x_pred) & (!is.na(y_pred))) %>%
+            mutate(x_curr = (x_curr-min_x)/(max_x-min_x), x_pred = (x_pred-min_x)/(max_x-min_x), x_next = (x_next-min_x)/(max_x-min_x),
+                   y_curr = (y_curr-min_y)/(max_y-min_y), y_pred =(y_pred-min_y)/(max_y-min_y), y_next = (y_next-min_y)/(max_y-min_y))
+  return(stan_df)
+}
+get_posterior <- function(stan_df, n_iter, n_chains) {
+  stan_data <- list(
+    N = length(stan_df$x_pred),
+    x_pred = stan_df$x_pred,
+    y_pred = stan_df$y_pred,
+    x_next = stan_df$x_next,
+    y_next = stan_df$y_next,
+    x_curr = stan_df$x_curr,
+    y_curr = stan_df$y_curr,
+    guess_num = as.integer(stan_df$tpt - 2),
+    particle_weight = stan_df$posterior,
+    n_func_types = length(unique(stan_df$func.type)),
+    func_type = setNames(var_maps$func_type[stan_df$func.type], NULL)
+  )
+  fit <- stan(file="/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/kids/stan_models/model_for_models.stan", data=stan_data, iter=n_iter, chains=n_chains, cores=1)
+  return (fit)
+}
+refactor_posterior <- function(posterior_samples) {
+  post <- posterior_samples %>%
+    gather(key = "func_type", value = "beta_func_type", starts_with("beta_func_type.")) %>%
+    mutate(func_type = as.numeric(gsub("beta_func_type\\.", "", func_type)))
+  post$func_type_str <- names(var_maps$func_type)[match(post$func_type, var_maps$func_type)]
+  post <- post %>%
+    gather(key = "guess_num", value = "beta_guess_num", starts_with("beta_guess_num.")) %>%
+    mutate(guess_num = as.numeric(gsub("beta_guess_num\\.", "", guess_num)))
+  return(post)
+}
+```
+
+```{r}
+#load model
+model_name <- "ridge_1"
+path <- '/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/neurips_code/analyses/data/'
+df <-  read.csv(paste(path, model_name, '_all.csv', sep=""))
+df_kid <- read.csv("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/kids/dots_app_kids/data/clean_data/data.csv") #%>% filter(seq_id != "line")
+df_lims <- df_kid %>% 
+           group_by(seq_id) %>%
+           summarize(min_x = mean(min_x, na.rm=T), max_x= mean(max_x, na.rm=T), min_y= mean(min_y, na.rm=T), max_y=mean(max_y, na.rm=T))
+#add min_x/min_y to df
+df <- df %>% filter(seq_id %in% unique(df_lims$seq_id))
+df <- merge(df, df_lims, by="seq_id")
+df_temp <- df %>%
+      mutate(lx = pred_x < min_x) %>%
+      mutate(ly = pred_y < min_y) %>%
+      mutate(mx = pred_x > max_x) %>%
+      mutate(my = pred_y > max_y)
+print(sum(df_temp$lx, na.rm=T))
+print(sum(df_temp$ly, na.rm=T))
+print(sum(df_temp$mx, na.rm=T))
+print(sum(df_temp$my, na.rm=T))
+#now cap predictions at lims
+df <- df %>%
+      mutate(pred_x = pmax(pred_x, min_x)) %>%
+      mutate(pred_y = pmax(pred_y, min_y)) %>%
+      mutate(pred_x = pmin(pred_x, max_x)) %>%
+      mutate(pred_y = pmin(pred_y, max_y))
+
+#what to do about line?
+df <- df %>%
+  rename(func.type = seq_id, posterior=score) %>%
+  rowwise() %>%
+  #mutate(nt_count = str_count(func, fixed("("))) %>%
+  mutate(err_x = pred_x - true_x) %>%
+  mutate(err_y = pred_y - true_y) %>%
+  group_by(func.type) %>%
+  mutate(range_x = max(true_x) - min(true_x)) %>%
+  mutate(range_y = max(true_y) - min(true_y)) %>%
+  mutate(mean_x = mean(true_x)) %>%
+  mutate(mean_y = mean(true_y)) %>%
+  group_by(func.type, tpt) %>%
+  mutate(posterior = exp(posterior)/sum(exp(posterior))) %>%
+  ungroup() %>%
+  group_by(func.type) %>%
+  mutate(abs_err = ((true_x-pred_x)**2 + (true_y-pred_y)**2)**0.5) %>%
+  mutate(mean_abs_err = mean(abs_err, na.rm=TRUE)) %>%
+  ungroup() %>%
+  rename(x_next=true_x, y_next=true_y, x_pred=pred_x, y_pred=pred_y) %>%
+  group_by(func.type, particle) %>%
+  arrange(tpt) %>%  # Sort the DataFrame by tpt to ensure correct lagging
+  mutate(x_curr = lag(x_next), y_curr = lag(y_next)) %>%
+  filter(tpt > 2) %>%
+  filter(tpt < 15)
+```
+
+```{r}
+df <- df %>% group_by(func.type, tpt) %>%
+      mutate(post_sum = sum(posterior))
+```
+
+```{r}
+stan_df <- get_stan_df(df)
+func_to_num_map <- setNames(as.numeric(factor(unique(stan_df$func.type))), unique(stan_df$func.type))
+var_maps <- list("func_type"=func_to_num_map)
+fit <- get_posterior(stan_df, 5000, 1)
+posterior_samples_lst <- rstan::extract(fit)
+posterior_samples <- as.data.frame(posterior_samples_lst)
+post <- refactor_posterior(posterior_samples)
+post <- post %>% mutate(p_true=max_p*inv_logit(use_true_icpt+beta_func_type + beta_guess_num))
+write.csv(post, paste('posteriors_', model_name, '.csv', sep=""))
+```
+
+```{r}
+post <- post %>% mutate(p_true=max_p*inv_logit(use_true_icpt+beta_func_type+beta_guess_num))
+ggplot(post, aes(x = guess_num, y = p_true)) +
+      #geom_line(aes(group=subject_id), alpha=0.2) +
+      stat_summary(fun = "mean", na.rm = TRUE, geom = "line", size=1) +
+      stat_summary(fun.data="mean_sdl", na.rm = TRUE, geom="errorbar", width=0.1) +
+      coord_cartesian(xlim=c(1,15)) +
+      scale_color_manual(values = c("orchid", "gold", "cornflowerblue")) +
+      scale_x_continuous(breaks = seq(0,15,by=5)) +
+      facet_wrap(~func_type_str, ncol=7) +
+      paper_theme + theme(legend.title=element_blank()) +
+      labs(x="Guess number", y="p_true")
+```
+
+
+
+
+
+
+
+
+
+

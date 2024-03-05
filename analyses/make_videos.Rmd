@@ -1,0 +1,634 @@
+---
+title: "mixture_model_analysis"
+output: html_document
+---
+
+```{r, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.width=4, fig.height=3,fig.align = "center",cache=TRUE)
+library(ggplot2)
+library(reshape)
+library(grid)
+library(dplyr)
+library(gridExtra)
+library(lme4)
+library(reghelper)
+library(RColorBrewer)
+library(robustbase)
+library(tidylog)
+library(hash)
+library(rstan)
+library(png)
+library(gtable)
+#library(rjson)
+
+paper_theme <- theme_light() + theme( axis.title.x = element_text(size=22),
+                                      axis.text.x=element_text(
+                                        size = 18), 
+                                      axis.title.y = element_text(size = 22, vjust = 1),
+                                      axis.text.y  = element_text(size = 18),
+                             strip.text=element_text(size=16),
+                                      axis.line.x = element_line(colour = "black"), 
+                                      axis.line.y = element_line(colour = "black"),
+                                      legend.title=element_text(size=20),
+                                      legend.text=element_text(size=16),
+                                      panel.grid.major=element_blank(),
+                #   panel.background = element_rect(color = NA), 
+                                      panel.grid.minor=element_blank())  
+out_folder <- "figs/"
+
+capitalize_words <- function(s) {
+  words <- str_split(s, " ")[[1]]
+  words <- ifelse(words == "to", "to", str_to_title(words))
+  paste(words, collapse = " ")
+}
+add_png_to_facet <- function(ggplot_object, data, facet_var, x_loc,y_loc, width, height, out_file) {
+  # Get the ggplotGrob
+  gtable <- ggplotGrob(ggplot_object)
+  # Get the unique facet labels in the order they appear in the data
+  facet_labels <- unique(data[[facet_var]])
+  # Extract panel positions from the layout
+  panel_positions <- subset(gtable$layout, grepl("panel", name))
+  # Order the panels by their left (l) and top (t) positions
+  ordered_panel_positions <- with(panel_positions, order(t, l))
+  # Ensure the facet labels order matches the plot
+  # For each ordered panel position, add the PNG
+  for (i in seq_along(ordered_panel_positions)) {
+    panel_index <- ordered_panel_positions[i]
+    facet_label <- facet_labels[i]
+    if (!is.na(facet_label)) {
+      img <- readPNG(paste0("figs/func_ims/", facet_label, ".png"))
+      # Convert to raster and add it to the gtable
+      g <- rasterGrob(img, interpolate = TRUE, width = unit(0.24, "npc"), height = unit(0.3, "npc"))
+      g <- editGrob(g, vp = viewport(x = x_loc, y = y_loc, just = c("right", "top")))
+      gtable <- gtable_add_grob(gtable, g, t = panel_positions$t[panel_index], l = panel_positions$l[panel_index])
+    }
+  }
+  png(filename = out_file, width = width, height = height, units = 'mm', res = 400)
+  grid.draw(gtable)
+  dev.off()
+}
+
+
+f_weighted_sd <- function(means, sds, weights)  {
+  var_wtd = sum(weights * sds**2) + sum(weights * means**2) - (sum(weights*means)**2)
+  return (var_wtd**0.5)
+}
+
+inv_logit <- function(x) { exp(x)/(1+exp(x))}
+preprocess_df_human <- function(df) {
+  df <- df[order(df$tpt),] %>%
+      rename(x_curr = prev_x, y_curr = prev_y, x_next = true_x, y_next = true_y, x_pred = response_x, y_pred = response_y, func.type = seq_id) %>%
+      group_by(subject_id, trial_idx, tpt) %>%
+      mutate(true_dist=((x_next-x_curr)**2. + (y_next-y_curr)**2.)**0.5) %>%
+      mutate(x_err=x_pred-x_next) %>%
+      mutate(y_err=y_pred-y_next) %>%
+      mutate(abs_err = ((x_err**2)+(y_err)**2) **0.5) %>%  
+      mutate(abs_rel_err = abs_err/(true_dist)) %>%
+      mutate(dist_from_prev = (((x_pred-x_curr)**2)+((y_pred-y_curr)**2)) **0.5) %>%
+      ungroup() %>%
+      filter(!(func.type=="hourglass_1" & subject_id=="bpmhxv5wmp"))
+  return(df)
+}
+
+preprocess_df_monkey <- function(df) {
+  df <- df[order(df$n),] %>%
+      rename(tpt = n, subject_id = monkey_name) %>%
+      group_by(subject_id, game_n, tpt) %>%
+      mutate(true_dist=((x_next-x_curr)**2. + (y_next-y_curr)**2.)**0.5) %>%
+      mutate(x_err=x_pred-x_next) %>%
+      mutate(y_err=y_pred-y_next) %>%
+      mutate(abs_err = ((x_err**2)+(y_err)**2) **0.5) %>%  
+      mutate(abs_rel_err = abs_err/(true_dist)) %>%
+      mutate(dist_from_prev = (((x_pred-x_curr)**2)+((y_pred-y_curr)**2)) **0.5) %>%
+      ungroup() %>%
+      mutate(tpt = tpt+1) %>%
+      filter(tpt < 15) %>%
+      mutate(run_id = group_indices(., subject_id, func.type, game_n))
+  return(df)
+}
+
+add_perfect_subject <- function(df) {
+  #add a subject who's predictions are the same as x_next, y_next at each tpt
+  perfect_subject <- df %>%
+                     group_by(func.type, tpt) %>%
+                     summarize(x_curr = mean(x_curr), y_curr = mean(y_curr), x_next = mean(x_next), y_next = mean(y_next)) %>%
+                     ungroup() %>%
+                     mutate(x_pred = x_next, y_pred = y_next, subject_id = "perfect")
+  # Combine the original dataframe and the "perfect" subject dataframe
+  df <- bind_rows(df, perfect_subject)
+}
+```
+
+```{r}
+df_kid <- read.csv("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/kids/dots_app_kids/data/clean_data/data.csv")
+df_kid <- preprocess_df_human(df_kid)
+#write.csv(df, 'preprocessed_data.csv')
+```
+```{r}
+df_adult <- read.csv("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/kids/dots_app_kids_adult_vsn/data/clean_data/data.csv")
+df_adult <- preprocess_df_human(df_adult)
+```
+```{r}
+df_monkey <- read.csv("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/monkey_game/data/monkeys_clean.csv")
+df_monkey <- preprocess_df_monkey(df_monkey)
+```
+#trace vids
+```{r}
+#now make vids
+df <- df_kid
+out_folder <- "/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/kids/figs/videos/kid_trace_frames"
+
+#we want, at each tpt, the x and y movement from curr_x and curr_y
+#to get trajectory, want to start at 0,0 and add vecs at each tpt
+df <- add_perfect_subject(df)
+df <- df %>%
+      mutate(vec_x = x_pred-x_curr, vec_y = y_pred-y_curr, true_vec_y = y_next-y_curr, true_vec_x = x_next-x_curr) %>%
+      arrange(subject_id, func.type, tpt) %>%
+      group_by(subject_id, func.type) %>%
+      mutate(trajectory_x = cumsum(replace(vec_x, is.na(vec_x), 0)), trajectory_y = cumsum(replace(vec_y, is.na(vec_y), 0)), true_trajectory_x = cumsum(replace(true_vec_x, is.na(true_vec_x), 0)), true_trajectory_y = cumsum(replace(true_vec_y, is.na(true_vec_y), 0))) %>%
+      mutate(prev_traj_x = trajectory_x-vec_x, prev_traj_y = trajectory_y-vec_y) %>%
+      ungroup()
+unlink(out_folder, recursive=TRUE)
+dir.create(out_folder)
+f_plot_func_sbs <- function(f) {
+  df_seq <- subset(df, (df$func.type == f))
+  
+  dir.create(paste(out_folder, f, sep="/"))
+  start_x = mean((df_seq %>% filter(tpt==2))$true_trajectory_x)
+  start_y = mean((df_seq %>% filter(tpt==2))$true_trajectory_y)
+  df_seq <- df_seq %>% mutate(trajectory_x = trajectory_x + start_x, trajectory_y = trajectory_y + start_y, prev_traj_x = prev_traj_x + start_x, prev_traj_y = prev_traj_y + start_y)
+  x_min <- min(df_seq$trajectory_x, na.rm=T)
+  x_max <- max(df_seq$trajectory_x, na.rm=T)
+  y_min <- min(df_seq$trajectory_y, na.rm=T)
+  y_max <- max(df_seq$trajectory_y, na.rm=T)
+  
+  
+  df_seq <- df_seq %>%
+    mutate(is_perfect = ifelse(subject_id == "perfect", "Ground truth", "Other"))
+  # Set levels for the 'subject_id' factor, ensuring 'perfect' comes first
+  df_seq$subject_id <- factor(df_seq$subject_id, levels = c("perfect", setdiff(unique(df_seq$subject_id), "perfect")))
+  
+  for (i in (min(df$tpt)+1):max(df$tpt)) {
+    df_hist <- subset(df_seq, (df_seq$tpt < i))
+    df_sofar <- subset(df_seq, (df_seq$tpt <= i))
+    df_sofar <- df_sofar[order(df_sofar$tpt),]
+    df_tpt <- subset(df_sofar, (df_sofar$tpt == i))
+    shift_x1<-0
+    shift_y1<-0
+    offset_x<-0
+    offset_y<-0
+    
+    p <- ggplot() +
+      #geom_path(data=df_sofar, aes(x=trajectory_x, y=trajectory_y, color=subject_id), linetype="dashed", alpha=0.5, size=1) +
+      geom_segment(data=df_sofar, aes(x = prev_traj_x, y = prev_traj_y, xend = trajectory_x, yend = trajectory_y, color=is_perfect), arrow = arrow(length = unit(0.05, "inches")), alpha=0.5) +
+      geom_segment(data=df_tpt, aes(x = prev_traj_x, y = prev_traj_y, xend = trajectory_x, yend = trajectory_y, color=is_perfect), arrow = arrow(length = unit(0.1, "inches"))) +
+      coord_fixed(xlim=c(x_min, x_max + offset_x), ylim=c(y_min, y_max + 2*offset_y)) +
+      theme_void() +
+      scale_color_manual(values = c("Ground truth" = "black", "Other" = "blueviolet")) +
+      theme(panel.background = element_rect(fill = "white"), legend.background = element_rect(fill = "white"), legend.title=element_blank(), legend.position = "top") +
+      #coord_cartesian(
+      #  xlim = c(min(df_seq$trajectory_x), max(df_seq$trajectory_x)),
+      #  ylim = c(min(df_seq$trajectory_y), max(df_seq$trajectory_y))
+      #) +
+      facet_wrap(~subject_id) +
+      guides(alpha="none",size="none", color="none")
+      #scale_color_manual(labels = c("True"="correct", "False"="incorrect"), values=c("True"='aquamarine3', "False"='coral1'))
+      #scale_radius(range=c(0.75,1.5))
+    f_name <- paste(paste(paste(paste(out_folder, f, sep="/"),f,sep="/"), as.character(i),sep="_n"),".png",sep="")
+    ggsave(f_name, plot=p,width=9,height=8, dpi=500)
+  }
+}
+
+for (id in sort(unique(df$func.type))) {
+  print(id)
+  f_plot_func_sbs(id)
+  print("")
+}
+```
+#trace vids for monkeys
+```{r}
+#now make vids
+df <- df_monkey
+out_folder <- "/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/kids/figs/videos/monkey_trace_frames"
+
+perfect_subject <- df %>%
+                   group_by(func.type, tpt) %>%
+                   summarize(x_curr = mean(x_curr), y_curr = mean(y_curr), x_next = mean(x_next), y_next = mean(y_next)) %>%
+                   ungroup() %>%
+                   mutate(x_pred = x_next, y_pred = y_next, subject_id = "perfect", run_id = "perfect")
+df$run_id <- paste("id_", df$run_id)
+df <- bind_rows(df, perfect_subject)
+
+df <- df %>%
+      mutate(vec_x = x_pred-x_curr, vec_y = y_pred-y_curr, true_vec_y = y_next-y_curr, true_vec_x = x_next-x_curr) %>%
+      arrange(run_id, func.type, tpt) %>%
+      group_by(run_id, func.type) %>%
+      mutate(trajectory_x = cumsum(replace(vec_x, is.na(vec_x), 0)), trajectory_y = cumsum(replace(vec_y, is.na(vec_y), 0)), true_trajectory_x = cumsum(replace(true_vec_x, is.na(true_vec_x), 0)), true_trajectory_y = cumsum(replace(true_vec_y, is.na(true_vec_y), 0))) %>%
+      mutate(prev_traj_x = trajectory_x-vec_x, prev_traj_y = trajectory_y-vec_y) %>%
+      ungroup()
+unlink(out_folder, recursive=TRUE)
+dir.create(out_folder)
+
+
+f_plot_func_sbs <- function(f) {
+  df_seq <- subset(df, (df$func.type == f))
+  
+  dir.create(paste(out_folder, f, sep="/"))
+  start_x = mean((df_seq %>% filter(tpt==2))$true_trajectory_x)
+  start_y = mean((df_seq %>% filter(tpt==2))$true_trajectory_y)
+  print(start_x)
+  df_seq <- df_seq %>% mutate(trajectory_x = trajectory_x + start_x, trajectory_y = trajectory_y + start_y, prev_traj_x = prev_traj_x + start_x, prev_traj_y = prev_traj_y + start_y)
+  x_min <- min(df_seq$trajectory_x, na.rm=T)
+  x_max <- max(df_seq$trajectory_x, na.rm=T)
+  y_min <- min(df_seq$trajectory_y, na.rm=T)
+  y_max <- max(df_seq$trajectory_y, na.rm=T)
+  
+  
+  df_seq <- df_seq %>%
+    mutate(is_perfect = ifelse(run_id == "perfect", "Ground truth", "Other"))
+  # Set levels for the 'subject_id' factor, ensuring 'perfect' comes first
+  df_seq$run_id <- factor(df_seq$run_id, levels = c("perfect", setdiff(unique(df_seq$run_id), "perfect")))
+  
+  
+  for (i in (min(df$tpt)+1):max(df$tpt)) {
+    df_hist <- subset(df_seq, (df_seq$tpt < i))
+    df_sofar <- subset(df_seq, (df_seq$tpt <= i))
+    df_sofar <- df_sofar[order(df_sofar$tpt),]
+    df_tpt <- subset(df_sofar, (df_sofar$tpt == i))
+    shift_x1<-0
+    shift_y1<-0
+    offset_x<-0
+    offset_y<-0
+    p <- ggplot() +
+      #geom_path(data=df_sofar, aes(x=trajectory_x, y=trajectory_y, color=subject_id), linetype="dashed", alpha=0.5, size=1) +
+      geom_segment(data=df_sofar, aes(x = prev_traj_x, y = prev_traj_y, xend = trajectory_x, yend = trajectory_y, color=subject_id), arrow = arrow(length = unit(0.05, "inches")), alpha=0.5) +
+      geom_segment(data=df_tpt, aes(x = prev_traj_x, y = prev_traj_y, xend = trajectory_x, yend = trajectory_y, color=subject_id), arrow = arrow(length = unit(0.1, "inches"))) +
+      coord_fixed(xlim=c(x_min, x_max + offset_x), ylim=c(y_min, y_max + 2*offset_y)) +
+      theme_void() +
+      scale_color_manual(values = c("perfect" = "black", "BP22" = "violet", "BP24"="deepskyblue3")) +
+      theme(panel.background = element_rect(fill = "white"), legend.background = element_rect(fill = "white"), legend.title=element_blank(), legend.position = "top") +
+      #coord_cartesian(
+      #  xlim = c(min(df_seq$trajectory_x), max(df_seq$trajectory_x)),
+      #  ylim = c(min(df_seq$trajectory_y), max(df_seq$trajectory_y))
+      #) +
+      facet_wrap(~run_id) +
+      guides(alpha="none",size="none", color="none")
+      #scale_color_manual(labels = c("True"="correct", "False"="incorrect"), values=c("True"='aquamarine3', "False"='coral1'))
+      #scale_radius(range=c(0.75,1.5))
+    f_name <- paste(paste(paste(paste(out_folder, f, sep="/"),f,sep="/"), as.character(i),sep="_n"),".png",sep="")
+    ggsave(f_name, plot=p,width=9,height=8, dpi=500)
+  }
+}
+
+for (id in sort(unique(df$func.type))) {
+  df_seq <- subset(df, (df$func.type == id))
+  print(id)
+  f_plot_func_sbs(id)
+  print("")
+}
+```
+
+
+#Error videos!
+```{r}
+#now make vids
+out_folder <- "/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/kids/figs/videos/kid_err_frames"
+
+#we want, at each tpt, the x and y movement from curr_x and curr_y
+#to get trajectory, want to start at 0,0 and add vecs at each tpt
+#df <- add_perfect_subject(df)
+df_plot_kid <- df_kid %>%
+      mutate(vec_x = x_pred-x_curr, vec_y = y_pred-y_curr, true_vec_y = y_next-y_curr, true_vec_x = x_next-x_curr) %>%
+      arrange(subject_id, func.type, tpt) %>%
+      group_by(subject_id, func.type) %>%
+      mutate(trajectory_x = cumsum(replace(vec_x, is.na(vec_x), 0)), trajectory_y = cumsum(replace(vec_y, is.na(vec_y), 0)), true_trajectory_x = cumsum(replace(true_vec_x, is.na(true_vec_x), 0)), true_trajectory_y = cumsum(replace(true_vec_y, is.na(true_vec_y), 0))) %>%
+      mutate(prev_traj_x = trajectory_x-vec_x, prev_traj_y = trajectory_y-vec_y) %>%
+      ungroup() %>% filter(tpt>2)
+
+df_plot_adult <- df_adult %>%
+      mutate(vec_x = x_pred-x_curr, vec_y = y_pred-y_curr, true_vec_y = y_next-y_curr, true_vec_x = x_next-x_curr) %>%
+      arrange(subject_id, func.type, tpt) %>%
+      group_by(subject_id, func.type) %>%
+      mutate(trajectory_x = cumsum(replace(vec_x, is.na(vec_x), 0)), trajectory_y = cumsum(replace(vec_y, is.na(vec_y), 0)), true_trajectory_x = cumsum(replace(true_vec_x, is.na(true_vec_x), 0)), true_trajectory_y = cumsum(replace(true_vec_y, is.na(true_vec_y), 0))) %>%
+      mutate(prev_traj_x = trajectory_x-vec_x, prev_traj_y = trajectory_y-vec_y) %>%
+      ungroup() %>% filter(tpt>2)
+
+df_plot_monkey <- df_monkey %>%
+      mutate(vec_x = x_pred-x_curr, vec_y = y_pred-y_curr, true_vec_y = y_next-y_curr, true_vec_x = x_next-x_curr) %>%
+      arrange(run_id, func.type, tpt) %>%
+      group_by(run_id, func.type) %>%
+      mutate(trajectory_x = cumsum(replace(vec_x, is.na(vec_x), 0)), trajectory_y = cumsum(replace(vec_y, is.na(vec_y), 0)), true_trajectory_x = cumsum(replace(true_vec_x, is.na(true_vec_x), 0)), true_trajectory_y = cumsum(replace(true_vec_y, is.na(true_vec_y), 0))) %>%
+      mutate(prev_traj_x = trajectory_x-vec_x, prev_traj_y = trajectory_y-vec_y) %>%
+      ungroup()
+
+
+
+unlink(out_folder, recursive=TRUE)
+dir.create(out_folder)
+
+
+f_plot_func_sbs <- function(f) {
+  dir.create(paste(out_folder, f, sep="/"))
+  df_seq_kid <- subset(df_plot_kid, (df_plot_kid$func.type == f))
+  df_seq_monkey <- subset(df_plot_monkey, (df_plot_monkey$func.type == f))
+  df_seq_adult <- subset(df_plot_adult, (df_plot_adult$func.type == f))
+  df_seq_monkey$run_id <- factor(df_seq_monkey$run_id)
+  shift_x1<-0
+  shift_y1<-0
+  offset_x<-0
+  offset_y<-0
+  monkey_pos <- 0
+  kid_pos <- 8
+  adult_pos <- 16
+  
+  x_min <- min(c(min(df_seq_monkey$x_err+monkey_pos, na.rm=T), min(df_seq_kid$x_err+kid_pos, na.rm=T),  min(df_seq_adult$x_err+adult_pos, na.rm=T))) -1
+  x_max <- max(c(max(df_seq_monkey$x_err+monkey_pos, na.rm=T), max(df_seq_kid$x_err+kid_pos, na.rm=T),  max(df_seq_adult$x_err+adult_pos, na.rm=T))) + 1
+  y_min <- min(c(min(df_seq_monkey$y_err, na.rm=T), min(df_seq_kid$y_err, na.rm=T),  min(df_seq_adult$y_err, na.rm=T))) - 1
+  y_max <- max(c(max(df_seq_monkey$y_err, na.rm=T), max(df_seq_kid$y_err, na.rm=T),  max(df_seq_adult$y_err, na.rm=T))) + 3
+  x_range = x_max - x_min
+  y_range = y_max - y_min
+  
+  for (i in (min(df_seq_kid$tpt)):max(df_seq_kid$tpt)) {
+    df_tpt_kid <- subset(df_seq_kid, (df_seq_kid$tpt == i))
+    df_tpt_monkey <- subset(df_seq_monkey, (df_seq_monkey$tpt == i))
+    df_tpt_adult <- subset(df_seq_adult, (df_seq_adult$tpt == i))
+    p <- ggplot() +
+      geom_segment(data=df_tpt_monkey, aes(x =monkey_pos, y = 0, xend = monkey_pos+x_err, yend = y_err, color=run_id), arrow = arrow(length = unit(0.08, "inches")), alpha=0.8) +
+      geom_segment(data=df_tpt_kid, aes(x = kid_pos, y = 0, xend = kid_pos+x_err, yend = y_err, color=subject_id), arrow = arrow(length = unit(0.08, "inches")), alpha=0.8) +
+      geom_segment(data=df_tpt_adult, aes(x = adult_pos, y = 0, xend = adult_pos+x_err, yend = y_err, color=subject_id), arrow = arrow(length = unit(0.08, "inches")), alpha=0.8) +
+      coord_fixed(xlim=c(x_min, x_max + offset_x), ylim=c(y_min, y_max)) + #y_max+offset_y)) +
+      theme_void() +
+      theme(panel.background = element_rect(fill = "white"), legend.background = element_rect(fill = "white"), legend.title=element_blank(), legend.position = "top") +
+      guides(alpha="none",size="none", color="none") +
+      annotation_custom(rasterGrob(readPNG(sprintf("../figs/func_ims/%s.png", f)), width = unit(.5, "npc"), height = unit(.5, "npc")),
+                      xmin = x_max - (x_range/10), xmax = Inf, ymin = y_max-(x_range/10), ymax = Inf) +
+      geom_text(aes(x = kid_pos, y = y_min+0.5, label = "Children"), hjust = 0.5, color = "black") +
+      geom_text(aes(x = monkey_pos, y = y_min+0.5, label = "Monkeys"), hjust = 0.5,color = "black") +
+      geom_text(aes(x = adult_pos, y = y_min+0.5, label = "Adults"), hjust = 0.5,color = "black") 
+    
+    img <- readPNG(sprintf("../figs/func_ims/%s.png", f))
+    # Add the image to the plot in the top right corner
+    #p <- p + annotation_custom(rasterGrob(img, width = unit(1, "npc"), height = unit(1, "npc")),
+    #                  xmin = Inf, xmax = Inf, ymin = Inf, ymax = Inf)
+
+    f_name <- paste(paste(paste(paste(out_folder, f, sep="/"),f,sep="/"), as.character(i),sep="_n"),".png",sep="")
+    ggsave(f_name, plot=p,width=10,height=6, dpi=500)
+  }
+}
+
+for (id in sort(unique(df$func.type))) {
+  print(id)
+  f_plot_func_sbs(id)
+  print("")
+}
+```
+
+#Good old fashioned prediction videos
+```{r}
+df <- df_monkey %>% filter(tpt<15)
+out_folder <- "/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/kids/figs/videos/monkey_prediction_frames"
+
+df <- df[order(df$tpt),] %>%
+      mutate(success = ifelse(correct==1, "True", "False"))
+unlink(out_folder, recursive=TRUE)
+dir.create(out_folder)
+f_plot_func_sbs <- function(f) {
+  df_seq <- subset(df, (df$func.type == f))
+  dir.create(paste(out_folder, f, sep="/"))
+  #need range for setting scale of plot
+  x_min <- min(min(df_seq$x_next, na.rm=TRUE), min(df_seq$x_pred, na.rm=TRUE))
+  x_max <- max(max(df_seq$x_next, na.rm=TRUE), max(df_seq$x_pred, na.rm=TRUE))
+  y_min <- min(min(df_seq$y_next, na.rm=TRUE), min(df_seq$y_pred, na.rm=TRUE))
+  y_max <- max(max(df_seq$y_next, na.rm=TRUE), max(df_seq$y_pred, na.rm=TRUE))
+  range_x <- (x_max-x_min)
+  range_y <- (y_max-y_min)
+  range_xy <- max(range_x, range_y)
+  x_min <- x_min - range_xy/10
+  x_max <- x_max + range_xy/10
+  y_min <- y_min - range_xy/10
+  y_max <- y_max + range_xy/10
+  for (i in (min(df$tpt)+1):max(df$tpt)) {
+    df_tpt <- subset(df_seq, (df_seq$tpt == i))
+    df_hist <- subset(df_seq, (df_seq$tpt < i))
+    df_hist <- df_hist[order(df_hist$tpt),]
+    shift_x1<-0
+    shift_y1<-0
+    offset_x<-0
+    offset_y<-0
+    p <- ggplot() +
+      #first human response
+      geom_point(data=df_hist, aes(x=shift_x1+x_next, y=shift_y1+y_next), size=3) +
+      geom_path(data=df_hist, aes(x=shift_x1+x_next, y=shift_y1+y_next), size=0.25, linetype="dotted") +
+      #geom_point(data=df_tpt, aes(x=shift_x1+x_pred, y=shift_y1+y_pred, color=success), size=3, stroke=1.5) +
+      
+      geom_point(data=df_tpt, aes(x=shift_x1+x_pred, y=shift_y1+y_pred, color=success, shape=subject_id), size=3, stroke=1.5) +
+      scale_shape_manual(values = c("BP22" = 3, "BP24" = 4)) +
+      
+      geom_point(data=df_tpt, aes(x=shift_x1+x_next, y=shift_y1+y_next), color="gold", shape=8, size=2, stroke=1.5) +
+      coord_cartesian(xlim=c(x_min, x_max + offset_x), ylim=c(y_min, y_max + 2*offset_y)) +
+      theme_void() +
+      theme(panel.background = element_rect(fill = "white"), legend.background = element_rect(fill = "white"), legend.title=element_blank(), legend.position = "top")+
+      guides(alpha="none",size="none") +
+      scale_color_manual(labels = c("True"="correct", "False"="incorrect"), values=c("True"='aquamarine3', "False"='coral1'))
+      #scale_radius(range=c(0.75,1.5))
+    f_name <- paste(paste(paste(paste(out_folder, f, sep="/"),f,sep="/"), as.character(i),sep="_n"),".png",sep="")
+    ggsave(f_name, plot=p,width=9,height=8, dpi=500)
+  }
+}
+
+for (id in sort(unique(df$func.type))) {
+  print(id)
+  f_plot_func_sbs(id)
+  print("")
+}
+
+```
+
+#Faceted prediction videos
+```{r}
+df <- df_kid
+out_folder <- "/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/kids/figs/videos/kid_prediction_facet_frames"
+
+df <- df[order(df$tpt),] %>%
+      mutate(success = ifelse(correct==1, "True", "False"))
+unlink(out_folder, recursive=TRUE)
+dir.create(out_folder)
+f_plot_func_sbs <- function(f) {
+  df_seq <- subset(df, (df$func.type == f))
+  dir.create(paste(out_folder, f, sep="/"))
+  #need range for setting scale of plot
+  x_min <- min(min(df_seq$x_next, na.rm=TRUE), min(df_seq$x_pred, na.rm=TRUE))
+  x_max <- max(max(df_seq$x_next, na.rm=TRUE), max(df_seq$x_pred, na.rm=TRUE))
+  y_min <- min(min(df_seq$y_next, na.rm=TRUE), min(df_seq$y_pred, na.rm=TRUE))
+  y_max <- max(max(df_seq$y_next, na.rm=TRUE), max(df_seq$y_pred, na.rm=TRUE))
+  range_x <- (x_max-x_min)
+  range_y <- (y_max-y_min)
+  range_xy <- max(range_x, range_y)
+  x_min <- x_min - range_xy/10
+  x_max <- x_max + range_xy/10
+  y_min <- y_min - range_xy/10
+  y_max <- y_max + range_xy/10
+  for (i in (min(df$tpt)+1):max(df$tpt)) {
+    df_tpt <- subset(df_seq, (df_seq$tpt == i))
+    df_hist <- subset(df_seq, (df_seq$tpt < i))
+    df_hist <- df_hist[order(df_hist$tpt),]
+    shift_x1<-0
+    shift_y1<-0
+    offset_x<-0
+    offset_y<-0
+    p <- ggplot() +
+      #first human response
+      geom_point(data=df_hist, aes(x=shift_x1+x_next, y=shift_y1+y_next), size=3) +
+      geom_path(data=df_hist, aes(x=shift_x1+x_next, y=shift_y1+y_next), size=0.25, linetype="dotted") +
+      
+      #geom_point(data=df_tpt, aes(x=shift_x1+x_pred, y=shift_y1+y_pred, color=success, shape=subject_id), size=3, stroke=1.5) +
+      #scale_shape_manual(values = c("BP22" = 3, "BP24" = 4)) +
+      
+      geom_point(data=df_tpt, aes(x=shift_x1+x_next, y=shift_y1+y_next), color="gold", shape=8, size=2, stroke=1.5) +
+      geom_point(data=df_tpt, aes(x=shift_x1+x_pred, y=shift_y1+y_pred, color=success), shape=3, size=3, stroke=1.5) +
+      coord_cartesian(xlim=c(x_min, x_max + offset_x), ylim=c(y_min, y_max + 2*offset_y)) +
+      theme_void() +
+      theme(panel.background = element_rect(fill = "white"), legend.background = element_rect(fill = "white"), legend.title=element_blank(), legend.position = "top")+
+      guides(alpha="none",size="none") +
+      scale_color_manual(labels = c("True"="correct", "False"="incorrect"), values=c("True"='aquamarine3', "False"='coral1')) +
+      facet_wrap(~subject_id)
+      #scale_radius(range=c(0.75,1.5))
+    f_name <- paste(paste(paste(paste(out_folder, f, sep="/"),f,sep="/"), as.character(i),sep="_n"),".png",sep="")
+    ggsave(f_name, plot=p,width=12,height=12, dpi=500)
+  }
+}
+
+for (id in sort(unique(df$func.type))) {
+  print(id)
+  f_plot_func_sbs(id)
+  #print("")
+}
+
+```
+
+#Prediction vector vids
+```{r}
+#now make vids
+out_folder <- "/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/kids/figs/videos/prediction_vector_frames"
+
+#we want, at each tpt, the x and y movement from curr_x and curr_y
+#to get trajectory, want to start at 0,0 and add vecs at each tpt
+#df <- add_perfect_subject(df)
+
+df_plot_kid <- df_kid %>% 
+      mutate(vec_x = x_pred-x_curr, vec_y = y_pred-y_curr, true_vec_y = y_next-y_curr, true_vec_x = x_next-x_curr) %>%
+      arrange(subject_id, func.type, tpt) %>%
+      group_by(subject_id, func.type) %>%
+      mutate(trajectory_x = cumsum(replace(vec_x, is.na(vec_x), 0)), trajectory_y = cumsum(replace(vec_y, is.na(vec_y), 0)), true_trajectory_x = cumsum(replace(true_vec_x, is.na(true_vec_x), 0)), true_trajectory_y = cumsum(replace(true_vec_y, is.na(true_vec_y), 0))) %>%
+      mutate(prev_traj_x = trajectory_x-vec_x, prev_traj_y = trajectory_y-vec_y) %>%
+      ungroup() %>% filter(tpt>2)
+```
+```{r}
+df_plot_adult <- df_adult %>%
+      mutate(vec_x = x_pred-x_curr, vec_y = y_pred-y_curr, true_vec_y = y_next-y_curr, true_vec_x = x_next-x_curr) %>%
+      arrange(subject_id, func.type, tpt) %>%
+      group_by(subject_id, func.type) %>%
+      mutate(trajectory_x = cumsum(replace(vec_x, is.na(vec_x), 0)), trajectory_y = cumsum(replace(vec_y, is.na(vec_y), 0)), true_trajectory_x = cumsum(replace(true_vec_x, is.na(true_vec_x), 0)), true_trajectory_y = cumsum(replace(true_vec_y, is.na(true_vec_y), 0))) %>%
+      mutate(prev_traj_x = trajectory_x-vec_x, prev_traj_y = trajectory_y-vec_y) %>%
+      ungroup() %>% filter(tpt>2)
+```
+```{r}
+df_plot_monkey <- df_monkey %>%
+      mutate(vec_x = x_pred-x_curr, vec_y = y_pred-y_curr, true_vec_y = y_next-y_curr, true_vec_x = x_next-x_curr) %>%
+      arrange(run_id, func.type, tpt) %>%
+      group_by(run_id, func.type) %>%
+      mutate(trajectory_x = cumsum(replace(vec_x, is.na(vec_x), 0)), trajectory_y = cumsum(replace(vec_y, is.na(vec_y), 0)), true_trajectory_x = cumsum(replace(true_vec_x, is.na(true_vec_x), 0)), true_trajectory_y = cumsum(replace(true_vec_y, is.na(true_vec_y), 0))) %>%
+      mutate(prev_traj_x = trajectory_x-vec_x, prev_traj_y = trajectory_y-vec_y) %>%
+      ungroup()
+
+```
+```{r}
+
+unlink(out_folder, recursive=TRUE)
+dir.create(out_folder)
+
+
+f_plot_func_sbs <- function(f) {
+  dir.create(paste(out_folder, f, sep="/"))
+  df_seq_kid <- subset(df_plot_kid, (df_plot_kid$func.type == f))
+  df_seq_monkey <- subset(df_plot_monkey, (df_plot_monkey$func.type == f))
+  df_seq_adult <- subset(df_plot_adult, (df_plot_adult$func.type == f))
+  df_seq_monkey$run_id <- factor(df_seq_monkey$run_id)
+  
+  
+  n_monkeys=length(unique(df_seq_monkey$run_id))
+  n_kids=length(unique(df_seq_kid$subject_id))
+  n_adults=length(unique(df_seq_adult$subject_id))
+  max_n <- max(c(n_monkeys, n_kids, n_adults))
+  
+  df_seq_monkey$height <- (as.integer(df_seq_monkey$run_id)-1)*(max_n/n_monkeys)*2
+  df_seq_adult$height <- (as.integer(factor(df_seq_adult$subject_id))-1)*(max_n/n_adults)*2
+  df_seq_kid$height <- (as.integer(factor(df_seq_kid$subject_id))-1)*(max_n/n_kids)*2
+  
+  shift_x1<-0
+  shift_y1<-0
+  offset_x<-0
+  offset_y<-0
+  monkey_pos <- 0
+  kid_pos <- 8
+  adult_pos <- 16
+  
+  x_min <- min(c(min(df_seq_monkey$vec_x+monkey_pos, na.rm=T), min(df_seq_kid$vec_x+kid_pos, na.rm=T),  min(df_seq_adult$vec_x+adult_pos, na.rm=T))) -1
+  x_max <- max(c(max(df_seq_monkey$vec_x+monkey_pos, na.rm=T), max(df_seq_kid$vec_x+kid_pos, na.rm=T),  max(df_seq_adult$vec_x+adult_pos, na.rm=T))) + 1
+  y_min <- min(c(min(df_seq_monkey$vec_y, na.rm=T), min(df_seq_kid$vec_y, na.rm=T),  min(df_seq_adult$vec_y, na.rm=T))) - 0.5
+  y_max <- max(c(max(df_seq_monkey$vec_y, na.rm=T), max(df_seq_kid$vec_y, na.rm=T),  max(df_seq_adult$vec_y, na.rm=T))) + max(c(max(df_seq_monkey$height), max(df_seq_kid$height), max(df_seq_adult$height)))
+  x_range = x_max - x_min
+  y_range = y_max - y_min
+  
+  for (i in (min(df_seq_kid$tpt)):max(df_seq_kid$tpt)) {
+    df_tpt_kid <- subset(df_seq_kid, (df_seq_kid$tpt == i))
+    df_tpt_monkey <- subset(df_seq_monkey, (df_seq_monkey$tpt == i))
+    df_tpt_adult <- subset(df_seq_adult, (df_seq_adult$tpt == i))
+    p <- ggplot() +
+      #pred vecs
+      geom_segment(data=df_tpt_monkey, aes(x =monkey_pos, y = height, xend = monkey_pos+(x_next-x_curr), yend =height+(y_next-y_curr), group=run_id), linewidth=1, color="black", arrow = arrow(length = unit(0.08, "inches"))) +
+      geom_segment(data=df_tpt_kid, aes(x = kid_pos, y = height, xend = kid_pos+(x_next-x_curr), yend =height+(y_next-y_curr), group=subject_id), linewidth=1, color="black", arrow = arrow(length = unit(0.08, "inches"))) +
+      geom_segment(data=df_tpt_adult, aes(x = adult_pos, y = height, xend = adult_pos+(x_next-x_curr), yend =height+(y_next-y_curr), group=subject_id),linewidth=1,  color="black",arrow = arrow(length = unit(0.08, "inches"))) +
+      
+      geom_segment(data=df_tpt_monkey, aes(x =monkey_pos, y = height, xend = monkey_pos+vec_x, yend = height+vec_y, color=run_id), linewidth=1, arrow = arrow(length = unit(0.08, "inches"))) +
+      geom_segment(data=df_tpt_kid, aes(x = kid_pos, y = height, xend = kid_pos+vec_x, yend = height+vec_y, color=subject_id), linewidth=1, arrow = arrow(length = unit(0.08, "inches"))) +
+      geom_segment(data=df_tpt_adult, aes(x = adult_pos, y = height, xend = adult_pos+vec_x, yend = height+vec_y, color=subject_id), linewidth=1, arrow = arrow(length = unit(0.08, "inches")), alpha=0.8) +
+      
+      
+      coord_fixed(xlim=c(x_min, x_max + offset_x), ylim=c(y_min, y_max)) + #y_max+offset_y)) +
+      theme_void() +
+      theme(panel.background = element_rect(fill = "white"), legend.background = element_rect(fill = "white"), legend.title=element_blank(), legend.position = "top") +
+      guides(alpha="none",size="none", color="none") +
+      annotation_custom(rasterGrob(readPNG(sprintf("../figs/func_ims/%s.png", f)), width = unit(.5, "npc"), height = unit(.5, "npc")),
+                      xmin = x_min, xmax = x_min+(x_range/5), ymin = y_max-(x_range/5), ymax = Inf) +
+      geom_text(aes(x = kid_pos, y = y_min+0.5, label = "Children"), hjust = 0.5, color = "black") +
+      geom_text(aes(x = monkey_pos, y = y_min+0.5, label = "Monkeys"), hjust = 0.5,color = "black") +
+      geom_text(aes(x = adult_pos, y = y_min+0.5, label = "Adults"), hjust = 0.5,color = "black")
+    
+    img <- readPNG(sprintf("../figs/func_ims/%s.png", f))
+    # Add the image to the plot in the top right corner
+    #p <- p + annotation_custom(rasterGrob(img, width = unit(1, "npc"), height = unit(1, "npc")),
+    #                  xmin = Inf, xmax = Inf, ymin = Inf, ymax = Inf)
+
+    f_name <- paste(paste(paste(paste(out_folder, f, sep="/"),f,sep="/"), as.character(i),sep="_n"),".png",sep="")
+    ggsave(f_name, plot=p,width=10,height=10, dpi=500)
+  }
+}
+```
+```{r}
+for (id in sort(unique(df_kid$func.type))) {
+  print(id)
+  f_plot_func_sbs(id)
+  print("")
+}
+```
+
+
+
+
+
+
+
+
+
+

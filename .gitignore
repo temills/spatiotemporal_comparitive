@@ -1,0 +1,7 @@
+*.csv
+.*
+__pycache__/
+dots_app_kids/
+dots_app_kids_adult_vsn/
+scratch/
+figs/
