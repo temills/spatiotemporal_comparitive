@@ -39,7 +39,6 @@ paper_theme <- theme_light() + theme( axis.title.x = element_text(size=22),
                                       panel.grid.major=element_blank(),
                 #   panel.background = element_rect(color = NA), 
                                       panel.grid.minor=element_blank())  
-out_folder <- "../figs/"
 
 
 get_ll <- function(df) {
@@ -55,44 +54,58 @@ get_ll <- function(df) {
   return(df)
 }
 
-
-
 preprocess_df_human <- function(df) {
+  sm <- 1e-10
   df$attempt = 1
   df$id <- seq_len(nrow(df))
   df$n <- df$tpt
   df <- df[order(df$tpt),] %>%
       rename(pred_x = response_x, pred_y = response_y, func.name = seq_id, subj_id = subject_id) %>%
       group_by(subj_id, trial_idx, tpt) %>%
+      mutate(r_id = subj_id) %>%
       mutate(true_dist=((true_x-prev_x)**2. + (true_y-prev_y)**2.)**0.5) %>%
       mutate(err_x=pred_x-true_x) %>%
       mutate(err_y=pred_y-true_y) %>%
-      mutate(abs_err = ((err_x**2)+(err_y)**2) **0.5) %>%  
+      mutate(norm_err_x = err_x/(true_dist+sm)) %>%
+      mutate(norm_err_y = err_y/(true_dist+sm)) %>%
+      mutate(abs_err = ((err_x**2)+(err_y**2)) **0.5) %>%  
       mutate(norm_abs_err = abs_err/(true_dist)) %>%
       mutate(dist_from_prev = (((pred_x-true_x)**2)+((pred_y-true_y)**2)) **0.5) %>%
-      #add unique id col
       ungroup() %>%
       mutate(scaled_err = scale(norm_abs_err)[,1])
   return(df)
 }
 
-f_weighted_sd <- function(means, sds, weights)  {
-  var_wtd = sum(weights * sds**2) + sum(weights * means**2) - (sum(weights*means)**2)
-  return (var_wtd**0.5)
+
+preprocess_df_monkey <- function(df) {
+  df$attempt = 1
+  df$id <- seq_len(nrow(df))
+  df <- df[order(df$n),] %>%
+      rename(true_x=x_next, true_y=y_next, prev_x=x_curr, prev_y=y_curr, pred_x=x_pred, subj_id = monkey_name, pred_y=y_pred, func.name=func_id) %>%
+      rename(tpt = n) %>%
+      group_by(r_id, game_n, tpt) %>%
+      mutate(true_dist=((true_x-prev_x)**2. + (true_y-prev_y)**2.)**0.5) %>%
+      mutate(err_x=pred_x-true_x) %>%
+      mutate(err_y=pred_y-true_y) %>%
+      mutate(abs_err = ((err_x**2)+(err_y**2)) **0.5) %>%  
+      mutate(norm_abs_err = abs_err/(true_dist)) %>%
+      mutate(dist_from_prev = (((pred_x-true_x)**2)+((pred_y-true_y)**2)) **0.5) %>%
+      ungroup() %>%
+      mutate(tpt=tpt+1) %>%
+      filter(tpt<15) %>%
+      mutate(n=tpt)
+  return(df)
 }
-sm <- 0.01
 
 preprocess_model <- function(df_model) {
   df_model$id <- seq.int(1,nrow(df_model))
-  df_model$n <- df_model$tpt
-  df_model$func.name <- df_model$seq_id
-  df_model$std_x <- df_model$sd_x
-  df_model$std_y <- df_model$sd_y
-  df_model$posterior <- df_model$score
   df_model <- df_model %>%
-        filter(!is.na(pred_x)) %>%
+        get_ll() %>%
+        rename(func.name = seq_id, n = tpt) %>%
+        rescale_line() %>%
         rowwise() %>%
-        #mutate(nt_count = str_count(func, fixed("("))) %>%
+        mutate(std_x = sd_x) %>%
+        mutate(std_y = sd_y) %>%
         mutate(err_x = pred_x - true_x) %>%
         mutate(err_y = pred_y - true_y) %>%
         group_by(func.name) %>%
@@ -102,29 +115,24 @@ preprocess_model <- function(df_model) {
         mutate(mean_x = mean(true_x)) %>%
         mutate(mean_y = mean(true_y)) %>%
         group_by(func.name, n) %>%
-        mutate(posterior = exp(posterior)/sum(exp(posterior))) %>%
-        #scale predictions?
-        # mutate(pred_x = min(max(pred_x, mean_x - range_x,na.rm=TRUE), mean_x + range_x))%>%
-        # mutate(pred_y = min(max(pred_y, mean_y - range_y,na.rm=TRUE), mean_y + range_y)) %>%
         ungroup() %>%
         group_by(func.name) %>%
         mutate(abs_err = ((true_x-pred_x)**2 + (true_y-pred_y)**2)**0.5) %>%
         mutate(mean_abs_err = mean(abs_err, na.rm=TRUE))
   return(df_model)
 }
+
 get_model_data <- function(df_model, s_id, t,  model_type) {
   s_id <- as.character(s_id[1])
   t <- t[1]
-  #df_use <- subset(df_nclot_use, (df_nclot_use$n==t) & (df_nclot_use$func.name == s_id))
   df_use <- subset(df_model, (df_model$n==t) & (as.character(df_model$func.name) == as.character(s_id)))
     if (nrow(df_use) == 0) {
     return(NA) 
   } else {
-    #print(c(df_use$pred_x[1], df_use$std_x[1], df_use$pred_y[1], df_use$std_y[1]))
     return(list(df_use$pred_x, df_use$std_x, df_use$pred_y, df_use$std_y, df_use$posterior, df_use$particle))
-    
   }
 }
+
 add_new_columns_grouped <- function(df,df_model, func, group_cols, model_type, new_col_names) {
   # Number of times you want each row to be repeated
   n_particle <- length(unique(df_model$particle))
@@ -136,173 +144,90 @@ add_new_columns_grouped <- function(df,df_model, func, group_cols, model_type, n
   df_expanded %>%
     group_by(across(all_of(group_cols))) %>%
     #summarize(result = list(func(!!sym(input_col))), .groups = 'drop') %>%
-    summarize(result = list(func(df_model,func.name, n, model_type)), .groups = 'drop') %>%
+    summarize(result = list(func(df_model, func.name, n, model_type)), .groups = 'drop') %>%
     unnest_wider(result, names_sep = "_") %>%
     setNames(., c(group_cols, new_col_names)) %>%
     left_join(df, by = group_cols) 
 }
-
-
-
 ```
+
 
 ###Load participant data
 ```{r}
-df_adult <- read.csv("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/kids/dots_app_kids_adult_vsn/data/clean_data/data.csv")
-df_adult <- preprocess_df_human(df_adult) %>% mutate(func.name = ifelse(func.name == "example_line", "line", func.name))
-df_kid <- read.csv("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/kids/dots_app_kids/data/clean_data/data.csv")
-df_kid <- preprocess_df_human(df_kid) %>% filter(func.name != "example_line")
-df_monkey <- read.csv("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/monkey_game/data/monkeys_clean.csv")
-
-#change this so that subj_id is like run_id
-preprocess_df_monkey <- function(df) {
-  df$attempt = 1
-  df$id <- seq_len(nrow(df))
-  #df$n <- df$tpt
-  df <- df[order(df$n),] %>%
-      rename(true_x=x_next, true_y=y_next, prev_x=x_curr, prev_y=y_curr, pred_x=x_pred, subj_id = monkey_name, pred_y=y_pred, func.name=func_id) %>%
-      rename(tpt = n) %>%
-      group_by(r_id, game_n, tpt) %>%
-      mutate(true_dist=((true_x-prev_x)**2. + (true_y-prev_y)**2.)**0.5) %>%
-      mutate(err_x=pred_x-true_x) %>%
-      mutate(err_y=pred_y-true_y) %>%
-      mutate(abs_err = ((err_x**2)+(err_y)**2) **0.5) %>%  
-      mutate(norm_abs_err = abs_err/(true_dist)) %>%
-      mutate(dist_from_prev = (((pred_x-true_x)**2)+((pred_y-true_y)**2)) **0.5) %>%
-      ungroup() %>%
-      mutate(tpt=tpt+1) %>%
-      filter(tpt<15) %>%
-      mutate(n=tpt)
-  return(df)
-}
-df_monkey <- preprocess_df_monkey(df_monkey) %>% mutate(func.name = ifelse(func.name == "example_line", "line", func.name))
+df_adult <- preprocess_df_human(read.csv("data/participants/adults.csv"))
+df_kid <- preprocess_df_human(read.csv("data/participants/kids.csv"))
+df_monkey <- proprocess_df_monkey(read.csv("data/participants/monkeys_1.csv"))
 ```
-
-###Load model data
+# Load model paths
 ```{r}
-path <- '/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/neurips_code/analyses/data/'
-df_human_prev <- read.csv(paste(path, 'trials_cleaned.csv', sep=""))
-#temp <- unique(df_human_lot$func.name)
-#df_human <- filter(df_human_prev, func.name %in% temp)
-df_lot <- read.csv(paste(path, 'lot_all.csv', sep=""))
-df_lot <- get_ll(df_lot)
-df_gpsl <- read.csv(paste(path, 'gpsl_all.csv', sep=""))
-df_gpsl <- get_ll(df_gpsl)
-df_gpnc <- read.csv(paste(path, 'gpnc_all.csv', sep=""))
-df_gpnc <- get_ll(df_gpnc)
-df_ridge <- read.csv(paste(path, 'ridge_1_all.csv', sep=""))
-df_ridge <- get_ll(df_ridge)
-df_funcs <- read.csv("/Users/traceymills/Downloads/func_file.csv")
-```
-
-#Plot sanity check
-```{r}
-path <- '/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/neurips_code/lot/output/'
-df <- read.csv(paste(path, '3_pts.csv', sep=""))
-```
-```{r}
-path <- '/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/lot_model_for_server/server_output/'
-df_lot_new <- read.csv(paste(path, 'lot_all.csv', sep=""))
-path <- '/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/neurips_code/analyses/data/'
-df_lot <- read.csv(paste(path, 'lot_all.csv', sep=""))
-df <- df_lot %>% filter(tpt<6) %>% filter(seq_id %in% unique(df_new$seq_id))
-df$posterior <- df$score
-df <- df %>%
-      group_by(seq_id, tpt) %>%
-      mutate(posterior = exp(posterior)/sum(exp(posterior)))
-ggplot() +
-  geom_point(data=df, aes(x=true_x, y=true_y, alpha=tpt+1)) +
-  #geom_point(data=df, aes(x=true_x, y=true_y), size=2) +
-  geom_path(data=df, aes(x=true_x, y=true_y, alpha=tpt+1), linetype="solid") +
-  geom_point(data=df, aes(x=pred_x, y=pred_y, color=tpt, alpha=posterior)) +
-  #coord_cartesian(xlim=c(-10,5), ylim=c(-5,5)) +
-  theme_void() + theme(legend.title=element_blank(), legend.text=element_blank(), panel.background = element_rect(fill = "white"))+
-  scale_color_gradient(low = "purple", high = "orange") +
-  guides(color="none", alpha="none") +
-  facet_wrap(~seq_id, scales="free")
-```
-
-```{r, fig.width=8, fig.height=3}
-#lets look at sd over time for each model
-plot_df <- rbind(df_lot%>%mutate(model="LoT")%>%select(model, sd_x, sd_y,tpt,seq_id), df_gpsl%>%mutate(model="GPSL")%>%select(model, sd_x, sd_y,tpt,seq_id), df_gpnc%>%mutate(model="GPNC")%>%select(model, sd_x, sd_y,tpt,seq_id), df_ridge%>%mutate(model="Ridge")%>%select(model, sd_x, sd_y,tpt,seq_id))
-
-plot_df <- plot_df %>% filter(seq_id%in%unique(df_kid$func.name))
-ggplot() +
-  geom_path(data=plot_df, aes(x=tpt, y=sd_y, color=model)) + ylim(0,10) + theme(strip.text=element_text(size=6)) +
-  facet_wrap(~seq_id, ncol=10)
+gpnc_path <- 'data/models/gpnc.csv'
+gpsl_path <- 'data/models/gpsl.csv'
+ridge_path <- 'data/models/ridge.csv'
+lot_path <- 'data/models/lot.csv'
+lin_path <- 'data/models/linear.csv'
 ```
 
 
-
-
-###Run model comparison
-
-###First, with learning models -- choose ur fighters
-```{r}
-rescale_line <- function(df) {
-  df <- df %>% 
-        mutate(pred_x = ifelse(func.name=="line",  (pred_x*(-1.3))+26, pred_x)) %>%
-        mutate(true_x = ifelse(func.name=="line",  (true_x*(-1.3))+26, true_x))
-  return(df)
-}
-```
-
-
-#More sanity checks
-```{r}
-ggplot(data=df_human_model%>%filter(func.name=="line")) +
-  geom_path(aes(x=true_x, y=true_y)) +
-  geom_point(aes(x=true_x, y=true_y)) +
-  geom_point(aes(x=pred_x, y=pred_y, alpha=tpt+1), color="blue") #+
-  #geom_point(aes(x=model_pred_x, y=model_pred_y, alpha=tpt+1), color="red")
-  
-```
-```{r}
-max(abs(df_human_model$model_pred_x-df_human_model$pred_x))
-ggplot(data=df_human_model%>%filter(tpt==5)) +
-  geom_path(aes(x=true_x, y=true_y)) +
-  geom_point(aes(x=true_x, y=true_y)) +
-  geom_point(aes(x=pred_x, y=pred_y, alpha=tpt+1), color="blue") +
-  theme_void() +
-  geom_point(aes(x=model_pred_x, y=model_pred_y, alpha=tpt+1), color="purple") +
-  facet_wrap(~func.name, scales="free")
-#ggplot() + geom_histogram(data=df_human_model, aes(x=abs(pred_x-model_pred_x)))# - df_human_model$model_pred_x))
-```
-
-
+# Compute LL with params fit individually
 ```{r, message=FALSE}
-df_monkey <- read.csv("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/monkey_game/data/monkeys_clean.csv")
-df_monkey <- preprocess_df_monkey(df_monkey) %>% mutate(func.name = ifelse(func.name == "example_line", "line", func.name))
-df_human <- df_monkey
-
-
-df_model <- rescale_line(preprocess_model(df_lot))
-
-
-fname <- 'lot_monkey_fbs.csv'
-
-
-#df_human_subs <- head(df_human, 5000)
-df_human_model <- add_new_columns_grouped(df_human, df_model, get_model_data, c("func.name", "n"), "model", c("model_pred_x", "model_std_x", "model_pred_y", "model_std_y", "model_posterior", "model_particle"))
-df_human_model <- df_human_model %>%
-              unnest(model_pred_x, model_pred_y, model_std_x, model_std_y, model_posterior, model_particle) %>%
-              mutate(model_err_x = model_pred_x - true_x) %>%
-              mutate(model_err_y = model_pred_y - true_y) %>%
-              mutate(model_abs_err = (model_err_x**2. + model_err_y**2.)**0.5) %>%
-              mutate(model_norm_abs_err = model_abs_err/(true_dist+sm)) %>%
-              filter(n>2)
-#rescale line predictions for model
-#df_final_tpt <- df_human_model %>%
-#            ungroup() %>%
-#            filter(n == max(n)) #%>%
-
-#Compute LL! ###...for each subj individually
-fn <- function(pars) { 
-  o_sd <- pars[1]
-  l_p <- pars[2]
-  l_sd <- pars[3]
+compute_ll <- function(df_model, df_participant, out_path) {
+  fn <- function(pars) { 
+    o_sd <- pars[1]
+    l_p <- pars[2]
+    l_sd <- pars[3]
+    df_result <- df_optim %>%
+              filter(n > 2) %>%
+              group_by(subj_id, func.name, r_id, n) %>%
+              mutate(p_data_x =  dnorm(pred_x, mean=model_pred_x, sd=(model_std_x**2 + o_sd**2)**0.5)) %>%
+              mutate(p_data_x = sm + (1-sm)*sum(model_posterior*p_data_x, na.rm=TRUE)) %>%
+              mutate(p_data_y =  dnorm(pred_y, mean=model_pred_y, sd=(model_std_y**2+ o_sd**2)**0.5)) %>%
+              mutate(p_data_y = sm + (1-sm)*sum(model_posterior*p_data_y, na.rm=TRUE)) %>%
+              top_n(n=1,wt=model_particle) %>%
+              mutate(p_data_x =(1-l_p)* p_data_x + l_p * dnorm(pred_x, mean=prev_x, sd=l_sd)) %>%
+              mutate(p_data_y =(1-l_p)* p_data_y + l_p * dnorm(pred_y, mean=prev_y, sd=l_sd)) 
+    ll <- sum(log(df_result$p_data_x), na.rm=TRUE) + sum(log(df_result$p_data_y), na.rm=TRUE) 
+    return(-ll)
+  }
+  
+df_participant_model <- add_new_columns_grouped(df_participant, df_model, get_model_data, c("func.name", "n"), "model", c("model_pred_x", "model_std_x", "model_pred_y", "model_std_y", "model_posterior", "model_particle")) %>%
+                unnest(model_pred_x, model_pred_y, model_std_x, model_std_y, model_posterior, model_particle) %>%
+                group_by(func.name) %>%
+                mutate(min_x = mean(min_x, na.rm=T), min_y = mean(min_y, na.rm=T),
+                       max_x = mean(max_x, na.rm=T), max_y = mean(max_y, na.rm=T)) %>%
+                ungroup() %>%
+                mutate(scale_by = (max_x-min_x)) %>%
+                mutate(pred_x = (pred_x-min_x)/scale_by) %>%
+                mutate(pred_y = (pred_y-min_y)/scale_by) %>%
+                mutate(prev_x = (prev_x-min_x)/scale_by) %>%
+                mutate(prev_y = (prev_y-min_y)/scale_by) %>%
+                mutate(model_pred_x = (model_pred_x-min_x)/scale_by) %>%
+                mutate(model_pred_y = (model_pred_y-min_y)/scale_by) %>%
+                mutate(model_std_x = (model_std_x)/scale_by) %>%
+                mutate(model_std_y = (model_std_y)/scale_by) %>%
+                #mutate(acceptance_dist_x = acceptance_dist/scale_by,
+                #       acceptance_dist_y = acceptance_dist/scale_by) %>%
+                ungroup()
+  
+  
+  #init param values
+  other_noise <- 0.01
+  lapse_p <- 0.5
+  lapse_sd <- 0.2
+  subj_param_dict = list()
+  for(subj in unique(df_participant_model$subj_id)) {
+    df_optim <- df_participant_model %>% filter(subj_id==subj)
+    op_pars <- optim(c( other_noise, lapse_p, lapse_sd), fn,
+          method = "L-BFGS-B",
+          lower = c(1e-5, 0, 1e-5), upper = c(5,0.5, 5))
+    pars <- op_pars$par
+    subj_param_dict[[subj]] <- pars
+  }
   sm <- 1e-10 
-  df_use <- df_optim %>%
+  
+  df_result <- df_participant_model %>%
+            mutate(o_sd = sapply(subj_id, function(x) unlist(subj_param_dict[[x]])[1])) %>%
+            mutate(l_p = sapply(subj_id, function(x) unlist(subj_param_dict[[x]])[2])) %>%
+            mutate(l_sd = sapply(subj_id, function(x) unlist(subj_param_dict[[x]])[3])) %>%
             filter(n > 2) %>%
             group_by(subj_id, func.name, n, r_id) %>%
             mutate(p_data_x =  dnorm(pred_x, mean=model_pred_x, sd=(model_std_x**2 + o_sd**2)**0.5)) %>%
@@ -311,2187 +236,298 @@ fn <- function(pars) {
             mutate(p_data_y = sm + (1-sm)*sum(model_posterior*p_data_y, na.rm=TRUE)) %>%
             top_n(n=1,wt=model_particle) %>%
             mutate(p_data_x =(1-l_p)* p_data_x + l_p * dnorm(pred_x, mean=prev_x, sd=l_sd)) %>%
-            mutate(p_data_y =(1-l_p)* p_data_y + l_p * dnorm(pred_y, mean=prev_y, sd=l_sd)) 
-  ll <- sum(log(df_use$p_data_x), na.rm=TRUE) + sum(log(df_use$p_data_y), na.rm=TRUE) 
-  #print(c(-ll, pars))
-  return(-ll)
-}
-
-#init param values
-other_noise <- 0.01
-lapse_p <- 0.1
-lapse_sd <- 3
-
-subj_param_dict = list()
-for(subj in unique(df_human_model$subj_id)) {
-  df_optim <- df_human_model %>% filter(subj_id==subj)
-  op_pars <- optim(c( other_noise, lapse_p, lapse_sd), fn,
-        method = "L-BFGS-B",
-        lower = c(1e-5, 0, 0.5), upper = c(10,0.5, 5))
-  pars <- op_pars$par
-  print(subj)
-  print(pars)
-  subj_param_dict[[subj]] <- pars
-}
-sm <- 1e-10 
-
-df_optim <- df_human_model %>%
-          mutate(o_sd = sapply(subj_id, function(x) unlist(subj_param_dict[[x]])[1])) %>%
-          mutate(l_p = sapply(subj_id, function(x) unlist(subj_param_dict[[x]])[2])) %>%
-          mutate(l_sd = sapply(subj_id, function(x) unlist(subj_param_dict[[x]])[3])) %>%
-          filter(n > 2) %>%
-          group_by(subj_id, func.name, n, r_id) %>%
-          mutate(p_data_x =  dnorm(pred_x, mean=model_pred_x, sd=(model_std_x**2 + o_sd**2)**0.5)) %>%
-          mutate(p_data_x = sm + (1-sm)*sum(model_posterior*p_data_x, na.rm=TRUE)) %>%
-          mutate(p_data_y =  dnorm(pred_y, mean=model_pred_y, sd=(model_std_y**2+ o_sd**2)**0.5)) %>%
-          mutate(p_data_y = sm + (1-sm)*sum(model_posterior*p_data_y, na.rm=TRUE)) %>%
-          top_n(n=1,wt=model_particle) %>%
-          mutate(p_data_x =(1-l_p)* p_data_x + l_p * dnorm(pred_x, mean=prev_x, sd=l_sd)) %>%
-          mutate(p_data_y =(1-l_p)* p_data_y + l_p * dnorm(pred_y, mean=prev_y, sd=l_sd)) %>%
-          mutate(LL = log(p_data_x) + log(p_data_y))
-
-  ll <- sum(log(df_optim$p_data_x), na.rm=TRUE) + sum(log(df_optim$p_data_y), na.rm=TRUE)
-  print(-ll)
-  print(sum(df_optim$LL))
-
-write.csv(df_optim, fname)
-```
-
-
-#or, compute LL individually under random model
-```{r, echo=FALSE, message=FALSE}
-fn_random <- function(pars) { 
-  l_sd <- pars[1]
-  sm <- 1e-10 
-  df_use <- df_optim %>%
-            filter(n > 2) %>%
-            group_by(subj_id, func.name, n, attempt, r_id) %>%
-            top_n(n=1,wt=model_particle) %>%
-            mutate(p_data_x =  sm + (1-sm) * dnorm(pred_x, mean=prev_x, sd=l_sd)) %>%
-            mutate(p_data_y =  sm + (1-sm) * dnorm(pred_y, mean=prev_y, sd=l_sd))
-  ll <- sum(log(df_use$p_data_x), na.rm=TRUE) + sum(log(df_use$p_data_y), na.rm=TRUE) 
-  return(-ll)
-}
-#init param values
-#other_noise <- 0.01
-#lapse_p <- 0.1
-lapse_sd <- 3
-kids_param_dict = list()
-for(subj in unique(df_human_model$subj_id)) {
-  df_optim <- df_human_model %>% filter(subj_id==subj)
-  op_pars <- optim(c(lapse_sd), fn_random,
-        method = "L-BFGS-B",
-        lower = c(0.1), upper = c(10))
-  pars <- op_pars$par
-  print(subj)
-  print(pars)
-  kids_param_dict[[subj]] <- pars
-}
-sm <- 1e-10 #why?
-
-df_optim <- df_human_model %>%
-            mutate(l_sd = sapply(subj_id, function(x) unlist(kids_param_dict[[x]])[1])) %>%
-            filter(n > 2) %>%
-            group_by(subj_id, func.name, n, attempt, r_id) %>%
-            top_n(n=1,wt=model_particle) %>%
-            mutate(p_data_x = dnorm(pred_x, mean=prev_x, sd=l_sd)) %>%
-            mutate(p_data_y = dnorm(pred_y, mean=prev_y, sd=l_sd)) %>%
+            mutate(p_data_y =(1-l_p)* p_data_y + l_p * dnorm(pred_y, mean=prev_y, sd=l_sd)) %>%
             mutate(LL = log(p_data_x) + log(p_data_y))
-
-  ll <- sum(log(df_optim$p_data_x), na.rm=TRUE) + sum(log(df_optim$p_data_y), na.rm=TRUE)
-  print(-ll)
-  print(sum(df_optim$LL))
-
-write.csv(df_optim, 'random_monkey_fbs.csv')
-```
-#compute LL individually under true model
-```{r, echo=FALSE, message=FALSE}
-fn_true <- function(pars) { 
-  l_sd <- pars[1]
-  sm <- 1e-10 
-  df_use <- df_optim %>%
-            filter(n > 2) %>%
-            group_by(subj_id, func.name, n, attempt, r_id) %>%
-            top_n(n=1,wt=model_particle) %>%
-            mutate(p_data_x = sm + (1-sm) * dnorm(pred_x, mean=true_x, sd=l_sd)) %>%
-            mutate(p_data_y =  sm + (1-sm) * dnorm(pred_y, mean=true_y, sd=l_sd))
-  ll <- sum(log(df_use$p_data_x), na.rm=TRUE) + sum(log(df_use$p_data_y), na.rm=TRUE) 
-  return(-ll)
+  
+    ll <- sum(log(df_result$p_data_x), na.rm=TRUE) + sum(log(df_result$p_data_y), na.rm=TRUE)
+    print(-ll)
+    print(sum(df_result$LL))
+  
+  write.csv(df_result, out_path)
 }
-#init param values
-#other_noise <- 0.01
-#lapse_p <- 0.1
-lapse_sd <- 3
-kids_param_dict = list()
-for(subj in unique(df_human_model$subj_id)) {
-  df_optim <- df_human_model %>% filter(subj_id==subj)
-  op_pars <- optim(c(lapse_sd), fn_true,
-        method = "L-BFGS-B",
-        lower = c(0.1), upper = c(10))
-  pars <- op_pars$par
-  print(subj)
-  print(pars)
-  kids_param_dict[[subj]] <- pars
-}
-sm <- 1e-10 #why?
-
-#o_sd <- pars[1]
-#l_p <- pars[2]
-#l_sd <- pars[3]
-df_optim <- df_human_model %>%
-            mutate(l_sd = sapply(subj_id, function(x) unlist(kids_param_dict[[x]])[1])) %>%
-            filter(n > 2) %>%
-            group_by(subj_id, func.name, n, attempt, r_id) %>%
-            top_n(n=1,wt=model_particle) %>%
-            mutate(p_data_x = dnorm(pred_x, mean=true_x, sd=l_sd)) %>%
-            mutate(p_data_y = dnorm(pred_y, mean=true_y, sd=l_sd)) %>%
-            mutate(LL = log(p_data_x) + log(p_data_y))
-
-  ll <- sum(log(df_optim$p_data_x), na.rm=TRUE) + sum(log(df_optim$p_data_y), na.rm=TRUE)
-  print(-ll)
-  print(sum(df_optim$LL))
-
-write.csv(df_optim, 'true_monkey_fbs.csv')
 ```
 
-#compute LL individually for average past vectors model (past 1,2,3)
-```{r}
-#ggplot(data=df_human_model) +
-#  geom_point(aes(x=true_x, y=true_y), color="blue") +
-#  geom_point(aes(x=prev_x, y=prev_y), color="green") +
-#  geom_point(aes(x=prev_prev_x, y=prev_prev_y), color="gold") +
-#  geom_point(aes(x=vec2_pred_x, y=vec2_pred_y), color="red") +
-  #geom_point(aes(x=pred_x, y=pred_y), color="pink") +#
-#  theme_void() +
-#  facet_wrap(~func.name, scales="free")
-```
 
-```{r, echo=FALSE, message=FALSE}
-df_monkey <- read.csv("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/monkey_game/data/monkeys_clean.csv")
-df_monkey <- preprocess_df_monkey(df_monkey) %>% mutate(func.name = ifelse(func.name == "example_line", "line", func.name))
-```
-```{r}
-df_human <- df_monkey
-
-#path <- '/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/lot_model_for_server/server_output_so_far/'
-#df_lot_new <- read.csv(paste(path, 'lot_all.csv', sep=""))
-df_model <- rescale_line(preprocess_model(df_ridge))
-
-df_human_model <- add_new_columns_grouped(df_human, df_model, get_model_data, c("func.name", "n"), "model", c("model_pred_x", "model_std_x", "model_pred_y", "model_std_y", "model_posterior", "model_particle"))
-
-df_human_model <- df_human_model %>%
-              unnest(model_pred_x, model_pred_y, model_std_x, model_std_y, model_posterior, model_particle) %>%
-              mutate(model_err_x = model_pred_x - true_x) %>%
-              mutate(model_err_y = model_pred_y - true_y) %>%
-              mutate(model_abs_err = (model_err_x**2. + model_err_y**2.)**0.5) %>%
-              mutate(model_norm_abs_err = model_abs_err/(true_dist+sm)) %>%
-              group_by(subj_id, func.name, model_particle, r_id) %>%
-              arrange(n) %>%
-              mutate(prev_prev_x = lag(prev_x), prev_prev_y = lag(prev_y)) %>%
-              mutate(dx = prev_x-prev_prev_x, dy = prev_y-prev_prev_y) %>%
-              mutate(pred_dx = dx, pred_dy =dy) %>%
-              mutate(vec1_pred_x = prev_x+pred_dx, vec1_pred_y = prev_y+pred_dy) %>%
-              mutate(prev_dx = lag(dx), prev_dy = lag(dy)) %>%
-              group_by(subj_id, func.name, model_particle, n, r_id) %>%
-              mutate(mean_dx = mean(c(prev_dx, dx), na.rm=T), mean_dy = mean(c(prev_dy, dy), na.rm=T)) %>%
-              mutate(std_dx = ifelse(!is.na(prev_dx), sd(na.omit(c(prev_dx, dx))), 0), std_dy = ifelse(!is.na(prev_dx), sd(na.omit(c(prev_dy, dy))), 0)) %>%
-              mutate(vec2_pred_x = prev_x + mean_dx, vec2_pred_y = prev_y + mean_dy)
-              #add vectors -- at this tpt, vec from prev to here?
-```
+### Run model comparison
 ```{r, message=F}
-df_human_model$vec_pred_x = df_human_model$vec2_pred_x
-df_human_model$vec_pred_y = df_human_model$vec2_pred_y
-df_human_model$vec_std_x = df_human_model$std_dx
-df_human_model$vec_std_y = df_human_model$std_dy
-
-```
-```{r, message=F}
-fn <- function(pars) { 
-  o_sd <- pars[1]
-  l_p <- pars[2]
-  l_sd <- pars[3]
-  df_use <- df_optim %>%
-            filter(n > 2) %>%
-            group_by(subj_id, func.name, n, attempt, r_id) %>%
-            mutate(p_data_x =  sm + (1-sm)*dnorm(pred_x, mean=vec_pred_x, sd=(vec_std_x**2 + o_sd**2)**0.5)) %>%
-            mutate(p_data_y =  sm + (1-sm)*dnorm(pred_y, mean=vec_pred_y, sd=(vec_std_y**2+ o_sd**2)**0.5)) %>%
-            top_n(n=1,wt=model_particle) %>%
-            mutate(p_data_x =(1-l_p)* p_data_x + l_p * dnorm(pred_x, mean=prev_x, sd=l_sd)) %>%
-            mutate(p_data_y =(1-l_p)* p_data_y + l_p * dnorm(pred_y, mean=prev_y, sd=l_sd)) 
-  ll <- sum(log(df_use$p_data_x), na.rm=TRUE) + sum(log(df_use$p_data_y), na.rm=TRUE) 
-  return(-ll)
-}
-
-#init param values
-other_noise <- 0.01
-lapse_p <- 0.1
-lapse_sd <- 3
-
-subj_param_dict = list()
-for(subj in unique(df_human_model$subj_id)) {
-  df_optim <- df_human_model %>% filter(subj_id==subj)
-  op_pars <- optim(c( other_noise, lapse_p, lapse_sd), fn,
-        method = "L-BFGS-B",
-        lower = c(1e-5, 0, 0.5), upper = c(10,0.5, 5))
-  pars <- op_pars$par
-  print(subj)
-  print(pars)
-  subj_param_dict[[subj]] <- pars
-}
-
-df_optim <- df_human_model %>%
-          mutate(o_sd = sapply(subj_id, function(x) unlist(subj_param_dict[[x]])[1])) %>%
-          mutate(l_p = sapply(subj_id, function(x) unlist(subj_param_dict[[x]])[2])) %>%
-          mutate(l_sd = sapply(subj_id, function(x) unlist(subj_param_dict[[x]])[3])) %>%
-          filter(n > 2) %>%
-          group_by(subj_id, func.name, n, attempt, r_id) %>%
-          mutate(p_data_x =  dnorm(pred_x, mean=vec_pred_x, sd=(vec_std_x**2 + o_sd**2)**0.5)) %>%
-          mutate(p_data_y =  dnorm(pred_y, mean=vec_pred_y, sd=(vec_std_y**2+ o_sd**2)**0.5)) %>%
-          top_n(n=1,wt=model_particle) %>%
-          mutate(p_data_x =(1-l_p)* p_data_x + l_p * dnorm(pred_x, mean=prev_x, sd=l_sd)) %>%
-          mutate(p_data_y =(1-l_p)* p_data_y + l_p * dnorm(pred_y, mean=prev_y, sd=l_sd)) %>%
-          mutate(LL = log(p_data_x) + log(p_data_y))
-
-ll <- sum(log(df_optim$p_data_x), na.rm=TRUE) + sum(log(df_optim$p_data_y), na.rm=TRUE)
-print(-ll)
-print(mean(df_optim$LL, na.rm=T))
-write.csv(df_optim, 'vec2_monkey_fbs.csv')
-```
-
-###compute LL w params fit overall
-```{r}
-#init param values
-other_noise <- 0.01
-lapse_p <- 0.1
-lapse_sd <- 3
-df_optim <- df_human_model
-op_pars <- optim(c( other_noise, lapse_p, lapse_sd), fn,
-      method = "L-BFGS-B",
-      lower = c(1e-5, 0, 0.5), upper = c(10,0.5, 5))
-#           top_n(n=1,wt=id)
-
-pars <- op_pars$par
-sm <- 1e-10 #why?
-o_sd <- pars[1]
-l_p <- pars[2]
-l_sd <- pars[3]
-df_use <- df_human_model %>%
-          filter(n > 2) %>%
-          group_by(subj_id, func.name, n, attempt) %>%
-          mutate(p_data_x =  dnorm(pred_x, mean=model_pred_x, sd=(model_std_x**2 + o_sd**2)**0.5)) %>%
-          mutate(p_data_x = sm + (1-sm)*sum(model_posterior*p_data_x, na.rm=TRUE)) %>%
-          mutate(p_data_y =  dnorm(pred_y, mean=model_pred_y, sd=(model_std_y**2+ o_sd**2)**0.5)) %>%
-          mutate(p_data_y = sm + (1-sm)*sum(model_posterior*p_data_y, na.rm=TRUE)) %>%
-          top_n(n=1,wt=model_particle) %>%
-          mutate(p_data_x =(1-l_p)* p_data_x + l_p * dnorm(pred_x, mean=prev_x, sd=l_sd)) %>%
-          mutate(p_data_y =(1-l_p)* p_data_y + l_p * dnorm(pred_y, mean=prev_y, sd=l_sd)) %>%
-          mutate(LL = log(p_data_x) + log(p_data_y))
-ll <- sum(log(df_use$p_data_x), na.rm=TRUE) + sum(log(df_use$p_data_y), na.rm=TRUE)
-print(-ll)
-print(sum(df_use$LL))
-
-#write.csv(df_use, 'gpsl_kids.csv')
-```
-
-
-```{r}
-lot_kid <- read.csv("lot_kids.csv")
-gpsl_kid <- read.csv("gpsl_kids.csv")
-gpnc_kid <- read.csv("gpnc_kids.csv")
-ridge_kid <- read.csv("ridge_kids.csv")
-lot_adult <- read.csv("lot_adults.csv")
-gpsl_adult <- read.csv("gpsl_adults.csv")
-gpnc_adult <- read.csv("gpnc_adults.csv")
-ridge_adult <- read.csv("ridge_adults.csv")
-```
-
-```{r}
-lot_kid_fbs <- read.csv("lot_kid_fbs.csv")
-gpsl_kid_fbs <- read.csv("gpsl_kid_fbs.csv")
-gpnc_kid_fbs <- read.csv("gpnc_kid_fbs.csv")
-ridge_kid_fbs <- read.csv("ridge_kid_fbs.csv")
-rand_kid_fbs <- read.csv("random_kid_fbs.csv")
-true_kid_fbs <- read.csv("true_kid_fbs.csv")
-vec_kid_fbs <- read.csv("vec22_kid_fbs.csv")
-lot_adult_fbs <- read.csv("lot_new_adult_fbs.csv")
-gpsl_adult_fbs <- read.csv("gpsl_adult_fbs.csv")
-gpnc_adult_fbs <- read.csv("gpnc_adult_fbs.csv")
-ridge_adult_fbs <- read.csv("ridge_adult_fbs.csv")
-rand_adult_fbs <- read.csv("random_adult_fbs.csv")
-true_adult_fbs <- read.csv("true_adult_fbs.csv")
-vec_adult_fbs <- read.csv("vec22_adult_fbs.csv")
-lot_monkey_fbs <- read.csv("lot_monkey_fbs.csv")
-gpsl_monkey_fbs <- read.csv("gpsl_monkey_fbs.csv")
-gpnc_monkey_fbs <- read.csv("gpnc_monkey_fbs.csv")
-ridge_monkey_fbs <- read.csv("ridge_monkey_fbs.csv")
-rand_monkey_fbs <- read.csv("random_monkey_fbs.csv")
-true_monkey_fbs <- read.csv("true_monkey_fbs.csv")
-vec_monkey_fbs <- read.csv("vec2_monkey_fbs.csv")
-```
-
-```{r}
-vec1_monkey_fbs <- read.csv("vec1_monkey_fbs.csv")
-print(mean(vec1_monkey_fbs$LL, na.rm=T))
-```
-```{r}
-ggplot() +
-  geom_point(data=gpnc_monkey_fbs, aes(x=tpt, y=LL), color="blue", size=0.5, alpha=0.5) +
-  geom_point(data=gpnc_adult_fbs, aes(x=tpt, y=LL), color="turquoise", size=0.5, alpha=0.5) +
-  coord_cartesian(ylim=c(-10,2)) +
-  facet_wrap(~func.name)
-```
-###Analyses
-
-##
-#Plot LLs of data by model, grouped within func/kid/tpt
-##
-
-```{r, message=F}
-library(forcats)
-rand_kid_fbs <- rand_kid_fbs %>% mutate(o_sd = NA, l_p = NA)
-true_kid_fbs <- true_kid_fbs %>% mutate(o_sd = NA, l_p = NA)
-all_kid_fbs <- rbind(lot_kid_fbs%>%mutate(model="LoT"), gpsl_kid_fbs%>%mutate(model="GPSL"), gpnc_kid_fbs%>%mutate(model="GPNC"), ridge_kid_fbs%>%mutate(model="Ridge"), rand_kid_fbs %>%mutate(model="random"), true_kid_fbs %>%mutate(model="true"))
-#ggplot() + 
-#  geom_boxplot(data=all_kid, aes(x=model, y=LL, color=model)) + ylim(-10,5) + ggtitle('distribution of mean LL, kids')
-
-all_kid_fbs_grouped <- all_kid_fbs %>% group_by(subj_id, model) %>% summarize(LL_sum = sum(LL, na.rm=TRUE), LL_mean = mean(LL, na.rm = TRUE), age=mean(age))
-
-#first group by subj, and func, compute mean, then take mean of that by func
-all_kid_fbs_grouped <- all_kid_fbs %>% group_by(subj_id, func.name, model) %>% summarize(LL_mean_subj_func = mean(LL, na.rm = TRUE), age=mean(age)) %>% ungroup() %>% group_by(subj_id, model) %>% summarize(LL_mean = mean(LL_mean_subj_func, na.rm=TRUE), age=mean(age)) %>% ungroup() %>% group_by(model) %>% mutate(LL_mean_model = mean(LL_mean)) %>% ungroup()
-library(forcats)
-all_kid_fbs_grouped <- arrange(all_kid_fbs_grouped, LL_mean_model)
-ggplot(data=all_kid_fbs_grouped, aes(x=fct_rev(reorder(model, LL_mean_model)), y=LL_mean)) +
-  geom_path(aes(group=subj_id, color=age), alpha=0.5) +
-  geom_dotplot(aes(fill=age, color=age), binaxis = "y", stackdir = "center", dotsize = 0.5) +
-  scale_color_gradient(low = "blue", high = "red") +
-  stat_summary(fun = mean, geom = "point", shape = 8, size = 2, stroke=1,color = "gold", position = "dodge") + theme_light()
-
-median((all_kid_fbs_grouped%>%filter(model=="GPSL"))$LL_mean, na.rm=TRUE)
-median((all_kid_fbs_grouped%>%filter(model=="GPNC"))$LL_mean, na.rm=TRUE)
-median((all_kid_fbs_grouped%>%filter(model=="LoT"))$LL_mean, na.rm=TRUE)
-median((all_kid_fbs_grouped%>%filter(model=="Ridge"))$LL_mean, na.rm=TRUE)
-mean((all_kid_fbs_grouped%>%filter(model=="GPSL"))$LL_mean, na.rm=TRUE)
-mean((all_kid_fbs_grouped%>%filter(model=="GPNC"))$LL_mean, na.rm=TRUE)
-mean((all_kid_fbs_grouped%>%filter(model=="LoT"))$LL_mean, na.rm=TRUE)
-mean((all_kid_fbs_grouped%>%filter(model=="Ridge"))$LL_mean, na.rm=TRUE)
-```
-
-
-#Stats
-##Adults
-```{r}
-all_fbs <- bind_rows(lot_adult_fbs%>%mutate(model="LoT"), gpsl_adult_fbs%>%mutate(model="GPSL"), gpnc_adult_fbs%>%mutate(model="GPNC"), ridge_adult_fbs%>%mutate(model="Ridge"), rand_adult_fbs%>%mutate(model="Prev pt"), true_adult_fbs%>%mutate(model="True pt"), vec_adult_fbs%>%mutate(model="Lin."))
-all_fbs_grouped <- all_fbs %>%
-                  group_by(model) %>%
-                  mutate(sum_LL = sum(LL)) %>%
-                  group_by(subj_id, func.name, model) %>%
-                  summarize(LL_mean = mean(LL, na.rm = TRUE), sum_LL = mean(sum_LL), o_sd = mean(o_sd), l_sd = mean(l_sd), l_p = mean(l_p)) %>%
-                  ungroup() %>%
-                  group_by(subj_id, model) %>%
-                  summarize(LL_mean = mean(LL_mean, na.rm=TRUE), sum_LL = mean(sum_LL), o_sd = mean(o_sd), l_sd = mean(l_sd), l_p = mean(l_p)) %>%
-                  ungroup() %>%
-                  group_by(model) %>%
-                  mutate(LL_mean_model = mean(LL_mean), sum_LL = mean(sum_LL), o_sd_mean = mean(o_sd), l_sd_mean = mean(l_sd), l_p_mean = mean(l_p))
-
-all_fbs_model <- all_fbs_grouped %>% group_by(model) %>% summarize(sum_LL=mean(sum_LL), LL_mean_model=mean(LL_mean_model), o_sd_mean=mean(o_sd_mean), l_sd_mean=mean(l_sd_mean), l_p_mean=mean(l_p_mean))
-n_subjs = length(unique(all_fbs_grouped$subj_id))
-all_fbs_model <- all_fbs_model %>% group_by(model) %>% mutate(n_params = ifelse(model%in%c("Prev pt", "True pt"), n_subjs, n_subjs*3)) %>% mutate(AIC = (2*n_params) - (2*sum_LL)) %>% ungroup() %>% mutate(delta_AIC = AIC - min(AIC))
-top <- all_fbs_grouped %>%
-  group_by(subj_id) %>%
-  slice_max(order_by = LL_mean) %>%
-  ungroup()
-print(table(top$model))
-```
-##Kids
-```{r}
-#for each model, we want mean LL by subj, 
-all_fbs <- bind_rows(lot_kid_fbs%>%mutate(model="LoT"), gpsl_kid_fbs%>%mutate(model="GPSL"), gpnc_kid_fbs%>%mutate(model="GPNC"), ridge_kid_fbs%>%mutate(model="Ridge"), rand_kid_fbs%>%mutate(model="Prev pt"), true_kid_fbs%>%mutate(model="True pt"), vec_kid_fbs%>%mutate(model="Lin."))
-all_fbs_grouped <- all_fbs %>%
-                  group_by(model) %>%
-                  mutate(sum_LL = sum(LL, na.rm=T)) %>%
-                  group_by(subj_id, func.name, model) %>%
-                  summarize(LL_mean = mean(LL, na.rm = TRUE), sum_LL = mean(sum_LL), o_sd = mean(o_sd), l_sd = mean(l_sd), l_p = mean(l_p)) %>%
-                  ungroup() %>%
-                  group_by(subj_id, model) %>%
-                  summarize(LL_mean = mean(LL_mean, na.rm=TRUE), sum_LL = mean(sum_LL), o_sd = mean(o_sd), l_sd = mean(l_sd), l_p = mean(l_p)) %>%
-                  ungroup() %>%
-                  group_by(model) %>%
-                  mutate(LL_mean_model = mean(LL_mean), sum_LL = mean(sum_LL), o_sd_mean = mean(o_sd), l_sd_mean = mean(l_sd), l_p_mean = mean(l_p))
-
-all_fbs_model <- all_fbs_grouped %>% group_by(model) %>% summarize(sum_LL=mean(sum_LL), LL_mean_model=mean(LL_mean_model), o_sd_mean=mean(o_sd_mean), l_sd_mean=mean(l_sd_mean), l_p_mean=mean(l_p_mean))
-n_subjs = length(unique(all_fbs_grouped$subj_id))
-all_fbs_model <- all_fbs_model %>% group_by(model) %>% mutate(n_params = ifelse(model%in%c("Prev pt", "True pt"), n_subjs, n_subjs*3)) %>% mutate(AIC = (2*n_params) - (2*sum_LL)) %>% ungroup() %>% mutate(delta_AIC = AIC - min(AIC))
-top <- all_fbs_grouped %>%
-  group_by(subj_id) %>%
-  slice_max(order_by = LL_mean) %>%
-  ungroup()
-print(table(top$model)/n_subjs)
-```
-##Monkeys
-```{r}
-#for each model, we want mean LL by subj, 
-all_fbs <- bind_rows(lot_monkey_fbs%>%mutate(model="LoT"), gpsl_monkey_fbs%>%mutate(model="GPSL"), gpnc_monkey_fbs%>%mutate(model="GPNC"), ridge_monkey_fbs%>%mutate(model="Ridge"), rand_monkey_fbs%>%mutate(model="Prev pt"), true_monkey_fbs%>%mutate(model="True pt"), vec_monkey_fbs%>%mutate(model="Lin."))
-all_fbs_grouped <- all_fbs %>%
-                  group_by(model) %>%
-                  mutate(sum_LL = sum(LL, na.rm=T)) %>%
-                  group_by(subj_id, func.name, model) %>%
-                  summarize(LL_mean = mean(LL, na.rm = TRUE), sum_LL = mean(sum_LL), o_sd = mean(o_sd), l_sd = mean(l_sd), l_p = mean(l_p)) %>%
-                  ungroup() %>%
-                  group_by(subj_id, model) %>%
-                  summarize(LL_mean = mean(LL_mean, na.rm=TRUE), sum_LL = mean(sum_LL), o_sd = mean(o_sd), l_sd = mean(l_sd), l_p = mean(l_p)) %>%
-                  ungroup() %>%
-                  group_by(model) %>%
-                  mutate(LL_mean_model = mean(LL_mean), sum_LL = mean(sum_LL), o_sd_mean = mean(o_sd), l_sd_mean = mean(l_sd), l_p_mean = mean(l_p))
-
-all_fbs_model <- all_fbs_grouped %>% group_by(model) %>% summarize(sum_LL=mean(sum_LL), LL_mean_model=mean(LL_mean_model), o_sd_mean=mean(o_sd_mean), l_sd_mean=mean(l_sd_mean), l_p_mean=mean(l_p_mean))
-n_subjs = length(unique(all_fbs_grouped$subj_id))
-all_fbs_model <- all_fbs_model %>% group_by(model) %>% mutate(n_params = ifelse(model%in%c("Prev pt", "True pt"), n_subjs, n_subjs*3)) %>% mutate(AIC = (2*n_params) - (2*sum_LL)) %>% ungroup() %>% mutate(delta_AIC = AIC - min(AIC))
-top <- all_fbs_grouped %>%
-  group_by(subj_id) %>%
-  slice_max(order_by = LL_mean) %>%
-  ungroup()
-print(table(top$model))
-#print(table(top$model)/n_subjs)
-```
-
-```{r}
-#for each model, we want mean LL by subj, 
-all_fbs <- bind_rows(lot_monkey_fbs%>%mutate(model="LoT"), gpsl_monkey_fbs%>%mutate(model="GPSL"), gpnc_monkey_fbs%>%mutate(model="GPNC"), ridge_monkey_fbs%>%mutate(model="Ridge"), rand_monkey_fbs%>%mutate(model="Prev pt"), true_monkey_fbs%>%mutate(model="True pt"), vec_monkey_fbs%>%mutate(model="Lin.")) %>% filter(subj_id == "BP24")
-all_fbs_grouped <- all_fbs %>%
-                  group_by(model) %>%
-                  mutate(sum_LL = sum(LL, na.rm=T)) %>%
-                  #group_by(subj_id, r_id, func.name, model) %>%
-                  #summarize(LL_mean = mean(LL, na.rm = TRUE), sum_LL = mean(sum_LL), o_sd = mean(o_sd), l_sd = mean(l_sd), l_p = mean(l_p)) %>%
-                  #ungroup() %>%
-                #group_by(subj_id, func.name, model) %>%
-                    #summarize(LL_mean = mean(LL_mean, na.rm = TRUE), sum_LL = mean(sum_LL), o_sd = mean(o_sd), l_sd = mean(l_sd), l_p = mean(l_p)) %>%
-                  #ungroup() %>%
-                  #group_by(subj_id, model) %>%
-                  #summarize(LL_mean = mean(LL_mean, na.rm=TRUE), sum_LL = mean(sum_LL), o_sd = mean(o_sd), l_sd = mean(l_sd), l_p = mean(l_p)) %>%
-                  group_by(subj_id, model) %>%
-                  summarize(LL_mean = mean(LL, na.rm=TRUE), sum_LL = mean(sum_LL), o_sd = mean(o_sd), l_sd = mean(l_sd), l_p = mean(l_p)) %>%
-                  ungroup() %>%
-                  group_by(model) %>%
-                  mutate(LL_mean_model = mean(LL_mean), sum_LL = mean(sum_LL), o_sd_mean = mean(o_sd), l_sd_mean = mean(l_sd), l_p_mean = mean(l_p))
-
-all_fbs_model <- all_fbs_grouped %>% group_by(model) %>% summarize(sum_LL=mean(sum_LL), LL_mean_model=mean(LL_mean_model), o_sd_mean=mean(o_sd_mean), l_sd_mean=mean(l_sd_mean), l_p_mean=mean(l_p_mean))
-n_subjs = length(unique(all_fbs_grouped$subj_id))
-all_fbs_model_bp24 <- all_fbs_model %>% group_by(model) %>% mutate(n_params = ifelse(model%in%c("Prev pt", "True pt"), n_subjs, n_subjs*3)) %>% mutate(AIC = (2*n_params) - (2*sum_LL)) %>% ungroup() %>% mutate(delta_AIC = AIC - min(AIC))
-top <- all_fbs_grouped %>%
-  group_by(subj_id) %>%
-  slice_max(order_by = LL_mean) %>%
-  ungroup()
-print(table(top$model))
-```
-
-#same for adults
-```{r, message=F}
-lot_adult_fbs <- read.csv("lot_adult_fbs.csv")
-all_fbs <- bind_rows(lot_adult_fbs%>%mutate(model="LoT"), gpsl_adult_fbs%>%mutate(model="GPSL"), gpnc_adult_fbs%>%mutate(model="GPNC"), ridge_adult_fbs%>%mutate(model="Ridge"), rand_adult_fbs%>%mutate(model="Prev pt"), true_adult_fbs%>%mutate(model="True pt"), vec_adult_fbs%>%mutate(model="Lin."))
-#ggplot() + 
-#  geom_boxplot(data=all_kid, aes(x=model, y=LL, color=model)) + ylim(-10,5) + ggtitle('distribution of mean LL, kids')
-#all_fbs_grouped <- all_fbs %>% group_by(subj_id, model) %>% summarize(LL_sum = sum(LL, na.rm=TRUE), LL_mean = mean(LL, na.rm = TRUE))
-#first group by subj, and func, compute mean, then take mean of that by func
-all_fbs_grouped <- all_fbs %>% group_by(subj_id, func.name, model) %>% summarize(LL_mean_subj_func = mean(LL, na.rm = TRUE)) %>% ungroup() %>% group_by(subj_id, model) %>% summarize(LL_mean = mean(LL_mean_subj_func, na.rm=TRUE)) %>% ungroup() %>% group_by(model) %>% mutate(LL_mean_model = mean(LL_mean))
-all_fbs_grouped <- arrange(all_fbs_grouped, LL_mean_model)
-ggplot(data=all_fbs_grouped, aes(x=fct_rev(reorder(model, LL_mean_model)), y=LL_mean)) +
-  geom_dotplot(aes(fill=model), binaxis = "y", stackdir = "center", dotsize = 0.5) +
-  stat_summary(fun = mean, geom = "point", shape = 8, size = 2, stroke=1,color = "gold", position = "dodge") + theme_light()
-
-mean((all_kid_fbs%>%filter(model=="GPSL"))$LL_mean, na.rm=TRUE)
-mean((all_kid_fbs_grouped%>%filter(model=="GPNC"))$LL_mean, na.rm=TRUE)
-mean((all_kid_fbs_grouped%>%filter(model=="LoT"))$LL_mean, na.rm=TRUE)
-mean((all_kid_fbs_grouped%>%filter(model=="Ridge"))$LL_mean, na.rm=TRUE)
-sum((all_kid_fbs%>%filter(model=="GPSL"))$LL_mean, na.rm=TRUE)
-sum((all_kid_fbs%>%filter(model=="GPNC"))$LL_mean, na.rm=TRUE)
-sum((all_kid_fbs%>%filter(model=="LoT"))$LL_mean, na.rm=TRUE)
-sum((all_kid_fbs%>%filter(model=="Ridge"))$LL_mean, na.rm=TRUE)
-
-#for each subject, 
-result <- all_fbs_grouped %>%
-  group_by(subj_id) %>%
-  slice_max(order_by = LL_mean, n=2) %>%
-  ungroup()
-table(result$model)
-```
-#KIDS
-```{r, message=F}
-all_fbs <- bind_rows(lot_kid_fbs%>%mutate(model="LoT"), gpsl_kid_fbs%>%mutate(model="GPSL"), gpnc_kid_fbs%>%mutate(model="GPNC"), ridge_kid_fbs%>%mutate(model="Ridge"), rand_kid_fbs%>%mutate(model="Prev pt"), true_kid_fbs%>%mutate(model="True pt"), vec_kid_fbs%>%mutate(model="Lin."))
-#ggplot() + 
-#  geom_boxplot(data=all_kid, aes(x=model, y=LL, color=model)) + ylim(-10,5) + ggtitle('distribution of mean LL, kids')
-#all_fbs_grouped <- all_fbs %>% group_by(subj_id, model) %>% summarize(LL_sum = sum(LL, na.rm=TRUE), LL_mean = mean(LL, na.rm = TRUE))
-#first group by subj, and func, compute mean, then take mean of that by func
-all_fbs_grouped <- all_fbs %>% group_by(subj_id, func.name, model) %>% summarize(LL_mean_subj_func = mean(LL, na.rm = TRUE)) %>% ungroup() %>% group_by(subj_id, model) %>% summarize(LL_mean = mean(LL_mean_subj_func, na.rm=TRUE)) %>% ungroup() %>% group_by(model) %>% mutate(LL_mean_model = mean(LL_mean))
-all_fbs_grouped <- arrange(all_fbs_grouped, LL_mean_model)
-ggplot(data=all_fbs_grouped, aes(x=fct_rev(reorder(model, LL_mean_model)), y=LL_mean)) +
-  geom_path(aes(group=subj_id), alpha=0.5) +
-  geom_dotplot(aes(fill=model), binaxis = "y", stackdir = "center", dotsize = 0.5) +
-  stat_summary(fun = mean, geom = "point", shape = 8, size = 2, stroke=1,color = "gold", position = "dodge") + theme_light()
-
-mean((all_kid_fbs%>%filter(model=="GPSL"))$LL_mean, na.rm=TRUE)
-mean((all_kid_fbs_grouped%>%filter(model=="GPNC"))$LL_mean, na.rm=TRUE)
-mean((all_kid_fbs_grouped%>%filter(model=="LoT"))$LL_mean, na.rm=TRUE)
-mean((all_kid_fbs_grouped%>%filter(model=="Ridge"))$LL_mean, na.rm=TRUE)
-sum((all_kid_fbs%>%filter(model=="GPSL"))$LL_mean, na.rm=TRUE)
-sum((all_kid_fbs%>%filter(model=="GPNC"))$LL_mean, na.rm=TRUE)
-sum((all_kid_fbs%>%filter(model=="LoT"))$LL_mean, na.rm=TRUE)
-sum((all_kid_fbs%>%filter(model=="Ridge"))$LL_mean, na.rm=TRUE)
-result <- all_fbs_grouped %>%
-  group_by(subj_id) %>%
-  slice_max(order_by = LL_mean) %>%
-  ungroup()
-table(result$model)
-```
-
-#MONKEYS
-```{r, message=F}
-all_fbs <- bind_rows(lot_monkey_fbs%>%mutate(model="LoT"), gpsl_monkey_fbs%>%mutate(model="GPSL"), gpnc_monkey_fbs%>%mutate(model="GPNC"), ridge_monkey_fbs%>%mutate(model="Ridge"), rand_monkey_fbs%>%mutate(model="Prev pt"), true_monkey_fbs%>%mutate(model="True pt"), vec_monkey_fbs%>%mutate(model="Lin."))
-#ggplot() + 
-#  geom_boxplot(data=all_kid, aes(x=model, y=LL, color=model)) + ylim(-10,5) + ggtitle('distribution of mean LL, kids')
-#all_fbs_grouped <- all_fbs %>% group_by(subj_id, model) %>% summarize(LL_sum = sum(LL, na.rm=TRUE), LL_mean = mean(LL, na.rm = TRUE))
-#first group by subj, and func, compute mean, then take mean of that by func
-all_fbs_grouped <- all_fbs %>% group_by(subj_id, func.name, model) %>% summarize(LL_mean_subj_func = mean(LL, na.rm = TRUE)) %>% ungroup() %>% group_by(subj_id, model) %>% summarize(LL_mean = mean(LL_mean_subj_func, na.rm=TRUE)) %>% ungroup() %>% group_by(model) %>% mutate(LL_mean_model = mean(LL_mean))
-all_fbs_grouped <- arrange(all_fbs_grouped, LL_mean_model)
-ggplot(data=all_fbs_grouped, aes(x=fct_rev(reorder(model, LL_mean_model)), y=LL_mean)) +
-  geom_dotplot(aes(fill=model), binaxis = "y", stackdir = "center", dotsize = 0.5) +
-  stat_summary(fun = mean, geom = "point", shape = 8, size = 2, stroke=1,color = "gold", position = "dodge") + theme_light()
-
-mean((all_fbs%>%filter(model=="GPSL"))$LL_mean, na.rm=TRUE)
-mean((all_fbs_grouped%>%filter(model=="GPNC"))$LL_mean, na.rm=TRUE)
-mean((all_fbs_grouped%>%filter(model=="LoT"))$LL_mean, na.rm=TRUE)
-mean((all_fbs_grouped%>%filter(model=="Ridge"))$LL_mean, na.rm=TRUE)
-sum((all_fbs%>%filter(model=="GPSL"))$LL_mean, na.rm=TRUE)
-sum((all_fbs%>%filter(model=="GPNC"))$LL_mean, na.rm=TRUE)
-sum((all_fbs%>%filter(model=="LoT"))$LL_mean, na.rm=TRUE)
-sum((all_fbs%>%filter(model=="Ridge"))$LL_mean, na.rm=TRUE)
-
-result <- all_fbs_grouped %>%
-  group_by(subj_id) %>%
-  slice_max(order_by = LL_mean) %>%
-  ungroup()
-table(result$model)
-```
-
-
-```{r}
-t.test(exp((all_kid_fbs_grouped%>%filter(model=="GPSL"))$LL_mean), exp((all_kid_fbs_grouped%>%filter(model=="GPNC"))$LL_mean))
-```
-
-```{r, message=FALSE}
-#grouped by subj
-lot_grouped <- lot_kid %>% group_by(subj_id) %>% summarize(lot_LL = sum(LL, na.rm=TRUE), lot_LL_mean = mean(LL, na.rm = TRUE))
-gpsl_grouped <- gpsl_kid %>% group_by(subj_id) %>% summarize(gpsl_LL = sum(LL, na.rm=TRUE), gpsl_LL_mean = mean(LL, na.rm = TRUE))
-gpnc_grouped <- gpnc_kid %>% group_by(subj_id) %>% summarize(gpnc_LL = sum(LL, na.rm=TRUE), gpnc_LL_mean = mean(LL, na.rm = TRUE))
-ridge_grouped <- ridge_kid %>% group_by(subj_id) %>% summarize(ridge_LL = sum(LL, na.rm=TRUE), ridge_LL_mean = mean(LL, na.rm = TRUE))
-grouped_wide <- merge(lot_grouped, gpsl_grouped, by="subj_id")
-grouped_wide <- merge(grouped_wide, gpnc_grouped, by="subj_id")
-grouped_wide <- merge(grouped_wide, ridge_grouped, by="subj_id")
-
-lot_grouped_adult <- lot_adult %>% group_by(subj_id) %>% summarize(lot_LL = sum(LL, na.rm=TRUE), lot_LL_mean = mean(LL, na.rm = TRUE))
-gpsl_grouped_adult <- gpsl_adult %>% group_by(subj_id) %>% summarize(gpsl_LL = sum(LL, na.rm=TRUE), gpsl_LL_mean = mean(LL, na.rm = TRUE))
-gpnc_grouped_adult <- gpnc_adult %>% group_by(subj_id) %>% summarize(gpnc_LL = sum(LL, na.rm=TRUE), gpnc_LL_mean = mean(LL, na.rm = TRUE))
-ridge_grouped_adult <- ridge_adult %>% group_by(subj_id) %>% summarize(ridge_LL = sum(LL, na.rm=TRUE), ridge_LL_mean = mean(LL, na.rm = TRUE))
-grouped_wide_adult <- merge(lot_grouped_adult, gpsl_grouped_adult, by="subj_id")
-grouped_wide_adult <- merge(grouped_wide_adult, gpnc_grouped_adult, by="subj_id")
-grouped_wide_adult <- merge(grouped_wide_adult, ridge_grouped_adult, by="subj_id")
-```
-
-```{r}
-#group by subj 
-lot_grouped <- lot_kid %>% group_by(subj_id) %>% summarize(LL_sum = sum(LL, na.rm=TRUE), LL_mean = mean(LL, na.rm = TRUE), age = mean(age)) %>% mutate(model = "LoT")
-gpsl_grouped <- gpsl_kid %>% group_by(subj_id) %>% summarize(LL_sum = sum(LL, na.rm=TRUE), LL_mean = mean(LL, na.rm = TRUE), age = mean(age)) %>% mutate(model = "GPSL")
-gpnc_grouped <- gpnc_kid %>% group_by(subj_id) %>% summarize(LL_sum = sum(LL, na.rm=TRUE), LL_mean = mean(LL, na.rm = TRUE), age = mean(age)) %>% mutate(model = "GPNC")
-ridge_grouped <- ridge_kid %>% group_by(subj_id) %>% summarize(LL_sum = sum(LL, na.rm=TRUE), LL_mean = mean(LL, na.rm = TRUE), age = mean(age)) %>% mutate(model = "Ridge")
-grouped_kid <- rbind(lot_grouped, gpsl_grouped, gpnc_grouped, ridge_grouped)
-grouped_kid <- grouped_kid %>%
-              group_by(subj_id) %>%
-              mutate(scaled_LL_sum = scale(LL_sum)[, 1]) %>%
-              mutate(scaled_LL_mean = scale(LL_mean)[, 1]) %>%
-              ungroup()
-
-lot_grouped <- lot_adult %>% group_by(subj_id) %>% summarize(LL_sum = sum(LL, na.rm=TRUE), LL_mean = mean(LL, na.rm = TRUE)) %>% mutate(model = "LoT")
-gpsl_grouped <- gpsl_adult %>% group_by(subj_id) %>% summarize(LL_sum = sum(LL, na.rm=TRUE), LL_mean = mean(LL, na.rm = TRUE)) %>% mutate(model = "GPSL")
-gpnc_grouped <- gpnc_adult %>% group_by(subj_id) %>% summarize(LL_sum = sum(LL, na.rm=TRUE), LL_mean = mean(LL, na.rm = TRUE)) %>% mutate(model = "GPNC")
-ridge_grouped <- ridge_adult %>% group_by(subj_id) %>% summarize(LL_sum = sum(LL, na.rm=TRUE), LL_mean = mean(LL, na.rm = TRUE)) %>% mutate(model = "Ridge")
-grouped_adult <- rbind(lot_grouped, gpsl_grouped, gpnc_grouped, ridge_grouped)
-grouped_adult <- grouped_adult %>%
-                group_by(subj_id) %>%
-                mutate(scaled_LL_sum = scale(LL_sum)[, 1]) %>%
-                mutate(scaled_LL_mean = scale(LL_mean)[, 1]) %>%
-                ungroup()
-```
-
-```{r}
-#LL for each kid
-
-ggplot() +
-  geom_point(data=grouped_kid, aes(x=reorder(subj_id, age), y=scaled_LL_mean, color=model), alpha=0.8) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-```
-
-```{r}
-#LL for each adult
-ggplot() +
-  geom_point(data=grouped_adult, aes(x=subj_id, y=scaled_LL_mean, color=model), alpha=0.8) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-```
-
-
-```{r, message=FALSE}
-#group by func 
-lot_grouped <- lot_kid %>% group_by(func.name) %>% summarize(LL_sum = sum(LL, na.rm=TRUE), LL_mean = mean(LL, na.rm = TRUE)) %>% mutate(model = "LoT")
-gpsl_grouped <- gpsl_kid %>% group_by(func.name) %>% summarize(LL_sum = sum(LL, na.rm=TRUE), LL_mean = mean(LL, na.rm = TRUE)) %>% mutate(model = "GPSL")
-gpnc_grouped <- gpnc_kid %>% group_by(func.name) %>% summarize(LL_sum = sum(LL, na.rm=TRUE), LL_mean = mean(LL, na.rm = TRUE)) %>% mutate(model = "GPNC")
-ridge_grouped <- ridge_kid %>% group_by(func.name) %>% summarize(LL_sum = sum(LL, na.rm=TRUE), LL_mean = mean(LL, na.rm = TRUE)) %>% mutate(model = "Ridge")
-grouped_kid_by_func <- rbind(lot_grouped, gpsl_grouped, gpnc_grouped, ridge_grouped)
-grouped_kid_by_func <- grouped_kid_by_func %>%
-              group_by(func.name) %>%
-              mutate(scaled_LL_sum = scale(LL_sum)[, 1]) %>%
-              mutate(scaled_LL_mean = scale(LL_mean)[, 1]) %>%
-              ungroup()
-
-lot_grouped <- lot_adult %>% group_by(func.name) %>% summarize(LL_sum = sum(LL, na.rm=TRUE), LL_mean = mean(LL, na.rm = TRUE)) %>% mutate(model = "LoT")
-gpsl_grouped <- gpsl_adult %>% group_by(func.name) %>% summarize(LL_sum = sum(LL, na.rm=TRUE), LL_mean = mean(LL, na.rm = TRUE)) %>% mutate(model = "GPSL")
-gpnc_grouped <- gpnc_adult %>% group_by(func.name) %>% summarize(LL_sum = sum(LL, na.rm=TRUE), LL_mean = mean(LL, na.rm = TRUE)) %>% mutate(model = "GPNC")
-ridge_grouped <- ridge_adult %>% group_by(func.name) %>% summarize(LL_sum = sum(LL, na.rm=TRUE), LL_mean = mean(LL, na.rm = TRUE)) %>% mutate(model = "Ridge")
-grouped_adult_by_func <- rbind(lot_grouped, gpsl_grouped, gpnc_grouped, ridge_grouped)
-grouped_adult_by_func <- grouped_adult_by_func %>%
-                group_by(func.name) %>%
-                mutate(scaled_LL_sum = scale(LL_sum)[, 1]) %>%
-                mutate(scaled_LL_mean = scale(LL_mean)[, 1]) %>%
-                ungroup()
-```
-
-```{r, message=FALSE}
-#if we first average within each kid
-print("mean within subj, kids")
-mean((grouped_kid%>%filter(model=="GPSL"))$LL_mean, na.rm=TRUE)
-mean((grouped_kid%>%filter(model=="GPNC"))$LL_mean, na.rm=TRUE)
-mean((grouped_kid%>%filter(model=="Ridge"))$LL_mean, na.rm=TRUE)
-mean((grouped_kid%>%filter(model=="LoT"))$LL_mean, na.rm=TRUE)
-print("mean within subj, adults")
-mean((grouped_adult%>%filter(model=="GPSL"))$LL_mean, na.rm=TRUE)
-mean((grouped_adult%>%filter(model=="GPNC"))$LL_mean, na.rm=TRUE)
-mean((grouped_adult%>%filter(model=="Ridge"))$LL_mean, na.rm=TRUE)
-mean((grouped_adult%>%filter(model=="LoT"))$LL_mean, na.rm=TRUE)
-
-print("mean within func, kids")
-mean((grouped_kid_by_func%>%filter(model=="GPSL"))$LL_mean, na.rm=TRUE)
-mean((grouped_kid_by_func%>%filter(model=="GPNC"))$LL_mean, na.rm=TRUE)
-mean((grouped_kid_by_func%>%filter(model=="Ridge"))$LL_mean, na.rm=TRUE)
-mean((grouped_kid_by_func%>%filter(model=="LoT"))$LL_mean, na.rm=TRUE)
-print("mean within func, adults")
-mean((grouped_adult_by_func%>%filter(model=="GPSL"))$LL_mean, na.rm=TRUE)
-mean((grouped_adult_by_func%>%filter(model=="GPNC"))$LL_mean, na.rm=TRUE)
-mean((grouped_adult_by_func%>%filter(model=="Ridge"))$LL_mean, na.rm=TRUE)
-mean((grouped_adult_by_func%>%filter(model=="LoT"))$LL_mean, na.rm=TRUE)
-```
-
-#plot mean LLs by subj
-```{r}
-#plot by func type, each LL
-ggplot() + 
-  geom_boxplot(data=grouped_kid_by_func, aes(x=model, y=LL_mean, color=model)) + ggtitle('Distribution of mean LL by function, kids')
-
-```
-```{r}
-ggplot() + 
-  geom_boxplot(data=grouped_kid, aes(x=model, y=LL_mean, color=model)) + ggtitle('Distribution of mean LL by subject, kids')
-```
-#plot mean LLs by func
-```{r}
-#adults
-ggplot() + 
-  geom_boxplot(data=grouped_adult_by_func, aes(x=model, y=LL_mean, color=model)) + ggtitle('Distribution of mean LL by function, adults')
-```
-```{r}
-#kids
-ggplot() + 
-  geom_boxplot(data=grouped_adult, aes(x=model, y=LL_mean, color=model)) + ggtitle('Distribution of mean LL by subj, adults')
-```
-
-#Plot LLs of all datapoints
-```{r}
-all_kid <- rbind(lot_kid%>%mutate(model="LoT"), gpsl_kid%>%mutate(model="GPSL"), gpnc_kid%>%mutate(model="GPNC"), ridge_kid%>%mutate(model="Ridge"))
-#ggplot() + 
-#  geom_boxplot(data=all_kid, aes(x=model, y=LL, color=model)) + ylim(-10,5) + ggtitle('distribution of mean LL, kids')
-
-ggplot(data=grouped_kid, aes(x=model, y=LL_mean)) +
-  geom_dotplot(aes(fill=model), binaxis = "y", stackdir = "center", dotsize = 0.5) +
-  stat_summary(fun = mean, geom = "point", shape = 8, size = 2, stroke=1,color = "gold", position = "dodge") + theme_light()
-
-median((all_kid%>%filter(model=="GPSL"))$LL, na.rm=TRUE)
-median((all_kid%>%filter(model=="GPNC"))$LL, na.rm=TRUE)
-median((all_kid%>%filter(model=="LoT"))$LL, na.rm=TRUE)
-median((all_kid%>%filter(model=="Ridge"))$LL, na.rm=TRUE)
-mean((all_kid%>%filter(model=="GPSL"))$LL, na.rm=TRUE)
-mean((all_kid%>%filter(model=="GPNC"))$LL, na.rm=TRUE)
-mean((all_kid%>%filter(model=="LoT"))$LL, na.rm=TRUE)
-mean((all_kid%>%filter(model=="Ridge"))$LL, na.rm=TRUE)
-```
-
-```{r}
-all_adult <- rbind(lot_adult%>%mutate(model="LoT"), gpsl_adult%>%mutate(model="GPSL"), gpnc_adult%>%mutate(model="GPNC"), ridge_adult%>%mutate(model="Ridge"))
-ggplot() + 
-  geom_boxplot(data=all_adult, aes(x=model, y=LL, color=model))  + ggtitle('distribution of mean LL, adults')
-```
-
-```{r}
-ggplot() + 
-  geom_boxplot(data=grouped_adult, aes(x=model, y=scaled_LL_mean, color=model))  + ggtitle('distribution of zscored LL within subj, by func, lot')
-```
-```{r}
-#LL for each kid
-ggplot() +
-  geom_point(data=grouped_kid_by_func, aes(x=func.name, y=scaled_LL_mean, color=model), alpha=0.8) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-```
-
-```{r}
-#LL for adults by func
-ggplot() +
-  geom_point(data=grouped_adult_by_func, aes(x=func.name, y=scaled_LL_mean, color=model), alpha=0.8) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-```
-```{r}
-#LL for kids by func
-ggplot() +
-  geom_point(data=grouped_kid_by_func, aes(x=func.name, y=scaled_LL_mean, color=model), alpha=0.8) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-```
-
-#Human err by age
-```{r}
-df_human <- df_kid %>% filter(!(func.name=="hourglass_1" & subj_id=="bpmhxv5wmp"))
-plot_df <- df_human %>%
-           group_by(func.name, subj_id) %>%
-           summarize(mean_norm_err_by_subj = mean(norm_abs_err, na.rm=T), age = mean(age)) %>%
-           ungroup() %>%
-           group_by(subj_id) %>%
-           summarize(mean_norm_err = mean(mean_norm_err_by_subj, na.rm=T), age = mean(age)) %>%
-           ungroup()
-
-ggplot(data=plot_df) +
-  geom_point(aes(x=age, y=mean_norm_err))
-     
-cor(plot_df$age, plot_df$mean_norm_err)
-```
-#are kids better described by certain models depending on their age?
-```{r}
-#for each kid, want mean LL under each model
-```
-
-
-
-
-#HUMAN VS MODEL ERROR!!!!!!!!!!
-```{r, message=F}
-get_model_data <- function(df_model,s_id, t,  model_type) {
-  s_id <- as.character(s_id[1])
-  t <- t[1]
-  #df_use <- subset(df_nclot_use, (df_nclot_use$n==t) & (df_nclot_use$func.name == s_id))
-  df_use <- subset(df_model, (df_model$n==t) & (as.character(df_model$func.name) == as.character(s_id)))
-    if (nrow(df_use) == 0) {
-    return(NA) 
-  } else {
-    #print(c(df_use$pred_x[1], df_use$std_x[1], df_use$pred_y[1], df_use$std_y[1]))
-    return(list(df_use$pred_x, df_use$std_x, df_use$pred_y, df_use$std_y, df_use$posterior, df_use$particle))
-    
+model_paths = c(lot_path, gpnc_path, gpsl_path, lin_path, ridge_path)
+models = c("lot", "gpnc", "gpsl", "lin", "ridge")
+participants = c('adult', 'kid', 'monkey')
+for (i in seq_along(models)) {
+  model_name <- models[i]
+  df_model <- preprocess_model(read.csv(model_paths[i]))
+  for (j in seq_along(participants)) {
+    if (participants[j] == 'adult') {
+      df_participant <- df_adult
+    } else if (participants[j] == 'kid') {
+      df_participant <- df_kid
+    } else if (participants[j] == 'monkey') {
+      df_participant <- df_monkey
+    } else {
+      x = 1/0
+    }
+    print(model_name)
+    print(participants[j])
+    out_file <- paste("model_fits/LLs/", model_name, "_", participants[j], ".csv", sep="")
+    compute_ll(df_model, df_human, out_file)
   }
 }
+```
 
-add_new_columns_grouped <- function(df,df_model, func, group_cols, model_type, new_col_names) {
-  # Number of times you want each row to be repeated
-  n_particle <- length(unique(df_model$particle))
-  
-  # Create a new data frame by repeating each row
-  df_expanded <- df %>% 
-    slice(rep(1:n(), n_particle)) %>%
-    group_by(id) %>%
-    mutate(particle = rep(1:n_particle))
-  df_expanded %>%
-    group_by(across(all_of(group_cols))) %>%
-    #summarize(result = list(func(!!sym(input_col))), .groups = 'drop') %>%
-    summarize(result = list(func(df_model,func.name, n, model_type)), .groups = 'drop') %>%
-    unnest_wider(result, names_sep = "_") %>%
-    setNames(., c(group_cols, new_col_names)) %>%
-    left_join(df, by = group_cols) 
-}
-
-process_df_model <- function(df_model) {
-  df_model$id <- seq.int(1,nrow(df_model))
-  df_model$n <- df_model$tpt
-  df_model$func.name <- df_model$seq_id
-  df_model$std_x <- df_model$sd_x
-  df_model$std_y <- df_model$sd_y
-  df_model$posterior <- df_model$score
-  df_model <- df_model %>%
-      filter(!is.na(pred_x)) %>%
-      rowwise() %>%
-      #mutate(nt_count = str_count(func, fixed("("))) %>%
-      mutate(err_x = pred_x - true_x) %>%
-      mutate(err_y = pred_y - true_y) %>%
-      group_by(func.name) %>%
-      filter(n > 0) %>%
-      mutate(range_x = max(true_x) - min(true_x)) %>%
-      mutate(range_y = max(true_y) - min(true_y)) %>%
-      mutate(mean_x = mean(true_x)) %>%
-      mutate(mean_y = mean(true_y)) %>%
-      group_by(func.name, n) %>%
-      mutate(posterior = exp(posterior)/sum(exp(posterior))) %>%
-      # mutate(pred_x = min(max(pred_x, mean_x - range_x,na.rm=TRUE), mean_x + range_x))%>%
-      # mutate(pred_y = min(max(pred_y, mean_y - range_y,na.rm=TRUE), mean_y + range_y)) %>%
-      ungroup() %>%
-      group_by(func.name) %>%
-      mutate(abs_err = ((true_x-pred_x)**2 + (true_y-pred_y)**2)**0.5) %>%
-      mutate(mean_abs_err = mean(abs_err, na.rm=TRUE))
-  return(df_model)
-}
+# Compute LL individually under true and prev_pt models
+```{r, echo=FALSE, message=FALSE}
+# fn_random <- function(pars) { 
+#   l_sd <- pars[1]
+#   sm <- 1e-10 
+#   df_result <- df_optim %>%
+#             filter(n > 2) %>%
+#             group_by(subj_id, func.name, n, r_id) %>%
+#             top_n(n=1,wt=model_particle) %>%
+#             mutate(p_data_x =  sm + (1-sm) * dnorm(pred_x, mean=prev_x, sd=l_sd)) %>%
+#             mutate(p_data_y =  sm + (1-sm) * dnorm(pred_y, mean=prev_y, sd=l_sd))
+#   ll <- sum(log(df_result$p_data_x), na.rm=TRUE) + sum(log(df_result$p_data_y), na.rm=TRUE) 
+#   return(-ll)
+# }
+# 
+# 
+# lapse_sd <- 3
+# kids_param_dict = list()
+# for(subj in unique(df_human_model$subj_id)) {
+#   df_optim <- df_human_model %>% filter(subj_id==subj)
+#   op_pars <- optim(c(lapse_sd), fn_random,
+#         method = "L-BFGS-B",
+#         lower = c(0.1), upper = c(10))
+#   pars <- op_pars$par
+#   print(subj)
+#   print(pars)
+#   kids_param_dict[[subj]] <- pars
+# }
+# sm <- 1e-10
+# 
+# l_sd <- pars[1]
+# df_result <- df_human_model %>%
+#             mutate(l_sd = sapply(subj_id, function(x) unlist(kids_param_dict[[x]])[1])) %>%
+#             filter(n > 2) %>%
+#             group_by(subj_id, func.name, n, r_id) %>%
+#             top_n(n=1,wt=model_particle) %>%
+#             mutate(p_data_x = dnorm(pred_x, mean=prev_x, sd=l_sd)) %>%
+#             mutate(p_data_y = dnorm(pred_y, mean=prev_y, sd=l_sd)) %>%
+#             mutate(LL = log(p_data_x) + log(p_data_y))
+# 
+#   ll <- sum(log(df_result$p_data_x), na.rm=TRUE) + sum(log(df_result$p_data_y), na.rm=TRUE)
+#   print(-ll)
+#   print(sum(df_result$LL))
+# 
+# write.csv(df_result, 'model_fits/LLs/random_kid.csv')
+# 
+# fn_true <- function(pars) { 
+#   l_sd <- pars[1]
+#   sm <- 1e-10 
+#   df_result <- df_optim %>%
+#             filter(n > 2) %>%
+#             group_by(subj_id, func.name, n, r_id) %>%
+#             top_n(n=1,wt=model_particle) %>%
+#             mutate(p_data_x = sm + (1-sm) * dnorm(pred_x, mean=true_x, sd=l_sd)) %>%
+#             mutate(p_data_y =  sm + (1-sm) * dnorm(pred_y, mean=true_y, sd=l_sd))
+#   ll <- sum(log(df_result$p_data_x), na.rm=TRUE) + sum(log(df_result$p_data_y), na.rm=TRUE) 
+#   return(-ll)
+# }
+# 
+# lapse_sd <- 3
+# kids_param_dict = list()
+# for(subj in unique(df_human_model$subj_id)) {
+#   df_optim <- df_human_model %>% filter(subj_id==subj)
+#   op_pars <- optim(c(lapse_sd), fn_true,
+#         method = "L-BFGS-B",
+#         lower = c(0.1), upper = c(10))
+#   pars <- op_pars$par
+#   print(subj)
+#   print(pars)
+#   kids_param_dict[[subj]] <- pars
+# }
+# sm <- 1e-10
+# 
+# 
+# # add motor error and lapse prob?
+# l_sd <- pars[1]
+# df_result <- df_human_model %>%
+#             mutate(l_sd = sapply(subj_id, function(x) unlist(kids_param_dict[[x]])[1])) %>%
+#             filter(n > 2) %>%
+#             group_by(subj_id, func.name, n, r_id) %>%
+#             top_n(n=1,wt=model_particle) %>%
+#             mutate(p_data_x = dnorm(pred_x, mean=true_x, sd=l_sd)) %>%
+#             mutate(p_data_y = dnorm(pred_y, mean=true_y, sd=l_sd)) %>%
+#             mutate(LL = log(p_data_x) + log(p_data_y))
+# 
+#   ll <- sum(log(df_result$p_data_x), na.rm=TRUE) + sum(log(df_result$p_data_y), na.rm=TRUE)
+#   print(-ll)
+#   print(sum(df_result$LL))
+# 
+# write.csv(df_result, 'model_fits/LLs/true_kid.csv')
 ```
 
 
-
-
-
-```{r, message=F, echo=F}
-df_human <- df_adult
-#df_human <- read.csv(paste(path, 'trials_cleaned.csv', sep=""))
-#df_human <- filter(df_human, func.name %in% unique(df_kid$func.name))
-df_lot <- process_df_model(df_lot) %>% filter(func.name != "zigzag_widening")
-df_human_lot <- add_new_columns_grouped(df_human,df_lot, get_model_data, c("func.name", "n"), "lot", c("lot_pred_x", "lot_std_x", "lot_pred_y", "lot_std_y", "lot_posterior", "lot_particle"))
-df_human_lot <- df_human_lot %>%
-             unnest(lot_pred_x, lot_pred_y, lot_std_x, lot_std_y, lot_posterior, lot_particle) %>%
-              mutate(lot_err_x = lot_pred_x - true_x) %>%
-              mutate(lot_err_y = lot_pred_y - true_y) %>%
-              mutate(lot_abs_err = (lot_err_x**2. + lot_err_y**2.)**0.5) %>%
-              mutate(lot_norm_abs_err = lot_abs_err/(true_dist))
-df_human_model <- df_human_lot
-
-df_human_model_sum <- df_human_model %>%
-                group_by(func.name, n) %>%
-                filter(n>2) %>%
-                mutate(pred_x = mean(pred_x)) %>%
-                mutate(pred_y = mean(pred_y)) %>%
-                mutate(err_x=mean(err_x)) %>%
-                mutate(err_y = mean(err_y)) %>%
-                mutate(abs_err = mean(abs_err)) %>%
-                mutate(norm_abs_err = mean(norm_abs_err)) %>%
-                group_by(func.name, n, subj_id) %>%
-                mutate(lot_pred_x = sum(lot_pred_x*lot_posterior)) %>%
-                mutate(lot_pred_y = sum(lot_pred_y*lot_posterior)) %>%
-                mutate(lot_err_x = sum(lot_err_x * lot_posterior)) %>%
-                mutate(lot_err_y = sum(lot_err_y * lot_posterior)) %>%
-                mutate(lot_abs_err = sum(lot_abs_err * lot_posterior)) %>%
-                mutate(lot_norm_abs_err = sum(lot_norm_abs_err * lot_posterior)) %>%
-                top_n(n=1, wt=lot_particle) %>%
-                mutate(norm_err_x = err_x/(true_dist+sm)) %>%
-                mutate(norm_err_y = err_y/(true_dist+sm)) %>%
-                mutate(lot_norm_err_x = lot_err_x/(true_dist)) %>%
-                mutate(lot_norm_err_y = lot_err_y/(true_dist))
-lot1 <- beta(lm(data=df_human_model_sum, norm_abs_err ~ lot_norm_abs_err))[8]
-temp <- df_human_model_sum %>% group_by(func.name, subj_id, tpt) %>% summarize(mod = mean(lot_norm_abs_err, na.rm=T), hum = mean(norm_abs_err, na.rm=T)) %>% ungroup() %>% group_by(func.name, subj_id) %>% summarize(mod = mean(mod), hum = mean(hum)) %>% ungroup() %>% group_by(func.name) %>% summarize(mod = mean(mod, na.rm=T), hum = mean(hum, na.rm=T))
-temp2 <- df_human_model_sum %>% group_by(func.name) %>% summarize(mod = mean(lot_norm_abs_err, na.rm=T), hum = mean(norm_abs_err, na.rm=T)) %>% ungroup()
-lot2 <- beta(lm(data=temp, hum ~ mod))[8]
-lot_temp <- temp
-# ggplot(data=temp, aes(x=mod, y=hum)) +
-#   geom_point() +
-#   geom_abline(linetype="dotted") +
-#   stat_smooth(method="lm",se=TRUE,alpha=0.1) +
-#   coord_cartesian(xlim=c(0,1.1), ylim=c(0,1.1))
-# ggplot(data=temp, aes(x=hum,y=mod , color="LoT")) +
-#         geom_abline(linetype="dotted") +
-#         stat_smooth(method="lm",se=TRUE,alpha=0.1) +
-#         stat_smooth(method="lm",se=FALSE) +
-#         geom_point(alpha=1,size=1.25) +
-#         annotate("text", x=0.18, y=0.95, label=expression(R^2 == 0.32), color = "black", size=8) +
-#         labs(x="Relative error (LoT)", y="Relative error (Human)") +
-#         coord_fixed(xlim=c(0,1.1), ylim=c(0,1.1), ratio = ) +
-#         #coord_cartesian(xlim=c(0,1.1), ylim=c(0,1.1)) +
-#         scale_color_manual(name="Who",values=c("black","darkred", "orange", "dodgerblue","darkgreen","pink"),  breaks=c("Human","GP-SL", "LoT", "GP-RBF","Ridge","3-degree"), labels=c("Human", "GP-SL","LoT", "GP-NC", "Ridge", "Ridge (3)")) +
-#         guides(color="none") +
-#         paper_theme
-
-
-df_gpsl_2 <- process_df_model(df_gpsl)
-df_human_gp <- add_new_columns_grouped(df_human,df_gpsl_2, get_model_data, c("func.name", "n"), "gp", c("gp_pred_x", "gp_std_x", "gp_pred_y", "gp_std_y", "gp_posterior", "gp_particle"))
-df_human_gp <- df_human_gp %>%
-             unnest(gp_pred_x, gp_pred_y, gp_std_x, gp_std_y, gp_posterior, gp_particle) %>%
-              mutate(gp_err_x = gp_pred_x - true_x) %>%
-              mutate(gp_err_y = gp_pred_y - true_y) %>%
-              mutate(gp_abs_err = (gp_err_x**2. + gp_err_y**2.)**0.5) %>%
-              mutate(gp_norm_abs_err = gp_abs_err/(true_dist))
-df_human_model <- df_human_gp
-df_human_model_sum <- df_human_model %>%
-                filter(n>2) %>%
-                group_by(func.name, n) %>%
-                mutate(pred_x = mean(pred_x)) %>%
-                mutate(pred_y = mean(pred_y)) %>%
-                mutate(err_x=mean(err_x)) %>%
-                mutate(err_y = mean(err_y)) %>%
-               mutate(abs_err = mean(abs_err)) %>%
-               mutate(norm_abs_err = mean(norm_abs_err)) %>%
-                group_by(func.name, n, subj_id) %>%
-                mutate(gp_pred_x = sum(gp_pred_x*gp_posterior)) %>%
-                mutate(gp_pred_y = sum(gp_pred_y*gp_posterior)) %>%
-                mutate(gp_err_x = sum(gp_err_x * gp_posterior)) %>%
-                mutate(gp_err_y = sum(gp_err_y * gp_posterior)) %>%
-                mutate(gp_abs_err = sum(gp_abs_err * gp_posterior)) %>%
-                mutate(gp_norm_abs_err = sum(gp_norm_abs_err * gp_posterior)) %>%
-                top_n(n=1, wt=gp_particle) %>%
-                mutate(norm_err_x = err_x/(true_dist+sm)) %>%
-                mutate(norm_err_y = err_y/(true_dist+sm)) %>%
-                mutate(gp_norm_err_x = gp_err_x/(true_dist+sm)) %>%
-                mutate(gp_norm_err_y = gp_err_y/(true_dist+sm))
-gpsl1 <- beta(lm(data=df_human_model_sum, norm_abs_err ~ gp_norm_abs_err))[8]
-temp <- df_human_model_sum %>% group_by(func.name)%>% summarize(mod = mean(gp_norm_abs_err, na.rm=T), hum = mean(norm_abs_err, na.rm=T))
-gpsl2 <- beta(lm(data=temp, hum ~ mod))[8]
-gpsl_temp <- temp
-
-df_gpnc_2 <- process_df_model(df_gpnc)
-df_human_gpnc <- add_new_columns_grouped(df_human,df_gpnc_2, get_model_data, c("func.name", "n"), "gpnc", c("gpnc_pred_x", "gpnc_std_x", "gpnc_pred_y", "gpnc_std_y", "gpnc_posterior", "gpnc_particle"))
-df_human_gpnc <- df_human_gpnc %>%
-              unnest(gpnc_pred_x, gpnc_pred_y, gpnc_std_x, gpnc_std_y, gpnc_posterior, gpnc_particle) %>%
-              mutate(gpnc_err_x = gpnc_pred_x - true_x) %>%
-              mutate(gpnc_err_y = gpnc_pred_y - true_y) %>%
-              mutate(gpnc_abs_err = (gpnc_err_x**2. + gpnc_err_y**2.)**0.5) %>%
-              mutate(gpnc_norm_abs_err = gpnc_abs_err/(true_dist))
-df_human_model_sum <- df_human_gpnc %>%
-                filter(n>2) %>%
-                group_by(func.name, n) %>%
-                #filter(!is.na(ridge_posterior)) %>%
-                mutate(pred_x = mean(pred_x)) %>%
-                mutate(pred_y = mean(pred_y)) %>%
-                mutate(err_x=mean(err_x)) %>%
-                mutate(err_y = mean(err_y)) %>%
-                mutate(abs_err = mean(abs_err)) %>%
-                mutate(norm_abs_err = mean(norm_abs_err)) %>%
-                group_by(func.name, n, subj_id) %>%
-                mutate(gpnc_pred_x = sum(gpnc_pred_x*gpnc_posterior)) %>%
-                mutate(gpnc_pred_y = sum(gpnc_pred_y*gpnc_posterior)) %>%
-                mutate(gpnc_err_x = sum(gpnc_err_x * gpnc_posterior)) %>%
-                mutate(gpnc_err_y = sum(gpnc_err_y * gpnc_posterior)) %>%
-                mutate(gpnc_abs_err = sum(gpnc_abs_err * gpnc_posterior)) %>%
-                mutate(gpnc_norm_abs_err = sum(gpnc_norm_abs_err * gpnc_posterior)) %>%
-                top_n(n=1, wt=gpnc_particle) %>%
-                mutate(norm_err_x = err_x/(true_dist+sm)) %>%
-                mutate(norm_err_y = err_y/(true_dist+sm)) %>%
-                mutate(gpnc_norm_err_x = gpnc_err_x/(true_dist+sm)) %>%
-                mutate(gpnc_norm_err_y = gpnc_err_y/(true_dist+sm))
-
-gpnc1 <- beta(lm(data=df_human_model_sum, norm_abs_err ~ gpnc_norm_abs_err))[8]
-temp <- df_human_model_sum %>% group_by(func.name) %>% summarize(mod = mean(gpnc_norm_abs_err, na.rm=T), hum = mean(norm_abs_err, na.rm=T))
-gpnc2 <- beta(lm(data=temp, hum ~ mod))[8]
-gpnc_temp <- temp
-
-df_ridge_2 <- process_df_model(df_ridge)
-df_human_ridge <- add_new_columns_grouped(df_human,df_ridge_2, get_model_data, c("func.name", "n"), "ridge", c("ridge_pred_x", "ridge_std_x", "ridge_pred_y", "ridge_std_y", "ridge_posterior", "ridge_particle"))
-df_human_ridge <- df_human_ridge %>%
-             unnest(ridge_pred_x, ridge_pred_y, ridge_std_x, ridge_std_y, ridge_posterior, ridge_particle) %>%
-              mutate(ridge_err_x = ridge_pred_x - true_x) %>%
-              mutate(ridge_err_y = ridge_pred_y - true_y) %>%
-              mutate(ridge_abs_err = (ridge_err_x**2. + ridge_err_y**2.)**0.5) %>%
-              mutate(ridge_norm_abs_err = ridge_abs_err/(true_dist))
-
-df_human_model_sum <- df_human_ridge %>%
-                filter(n>2) %>%
-                group_by(func.name, n) %>%
-                #filter(!is.na(ridge_posterior)) %>%
-                mutate(pred_x = mean(pred_x)) %>%
-                mutate(pred_y = mean(pred_y)) %>%
-                mutate(err_x=mean(err_x)) %>%
-                mutate(err_y = mean(err_y)) %>%
-               mutate(abs_err = mean(abs_err)) %>%
-               mutate(norm_abs_err = mean(norm_abs_err)) %>%
-                group_by(func.name, n, subj_id) %>%
-                #mutate(ridge_posterior = ridge_posterior/sum(ridge_posterior)) %>%
-                mutate(ridge_pred_x = sum(ridge_pred_x*ridge_posterior)) %>%
-                mutate(ridge_pred_y = sum(ridge_pred_y*ridge_posterior)) %>%
-                mutate(ridge_err_x = sum(ridge_err_x * ridge_posterior)) %>%
-                mutate(ridge_err_y = sum(ridge_err_y * ridge_posterior)) %>%
-                mutate(ridge_abs_err = sum(ridge_abs_err * ridge_posterior)) %>%
-                mutate(ridge_norm_abs_err = sum(ridge_norm_abs_err * ridge_posterior)) %>%
-                top_n(n=1, wt=ridge_particle) %>%
-                mutate(norm_err_x = err_x/(true_dist+sm)) %>%
-                mutate(norm_err_y = err_y/(true_dist+sm)) %>%
-                mutate(ridge_norm_err_x = ridge_err_x/(true_dist+sm)) %>%
-                mutate(ridge_norm_err_y = ridge_err_y/(true_dist+sm))
-
-ridge1 <- beta(lm(data=df_human_model_sum, norm_abs_err ~ ridge_norm_abs_err))[8]
-temp <- df_human_model_sum %>% group_by(func.name) %>% summarize(mod = mean(ridge_norm_abs_err, na.rm=T), hum = mean(norm_abs_err, na.rm=T))
-ridge2 <- beta(lm(data=temp, hum ~ mod))[8]
-ridge_temp <- temp
-
-print("by func and tpt:")
-lot1
-gpsl1
-gpnc1
-ridge1
-print("by func only:")
-lot2
-gpsl2
-gpnc2
-ridge2
-```
+# Analyze model fits
 ```{r}
-p1 <- ggplot(data=lot_temp, aes(x=mod, y=hum)) +
-  geom_point() +
-  geom_text(aes(label=func.name)) +
-  geom_abline(linetype="dotted") +
-  stat_smooth(method="lm",se=TRUE,alpha=0.1) +
-  coord_cartesian(xlim=c(0,1.1), ylim=c(0,1.1))
-p2 <- ggplot(data=gpnc_temp, aes(x=mod, y=hum)) +
-  geom_point() +
-  geom_abline(linetype="dotted") +
-  stat_smooth(method="lm",se=TRUE,alpha=0.1) +
-  coord_cartesian(xlim=c(0,1.1), ylim=c(0,1.1))
-grid.arrange(p1, p2, ncol = 2)
-```
+path <- "model_fits/LLs/"
 
-```{r, message=F, echo=F}
-#df_human <- df_adult
-df_human <- read.csv(paste(path, 'trials_cleaned.csv', sep=""))
-#df_human <- filter(df_human, func.name %in% unique(df_kid$func.name))
-df_lot_2 <- process_df_model(df_lot)
-df_human_lot <- add_new_columns_grouped(df_human,df_lot_2, get_model_data, c("func.name", "n"), "lot", c("lot_pred_x", "lot_std_x", "lot_pred_y", "lot_std_y", "lot_posterior", "lot_particle"))
-df_human_lot <- df_human_lot %>%
-             unnest(lot_pred_x, lot_pred_y, lot_std_x, lot_std_y, lot_posterior, lot_particle) %>%
-              mutate(lot_err_x = lot_pred_x - true_x) %>%
-              mutate(lot_err_y = lot_pred_y - true_y) %>%
-              mutate(lot_abs_err = (lot_err_x**2. + lot_err_y**2.)**0.5) %>%
-              mutate(lot_norm_abs_err = lot_abs_err/(true_dist))
-df_human_model <- df_human_lot
+lot_kid <- read.csv(paste(path, "lot_kid.csv", sep=""))
+gpsl_kid <- read.csv(paste(path, "gpsl_kid.csv", sep=""))
+gpnc_kid <- read.csv(paste(path, "gpnc_kid.csv", sep=""))
+ridge_kid <- read.csv(paste(path, "ridge_kid.csv", sep=""))
+lin_kid <- read.csv(paste(path, "lin_kid.csv", sep=""))
+#rand_kid <- read.csv(paste(path, "random_kid.csv", sep=""))
+#true_kid <- read.csv(paste(path, "true_kid.csv", sep=""))
 
-df_human_model_sum <- df_human_model %>%
-                group_by(func.name, n) %>%
-                filter(n>2) %>%
-                mutate(pred_x = mean(pred_x)) %>%
-                mutate(pred_y = mean(pred_y)) %>%
-                mutate(err_x=mean(err_x)) %>%
-                mutate(err_y = mean(err_y)) %>%
-                mutate(abs_err = mean(abs_err)) %>%
-                mutate(norm_abs_err = mean(norm_abs_err)) %>%
-                group_by(func.name, n, subj_id) %>%
-                mutate(lot_pred_x = sum(lot_pred_x*lot_posterior)) %>%
-                mutate(lot_pred_y = sum(lot_pred_y*lot_posterior)) %>%
-                mutate(lot_err_x = sum(lot_err_x * lot_posterior)) %>%
-                mutate(lot_err_y = sum(lot_err_y * lot_posterior)) %>%
-                mutate(lot_abs_err = sum(lot_abs_err * lot_posterior)) %>%
-                mutate(lot_norm_abs_err = sum(lot_norm_abs_err * lot_posterior)) %>%
-                top_n(n=1, wt=lot_particle) %>%
-                mutate(norm_err_x = err_x/(true_dist+sm)) %>%
-                mutate(norm_err_y = err_y/(true_dist+sm)) %>%
-                mutate(lot_norm_err_x = lot_err_x/(true_dist)) %>%
-                mutate(lot_norm_err_y = lot_err_y/(true_dist))
+lot_adult <- read.csv(paste(path, "lot_adult.csv", sep=""))
+gpsl_adult <- read.csv(paste(path, "gpsl_adult.csv", sep=""))
+gpnc_adult <- read.csv(paste(path, "gpnc_adult.csv", sep="")))
+ridge_adult <- read.csv(paste(path, "ridge_adult.csv", sep=""))
+lin_adult <- read.csv(paste(path, "lin_adult.csv", sep=""))
+#rand_adult <- read.csv(paste(path, "random_adult.csv", sep=""))
+#true_adult <- read.csv(paste(path, "true_adult.csv", sep=""))
 
+lot_monkey <- read.csv(paste(path, "lot_monkey.csv", sep=""))
+gpsl_monkey <- read.csv(paste(path, "gpsl_monkey.csv", sep=""))
+gpnc_monkey <- read.csv(paste(path, "gpnc_monkey.csv", sep=""))
+ridge_monkey <- read.csv(paste(path, "ridge_monkey.csv", sep=""))
+lin_monkey <- read.csv(paste(path, "lin_monkey.csv", sep=""))
+#rand_monkey <- read.csv(paste(path, "random_monkey.csv", sep=""))
+#true_monkey <- read.csv(paste(path, "true_monkey.csv", sep=""))
 
-lot1 <- beta(lm(data=df_human_model_sum, err_x ~ lot_err_x))[8]
-lot2 <- beta(lm(data=df_human_model_sum, err_y ~ lot_err_y))[8]
-lot3 <- beta(lm(data=df_human_model_sum, abs_err ~ lot_abs_err))[8]
-lot4 <- beta(lm(data=df_human_model_sum, norm_abs_err ~ lot_norm_abs_err))[8]
-temp <- df_human_model_sum %>% group_by(func.name, subj_id, tpt) %>% summarize(mod = mean(lot_norm_abs_err, na.rm=T), hum = mean(norm_abs_err, na.rm=T)) %>% ungroup() %>% group_by(func.name, subj_id) %>% summarize(mod = mean(mod), hum = mean(hum)) %>% ungroup() %>% group_by(func.name) %>% summarize(mod = mean(mod, na.rm=T), hum = mean(hum, na.rm=T))
-temp2 <- df_human_model_sum %>% group_by(func.name) %>% summarize(mod = mean(lot_norm_abs_err, na.rm=T), hum = mean(norm_abs_err, na.rm=T)) %>% ungroup()
-lot5 <- beta(lm(data=temp, hum ~ mod))[8]
-lot_temp <- temp
-# ggplot(data=temp, aes(x=mod, y=hum)) +
-#   geom_point() +
-#   geom_abline(linetype="dotted") +
-#   stat_smooth(method="lm",se=TRUE,alpha=0.1) +
-#   coord_cartesian(xlim=c(0,1.1), ylim=c(0,1.1))
-# ggplot(data=temp, aes(x=hum,y=mod , color="LoT")) +
-#         geom_abline(linetype="dotted") +
-#         stat_smooth(method="lm",se=TRUE,alpha=0.1) +
-#         stat_smooth(method="lm",se=FALSE) +
-#         geom_point(alpha=1,size=1.25) +
-#         annotate("text", x=0.18, y=0.95, label=expression(R^2 == 0.32), color = "black", size=8) +
-#         labs(x="Relative error (LoT)", y="Relative error (Human)") +
-#         coord_fixed(xlim=c(0,1.1), ylim=c(0,1.1), ratio = ) +
-#         #coord_cartesian(xlim=c(0,1.1), ylim=c(0,1.1)) +
-#         scale_color_manual(name="Who",values=c("black","darkred", "orange", "dodgerblue","darkgreen","pink"),  breaks=c("Human","GP-SL", "LoT", "GP-RBF","Ridge","3-degree"), labels=c("Human", "GP-SL","LoT", "GP-NC", "Ridge", "Ridge (3)")) +
-#         guides(color="none") +
-#         paper_theme
-
-
-df_gpsl_2 <- process_df_model(df_gpsl)
-df_human_gp <- add_new_columns_grouped(df_human,df_gpsl_2, get_model_data, c("func.name", "n"), "gp", c("gp_pred_x", "gp_std_x", "gp_pred_y", "gp_std_y", "gp_posterior", "gp_particle"))
-df_human_gp <- df_human_gp %>%
-             unnest(gp_pred_x, gp_pred_y, gp_std_x, gp_std_y, gp_posterior, gp_particle) %>%
-              mutate(gp_err_x = gp_pred_x - true_x) %>%
-              mutate(gp_err_y = gp_pred_y - true_y) %>%
-              mutate(gp_abs_err = (gp_err_x**2. + gp_err_y**2.)**0.5) %>%
-              mutate(gp_norm_abs_err = gp_abs_err/(true_dist))
-df_human_model <- df_human_gp
-df_human_model_sum <- df_human_model %>%
-                filter(n>2) %>%
-                group_by(func.name, n) %>%
-                mutate(pred_x = mean(pred_x)) %>%
-                mutate(pred_y = mean(pred_y)) %>%
-                mutate(err_x=mean(err_x)) %>%
-                mutate(err_y = mean(err_y)) %>%
-               mutate(abs_err = mean(abs_err)) %>%
-               mutate(norm_abs_err = mean(norm_abs_err)) %>%
-                group_by(func.name, n, subj_id) %>%
-                mutate(gp_pred_x = sum(gp_pred_x*gp_posterior)) %>%
-                mutate(gp_pred_y = sum(gp_pred_y*gp_posterior)) %>%
-                mutate(gp_err_x = sum(gp_err_x * gp_posterior)) %>%
-                mutate(gp_err_y = sum(gp_err_y * gp_posterior)) %>%
-                mutate(gp_abs_err = sum(gp_abs_err * gp_posterior)) %>%
-                mutate(gp_norm_abs_err = sum(gp_norm_abs_err * gp_posterior)) %>%
-                top_n(n=1, wt=gp_particle) %>%
-                mutate(norm_err_x = err_x/(true_dist+sm)) %>%
-                mutate(norm_err_y = err_y/(true_dist+sm)) %>%
-                mutate(gp_norm_err_x = gp_err_x/(true_dist+sm)) %>%
-                mutate(gp_norm_err_y = gp_err_y/(true_dist+sm))
-gpsl1 <- beta(lm(data=df_human_model_sum, err_x ~ gp_err_x))[8]
-gpsl2 <- beta(lm(data=df_human_model_sum, err_y ~ gp_err_y))[8]
-gpsl3 <- beta(lm(data=df_human_model_sum, abs_err ~ gp_abs_err))[8]
-gpsl4 <- beta(lm(data=df_human_model_sum, norm_abs_err ~ gp_norm_abs_err))[8]
-temp <- df_human_model_sum %>% group_by(func.name)%>% summarize(mod = mean(gp_norm_abs_err, na.rm=T), hum = mean(norm_abs_err, na.rm=T))
-gpsl5 <- beta(lm(data=temp, hum ~ mod))[8]
-gpsl_temp <- temp
-
-df_gpnc_2 <- process_df_model(df_gpnc)
-df_human_gpnc <- add_new_columns_grouped(df_human,df_gpnc_2, get_model_data, c("func.name", "n"), "gpnc", c("gpnc_pred_x", "gpnc_std_x", "gpnc_pred_y", "gpnc_std_y", "gpnc_posterior", "gpnc_particle"))
-df_human_gpnc <- df_human_gpnc %>%
-              unnest(gpnc_pred_x, gpnc_pred_y, gpnc_std_x, gpnc_std_y, gpnc_posterior, gpnc_particle) %>%
-              mutate(gpnc_err_x = gpnc_pred_x - true_x) %>%
-              mutate(gpnc_err_y = gpnc_pred_y - true_y) %>%
-              mutate(gpnc_abs_err = (gpnc_err_x**2. + gpnc_err_y**2.)**0.5) %>%
-              mutate(gpnc_norm_abs_err = gpnc_abs_err/(true_dist))
-df_human_model_sum <- df_human_gpnc %>%
-                filter(n>2) %>%
-                group_by(func.name, n) %>%
-                #filter(!is.na(ridge_posterior)) %>%
-                mutate(pred_x = mean(pred_x)) %>%
-                mutate(pred_y = mean(pred_y)) %>%
-                mutate(err_x=mean(err_x)) %>%
-                mutate(err_y = mean(err_y)) %>%
-                mutate(abs_err = mean(abs_err)) %>%
-                mutate(norm_abs_err = mean(norm_abs_err)) %>%
-                group_by(func.name, n, subj_id) %>%
-                mutate(gpnc_pred_x = sum(gpnc_pred_x*gpnc_posterior)) %>%
-                mutate(gpnc_pred_y = sum(gpnc_pred_y*gpnc_posterior)) %>%
-                mutate(gpnc_err_x = sum(gpnc_err_x * gpnc_posterior)) %>%
-                mutate(gpnc_err_y = sum(gpnc_err_y * gpnc_posterior)) %>%
-                mutate(gpnc_abs_err = sum(gpnc_abs_err * gpnc_posterior)) %>%
-                mutate(gpnc_norm_abs_err = sum(gpnc_norm_abs_err * gpnc_posterior)) %>%
-                top_n(n=1, wt=gpnc_particle) %>%
-                mutate(norm_err_x = err_x/(true_dist+sm)) %>%
-                mutate(norm_err_y = err_y/(true_dist+sm)) %>%
-                mutate(gpnc_norm_err_x = gpnc_err_x/(true_dist+sm)) %>%
-                mutate(gpnc_norm_err_y = gpnc_err_y/(true_dist+sm))
-
-gpnc1 <- beta(lm(data=df_human_model_sum, err_x ~ gpnc_err_x))[8]
-gpnc2 <- beta(lm(data=df_human_model_sum, err_y ~ gpnc_err_y))[8]
-gpnc3 <- beta(lm(data=df_human_model_sum, abs_err ~ gpnc_abs_err))[8]
-gpnc4 <- beta(lm(data=df_human_model_sum, norm_abs_err ~ gpnc_norm_abs_err))[8]
-temp <- df_human_model_sum %>% group_by(func.name) %>% summarize(mod = mean(gpnc_norm_abs_err, na.rm=T), hum = mean(norm_abs_err, na.rm=T))
-gpnc5 <- beta(lm(data=temp, hum ~ mod))[8]
-gpnc_temp <- temp
-
-df_ridge_2 <- process_df_model(df_ridge)
-df_human_ridge <- add_new_columns_grouped(df_human,df_ridge_2, get_model_data, c("func.name", "n"), "ridge", c("ridge_pred_x", "ridge_std_x", "ridge_pred_y", "ridge_std_y", "ridge_posterior", "ridge_particle"))
-df_human_ridge <- df_human_ridge %>%
-             unnest(ridge_pred_x, ridge_pred_y, ridge_std_x, ridge_std_y, ridge_posterior, ridge_particle) %>%
-              mutate(ridge_err_x = ridge_pred_x - true_x) %>%
-              mutate(ridge_err_y = ridge_pred_y - true_y) %>%
-              mutate(ridge_abs_err = (ridge_err_x**2. + ridge_err_y**2.)**0.5) %>%
-              mutate(ridge_norm_abs_err = ridge_abs_err/(true_dist))
-
-df_human_model_sum <- df_human_ridge %>%
-                filter(n>2) %>%
-                group_by(func.name, n) %>%
-                #filter(!is.na(ridge_posterior)) %>%
-                mutate(pred_x = mean(pred_x)) %>%
-                mutate(pred_y = mean(pred_y)) %>%
-                mutate(err_x=mean(err_x)) %>%
-                mutate(err_y = mean(err_y)) %>%
-               mutate(abs_err = mean(abs_err)) %>%
-               mutate(norm_abs_err = mean(norm_abs_err)) %>%
-                group_by(func.name, n, subj_id) %>%
-                #mutate(ridge_posterior = ridge_posterior/sum(ridge_posterior)) %>%
-                mutate(ridge_pred_x = sum(ridge_pred_x*ridge_posterior)) %>%
-                mutate(ridge_pred_y = sum(ridge_pred_y*ridge_posterior)) %>%
-                mutate(ridge_err_x = sum(ridge_err_x * ridge_posterior)) %>%
-                mutate(ridge_err_y = sum(ridge_err_y * ridge_posterior)) %>%
-                mutate(ridge_abs_err = sum(ridge_abs_err * ridge_posterior)) %>%
-                mutate(ridge_norm_abs_err = sum(ridge_norm_abs_err * ridge_posterior)) %>%
-                top_n(n=1, wt=ridge_particle) %>%
-                mutate(norm_err_x = err_x/(true_dist+sm)) %>%
-                mutate(norm_err_y = err_y/(true_dist+sm)) %>%
-                mutate(ridge_norm_err_x = ridge_err_x/(true_dist+sm)) %>%
-                mutate(ridge_norm_err_y = ridge_err_y/(true_dist+sm))
-
-ridge1 <- beta(lm(data=df_human_model_sum, err_x ~ ridge_err_x))[8]
-ridge2 <- beta(lm(data=df_human_model_sum, err_y ~ ridge_err_y))[8]
-ridge3 <- beta(lm(data=df_human_model_sum, abs_err ~ ridge_abs_err))[8]
-ridge4 <- beta(lm(data=df_human_model_sum, norm_abs_err ~ ridge_norm_abs_err))[8]
-temp <- df_human_model_sum %>% group_by(func.name) %>% summarize(mod = mean(ridge_norm_abs_err, na.rm=T), hum = mean(norm_abs_err, na.rm=T))
-ridge5 <- beta(lm(data=temp, hum ~ mod))[8]
-ridge_temp <- temp
-
-print("err_x:")
-lot1
-gpsl1
-gpnc1
-ridge1
-print("err_y:")
-lot2
-gpsl2
-gpnc2
-ridge2
-print("abs_err:")
-lot3
-gpsl3
-gpnc3
-ridge3
-print("norm abs err:")
-lot4
-gpsl4
-gpnc4
-ridge4
 ```
 
 
-
-
-#New sam code
+# Stats
 ```{r, message=F}
-
-#new
-path <- '/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/lot_model_for_server/server_output_so_far/'
-df_lot <- read.csv(paste(path, 'lot_all.csv', sep=""))
-
-#old
-path <- '/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/neurips_code/analyses/data/'
-#df_lot <- read.csv(paste(path, 'lot_all.csv', sep="")) %>% filter(tpt<7)
-
-df_lot$id <- seq.int(1,nrow(df_lot))
-df_lot$n <- df_lot$tpt
-df_lot$func.name <- df_lot$seq_id
-df_lot$std_x <- df_lot$sd_x
-df_lot$std_y <- df_lot$sd_y
-df_lot$posterior <- df_lot$score
-
-
-
-df_adult <- read.csv("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/kids/dots_app_kids_adult_vsn/data/clean_data/data.csv")
-df_human <- preprocess_df_human(df_adult)
-#df_kid <- read.csv("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/kids/dots_app_kids/data/clean_data/data.csv") 
-#df_human <- preprocess_df_human(df_kid) %>% filter(func.name != "line")
-#df_human_prev <- read.csv(paste(path, 'trials_cleaned.csv', sep=""))
-#temp <- unique(df_adult$func.name)
-#df_human <- filter(df_human_prev, func.name %in% temp)
-#df_human <- read.csv(paste(path, 'trials_cleaned.csv', sep=""))
-
-
-df_lot <- df_lot %>%
-  rowwise() %>%
-  mutate(nt_count = str_count(func, fixed("("))) %>%
-  mutate(err_x = pred_x - true_x) %>%
-  mutate(err_y = pred_y - true_y) %>%
-  group_by(func.name) %>%
-  filter(n > 0) %>%
-  mutate(range_x = max(true_x) - min(true_x)) %>%
-  mutate(range_y = max(true_y) - min(true_y)) %>%
-  mutate(mean_x = mean(true_x)) %>%
-  mutate(mean_y = mean(true_y)) %>%
-  group_by(func.name, n) %>%
-  mutate(posterior = exp(posterior)/sum(exp(posterior))) %>%
-  ungroup() %>%
-  group_by(func.name) %>%
-  mutate(abs_err = ((true_x-pred_x)**2 + (true_y-pred_y)**2)**0.5) %>%
-  mutate(mean_abs_err = mean(abs_err, na.rm=TRUE))
-
-
-  # ungroup() %>%
-  # group_by(func.name, n) %>%
-  # mutate(scaled_err = scale(abs_err)[,1]) %>%
-  # ungroup() %>%
-  # filter(scaled_err < 3, na.rm=TRUE) %>%
-  # group_by(func.name) %>%
-  # mutate(mean_abs_err = mean(abs_err, na.rm=TRUE))
-
-
-
-#GP-SL
-df_gp <- read.csv(paste(path, 'gpsl_all.csv', sep=""))
-df_gp$id <- seq.int(1,nrow(df_gp))
-df_gp$n <- df_gp$tpt
-df_gp$func.name <- df_gp$seq_id
-df_gp$std_x <- df_gp$var_x**0.5
-df_gp$std_y <- df_gp$var_y**0.5
-df_gp$posterior <- df_gp$score
-
-df_gp <- df_gp %>%
-  rowwise() %>%
-  mutate(nt_count = str_count(fn_x, fixed("(")) +str_count(fn_y, fixed("(")))  %>%
-  mutate(err_x = pred_x - true_x) %>%
-  mutate(err_y = pred_y - true_y) %>%
-  group_by(func.name) %>%
-  filter(n > 0) %>%
-  mutate(range_x = max(true_x) - min(true_x)) %>%
-  mutate(range_y = max(true_y) - min(true_y)) %>%
-  mutate(mean_x = mean(true_x)) %>%
-  mutate(mean_y = mean(true_y)) %>%
-  group_by(func.name, n) %>%
-  mutate(posterior = exp(posterior)/sum(exp(posterior))) %>%
-  ungroup() %>%
-  group_by(func.name) %>%
-  mutate(abs_err = ((true_x-pred_x)**2 + (true_y-pred_y)**2)**0.5) %>%
-  mutate(mean_abs_err = mean(abs_err, na.rm=TRUE))
-
-
-#GP-NC
-df_rbf <- read.csv(paste(path, 'gpnc_all.csv', sep=""))
-df_rbf$id <- seq.int(1,nrow(df_rbf))
-df_rbf$n <- df_rbf$tpt
-df_rbf$func.name <- df_rbf$seq_id
-df_rbf$std_x <- df_rbf$var_x**0.5
-df_rbf$std_y <- df_rbf$var_y**0.5
-df_rbf$posterior <- df_rbf$score
-
-
-
-df_rbf <- df_rbf %>%
-  rowwise() %>%
-  mutate(nt_count = str_count(fn_x, fixed("(")) +str_count(fn_y, fixed("(")))  %>%
-  mutate(err_x = pred_x - true_x) %>%
-  mutate(err_y = pred_y - true_y) %>%
-  group_by(func.name) %>%
-  filter(n > 0) %>%
-  mutate(range_x = max(true_x) - min(true_x)) %>%
-  mutate(range_y = max(true_y) - min(true_y)) %>%
-  mutate(mean_x = mean(true_x)) %>%
-  mutate(mean_y = mean(true_y)) %>%
-  group_by(func.name, n) %>%
-  mutate(posterior = exp(posterior)/sum(exp(posterior))) %>%
-  ungroup() %>%
-  group_by(func.name) %>%
-  mutate(abs_err = ((true_x-pred_x)**2 + (true_y-pred_y)**2)**0.5) %>%
-  mutate(mean_abs_err = mean(abs_err, na.rm=TRUE))
-
-
-#Ridge
-df_ridge <- read.csv(paste(path, 'ridge_1_all.csv', sep=""))
-df_ridge$id <- seq.int(1,nrow(df_ridge))
-df_ridge$id <- seq.int(1,nrow(df_ridge))
-df_ridge$n <- df_ridge$tpt
-df_ridge$func.name <- df_ridge$seq_id
-df_ridge$std_x <- df_ridge$sd_x
-df_ridge$std_y <- df_ridge$sd_y
-df_ridge$posterior <- df_ridge$score
-
-df_ridge <- df_ridge %>%
-  rowwise() %>%
-  mutate(err_x = pred_x - true_x) %>%
-  mutate(err_y = pred_y - true_y) %>%
-  group_by(func.name) %>%
-  filter(n > 0) %>%
-  mutate(range_x = max(true_x) - min(true_x)) %>%
-  mutate(range_y = max(true_y) - min(true_y)) %>%
-  mutate(mean_x = mean(true_x)) %>%
-  mutate(mean_y = mean(true_y)) %>%
-  group_by(func.name, n) %>%
-  mutate(posterior = exp(posterior)/sum(exp(posterior),na.rm=TRUE)) %>%
-  ungroup() %>%
-  group_by(func.name) %>%
-  mutate(abs_err = ((true_x-pred_x)**2 + (true_y-pred_y)**2)**0.5) %>%
-  mutate(mean_abs_err = mean(abs_err, na.rm=TRUE))
-
-
-get_model_data_smc <- function(s_id, t) {
-  s_id <- as.character(s_id[1])
-  t <- t[1]
+get_AIC <- function(all_fits) {
+  grouped <- all_fits %>%
+                  group_by(model) %>%
+                  mutate(model_sum_LL = sum(LL, na.rm=T)) %>%
+                  group_by(subj_id, model, func.name) %>%
+                  summarize(LL_mean = mean(LL, na.rm = TRUE),
+                            model_sum_LL = mean(model_sum_LL), o_sd = mean(o_sd),
+                            l_sd = mean(l_sd), l_p = mean(l_p)) %>%
+                  ungroup() %>%
+                  group_by(subj_id, model) %>%
+                  summarize(LL_mean = mean(LL_mean, na.rm=TRUE),
+                            model_sum_LL = mean(model_sum_LL), o_sd = mean(o_sd),
+                            l_sd = mean(l_sd), l_p = mean(l_p)) %>%
+                  ungroup() %>%
+                  group_by(model) %>%
+                  mutate(LL_mean_model = mean(LL_mean),
+                         model_sum_LL = mean(model_sum_LL), o_sd_mean = mean(o_sd),
+                         l_sd_mean = mean(l_sd), l_p_mean = mean(l_p))
   
-  df_lot_use <- subset(df_lot, (df_lot$n==t) & (as.character(df_lot$func.name) == as.character(s_id)))
-  df_gp_use <- subset(df_gp, (df_gp$n==t) & (as.character(df_gp$func.name) == as.character(s_id)))
-  df_rbf_use <- subset(df_rbf, (df_rbf$n==t) & (as.character(df_rbf$func.name) == as.character(s_id)))
-  df_ridge_use <- subset(df_ridge, (df_ridge$n==t) & (as.character(df_ridge$func.name) == as.character(s_id)))
+  n_subjs = length(unique(grouped$subj_id))
   
-  if ((nrow(df_lot_use) == 0) |  (nrow(df_gp_use) == 0)) {
-    return(NA) 
-  } else {
-    return(list(df_lot_use$pred_x, df_lot_use$std_x, df_lot_use$pred_y, df_lot_use$std_y, df_lot_use$posterior, df_lot_use$particle, 
-                df_gp_use$pred_x, df_gp_use$std_x, df_gp_use$pred_y, df_gp_use$std_y, df_gp_use$posterior, df_gp_use$particle,
-                df_rbf_use$pred_x, df_rbf_use$std_x, df_rbf_use$pred_y, df_rbf_use$std_y, df_rbf_use$posterior, df_rbf_use$particle,
-                df_ridge_use$pred_x, df_ridge_use$std_x, df_ridge_use$pred_y, df_ridge_use$std_y, df_ridge_use$posterior, df_ridge_use$particle))
-    
-  }
-}
-
-
-add_new_columns_grouped_smc <- function(df, func, group_cols, new_col_names) {
-  # Number of times you want each row to be repeated
-  n_particle <- length(unique(df_lot$particle))
+  top <- grouped %>%
+         group_by(subj_id) %>%
+         slice_max(order_by = LL_mean) %>%
+         ungroup()
   
-  # Create a new data frame by repeating each row
-  df_expanded <- df %>% 
-    slice(rep(1:n(), n_particle)) %>%
-    group_by(id) %>%
-    mutate(particle = rep(1:n_particle))
-  df_expanded %>%
-    group_by(across(all_of(group_cols))) %>%
-    summarize(result = list(func(func.name, n)), .groups = 'drop') %>%
-    unnest_wider(result, names_sep = "_") %>%
-    setNames(., c(group_cols, new_col_names)) %>%
-    left_join(df, by = group_cols) 
-}
-
-
-
-df_human_model <- add_new_columns_grouped_smc(cbind(df_human), get_model_data_smc, c("func.name", "n"),  c("lot_pred_x", "lot_std_x", "lot_pred_y","lot_std_y", "lot_posterior", "lot_particle",
-                                                                                                           "gp_pred_x", "gp_std_x", "gp_pred_y","gp_std_y", "gp_posterior", "gp_particle",
-                                                                                                           "rbf_pred_x", "rbf_std_x", "rbf_pred_y", "rbf_std_y", "rbf_posterior", "rbf_particle",
-                                                                                                           "ridge_pred_x", "ridge_std_x", "ridge_pred_y", "ridge_std_y", "ridge_posterior", "ridge_particle"
-))
-
-
-df_acceptance_dist <- df_human %>% group_by(func.name) %>% summarize(acceptance_dist = mean(acceptance_dist, na.rm=T))
-
-df_human_model  <- df_human_model  %>%
-  unnest(lot_pred_x, lot_pred_y, lot_std_x, lot_std_y, lot_posterior, lot_particle,
-         gp_pred_x, gp_pred_y, gp_std_x, gp_std_y, gp_posterior, gp_particle,
-         rbf_pred_x, rbf_pred_y, rbf_std_x, rbf_std_y, rbf_posterior, rbf_particle,
-         ridge_pred_x, ridge_pred_y, ridge_std_x, ridge_std_y, ridge_posterior, ridge_particle) %>%
-  mutate(lot_err_x = lot_pred_x - true_x) %>%
-  mutate(lot_err_y = lot_pred_y - true_y) %>%
-  mutate(lot_abs_err = (lot_err_x**2. + lot_err_y**2.)**0.5) %>%
-  mutate(lot_norm_abs_err = lot_abs_err/(true_dist+sm)) %>%
-  mutate(gp_err_x = gp_pred_x - true_x) %>%
-  mutate(gp_err_y = gp_pred_y - true_y) %>%
-  mutate(gp_abs_err = (gp_err_x**2. + gp_err_y**2.)**0.5) %>%
-  mutate(gp_norm_abs_err = gp_abs_err/(true_dist+sm)) %>%
-  mutate(rbf_err_x = rbf_pred_x - true_x) %>%
-  mutate(rbf_err_y = rbf_pred_y - true_y) %>%
-  mutate(rbf_abs_err = (rbf_err_x **2. + rbf_err_y**2.)**0.5) %>%
-  mutate(rbf_norm_abs_err = rbf_abs_err/(true_dist+sm))  %>%
-  mutate(ridge_err_x = ridge_pred_x - true_x) %>%
-  mutate(ridge_err_y = ridge_pred_y - true_y) %>%
-  mutate(ridge_abs_err = (ridge_err_x **2. + ridge_err_y**2.)**0.5) %>%
-  mutate(ridge_norm_abs_err = ridge_abs_err/(true_dist+sm))
-
-#df_human_model <- merge(df_human_model, df_acceptance_dist, by="func.name")
-
-df_human_model <- df_human_model %>%
-                group_by(func.name) %>%
-                mutate(lot_correct = as.numeric(lot_abs_err < acceptance_dist)) %>%
-                mutate(ridge_correct = as.numeric(ridge_abs_err < acceptance_dist)) %>%
-                mutate(rbf_correct = as.numeric(rbf_abs_err < acceptance_dist)) %>%
-                mutate(gp_correct = as.numeric(gp_abs_err < acceptance_dist)) %>%
-                mutate(correct = as.numeric(abs_err < acceptance_dist)) %>%
-                mutate(mean_abs_err = mean(abs_err,na.rm=TRUE)) %>%
-                mutate(mean_rel_err = mean(norm_abs_err,na.rm=TRUE)) %>%
-                ungroup() %>%
-                arrange(mean_rel_err) 
-
-df_human_model_sum <- df_human_model %>%
-  group_by(func.name, n) %>%
-  filter(!is.na(ridge_posterior)) %>%
-  mutate(pred_x = mean(pred_x)) %>%
-  mutate(pred_y = mean(pred_y)) %>%
-  mutate(err_x=mean(err_x)) %>%
-  mutate(err_y = mean(err_y)) %>%
-  mutate(abs_err = mean(abs_err)) %>%
-  mutate(norm_abs_err = mean(norm_abs_err)) %>%
-  mutate(correct = mean(correct)) %>%
-  group_by(func.name, n, subj_id) %>%
-  mutate(ridge_posterior = ridge_posterior/sum(ridge_posterior)) %>%
-  mutate(lot_pred_x = sum(lot_pred_x*lot_posterior)) %>%
-  mutate(lot_pred_y = sum(lot_pred_y*lot_posterior)) %>%
-  mutate(lot_err_x = sum(lot_err_x * lot_posterior)) %>%
-  mutate(lot_err_y = sum(lot_err_y * lot_posterior)) %>%
-  mutate(lot_abs_err = sum(lot_abs_err * lot_posterior)) %>%
-  mutate(lot_norm_abs_err = sum(lot_norm_abs_err * lot_posterior)) %>%
-  mutate(lot_correct = sum(lot_correct * lot_posterior)) %>%
-  mutate(gp_pred_x = sum(gp_pred_x*gp_posterior)) %>%
-  mutate(gp_pred_y = sum(gp_pred_y*gp_posterior)) %>%
-  mutate(gp_err_x = sum(gp_err_x * gp_posterior)) %>%
-  mutate(gp_err_y = sum(gp_err_y * gp_posterior)) %>%
-  mutate(gp_abs_err = sum(gp_abs_err * gp_posterior)) %>%
-  mutate(gp_norm_abs_err = sum(gp_norm_abs_err * gp_posterior)) %>%
-  mutate(gp_correct = sum(gp_correct * gp_posterior)) %>%
-  mutate(rbf_pred_x = sum(rbf_pred_x*rbf_posterior)) %>%
-  mutate(rbf_pred_y = sum(rbf_pred_y*rbf_posterior)) %>%
-  mutate(rbf_err_x = sum(rbf_err_x * rbf_posterior)) %>%
-  mutate(rbf_err_y = sum(rbf_err_y * rbf_posterior)) %>%
-  mutate(rbf_abs_err = sum(rbf_abs_err * rbf_posterior)) %>%
-  mutate(rbf_norm_abs_err = sum(rbf_norm_abs_err * rbf_posterior)) %>%
-  mutate(rbf_correct = sum(rbf_correct * rbf_posterior)) %>%
-  mutate(ridge_pred_x = sum(ridge_pred_x*ridge_posterior)) %>%
-  mutate(ridge_pred_y = sum(ridge_pred_y*ridge_posterior)) %>%
-  mutate(ridge_err_x = sum(ridge_err_x * ridge_posterior)) %>%
-  mutate(ridge_err_y = sum(ridge_err_y * ridge_posterior)) %>%
-  mutate(ridge_abs_err = sum(ridge_abs_err * ridge_posterior)) %>%
-  mutate(ridge_correct = sum(ridge_correct * ridge_posterior)) %>%
-  mutate(ridge_norm_abs_err = sum(ridge_norm_abs_err * ridge_posterior)) %>%
-  top_n(n=1, wt=lot_particle) %>%
-  mutate(norm_err_x = err_x/(true_dist+sm)) %>%
-  mutate(norm_err_y = err_y/(true_dist+sm)) %>%
-  mutate(lot_norm_err_x = lot_err_x/(true_dist+sm)) %>%
-  mutate(lot_norm_err_y = lot_err_y/(true_dist+sm)) %>%
-  mutate(gp_norm_err_x = gp_err_x/(true_dist+sm)) %>%
-  mutate(gp_norm_err_y = gp_err_y/(true_dist+sm)) %>%
-  mutate(ridge_norm_err_x = ridge_err_x/(true_dist+sm)) %>%
-  mutate(ridge_norm_err_y = ridge_err_y/(true_dist+sm)) %>%
-  mutate(rbf_norm_err_x = rbf_err_x/(true_dist+sm)) %>%
-  mutate(rbf_norm_err_y = rbf_err_y/(true_dist+sm))
-
-
-#filter
-#df_human_model_sum <- df_human_model_sum %>% filter(tpt>=10)
-
-
-
-df_human_sub <- df_human_model_sum %>%
-  ungroup() %>%
-  group_by(func.name, n) %>%
-  mutate(lot_pred_x = mean(lot_pred_x)) %>%
-  mutate(lot_pred_y = mean(lot_pred_y)) %>%
-  mutate(lot_err_x = sum(lot_err_x )) %>%
-  mutate(lot_err_y = mean(lot_err_y )) %>%
-  mutate(lot_abs_err = mean(lot_abs_err )) %>%
-  mutate(lot_norm_abs_err = mean(lot_norm_abs_err )) %>%
-  mutate(lot_correct = mean(lot_correct, na.rm=T)) %>%
-  mutate(gp_pred_x = mean(gp_pred_x)) %>%
-  mutate(gp_pred_y = mean(gp_pred_y)) %>%
-  mutate(gp_err_x = sum(gp_err_x )) %>%
-  mutate(gp_err_y = mean(gp_err_y )) %>%
-  mutate(gp_abs_err = mean(gp_abs_err )) %>%
-  mutate(gp_norm_abs_err = mean(gp_norm_abs_err )) %>%
-  mutate(gp_correct = mean(gp_correct, na.rm=T)) %>%
-  mutate(abs_err = mean(abs_err)) %>%
-  mutate(norm_abs_err = mean(norm_abs_err)) %>%
-  top_n(n=1, wt=id) %>%
-  group_by(func.name) %>%
-  mutate(mean_abs_err = mean(abs_err,na.rm=TRUE)) %>%
-  mutate(mean_rel_err = mean(norm_abs_err,na.rm=TRUE)) %>%
-  ungroup() %>%
-  arrange(mean_rel_err) %>%
-  mutate(n>2)
-
-
-
-
-df_human_func_means <- df_human_sub %>%
-  group_by(func.name) %>%
-  mutate(lot_mean_rel_err=mean(lot_norm_abs_err, na.rm=TRUE)) %>%
-  mutate(gp_mean_rel_err=mean(gp_norm_abs_err, na.rm=TRUE)) %>%
-  mutate(ridge_mean_rel_err=mean(ridge_norm_abs_err, na.rm=TRUE)) %>%
-  mutate(rbf_mean_rel_err=mean(rbf_norm_abs_err, na.rm=TRUE)) %>%
-  mutate(lot_mean_correct=mean(lot_correct, na.rm=TRUE)) %>%
-  mutate(gp_mean_correct=mean(gp_correct, na.rm=TRUE)) %>%
-  mutate(ridge_mean_correct=mean(ridge_correct, na.rm=TRUE)) %>%
-  mutate(rbf_mean_correct=mean(rbf_correct, na.rm=TRUE)) %>%
-  mutate(mean_correct=mean(correct, na.rm=TRUE)) %>%
-  top_n(n=1,wt=id)
-
-
-df_human_func_means2 <- df_human_sub %>%
-  group_by(func.name, tpt) %>%
-  mutate(lot_mean_rel_err=mean(lot_norm_abs_err, na.rm=TRUE)) %>%
-  mutate(gp_mean_rel_err=mean(gp_norm_abs_err, na.rm=TRUE)) %>%
-  mutate(ridge_mean_rel_err=mean(ridge_norm_abs_err, na.rm=TRUE)) %>%
-  mutate(rbf_mean_rel_err=mean(rbf_norm_abs_err, na.rm=TRUE)) %>%
-  top_n(n=1,wt=id)
-
-df_human_model_sum <- df_human_model_sum %>%
-      mutate(image_path = sprintf("../figs/func_ims/%s.png", func.name))
-df_human_func_means <- df_human_func_means %>%
-      mutate(image_path = sprintf("../figs/func_ims/%s.png", func.name))
-
-
-```
-```{r}
-sum(abs(df_human_func_means$lot_mean_rel_err - df_human_func_means$mean_rel_err))
-sum(abs(df_human_func_means$gp_mean_rel_err - df_human_func_means$mean_rel_err))
-sum(abs(df_human_func_means$rbf_mean_rel_err - df_human_func_means$mean_rel_err))
-sum(abs(df_human_func_means$ridge_mean_rel_err - df_human_func_means$mean_rel_err))
-```
-
-```{r}
-print(beta(lm(data=df_human_func_means, mean_correct ~ lot_mean_correct))[8])
-print(beta(lm(data=df_human_func_means, mean_correct ~ gp_mean_correct))[8])
-print(beta(lm(data=df_human_func_means, mean_correct ~ rbf_mean_correct))[8])
-print(beta(lm(data=df_human_func_means, mean_correct ~ ridge_mean_correct))[8])
-```
-```{r}
-print("By func:")
-print(beta(lm(data=df_human_func_means, mean_rel_err ~ lot_mean_rel_err))[8])
-print(beta(lm(data=df_human_func_means, mean_rel_err ~ gp_mean_rel_err))[8])
-print(beta(lm(data=df_human_func_means, mean_rel_err ~ rbf_mean_rel_err))[8])
-print(beta(lm(data=df_human_func_means, mean_rel_err ~ ridge_mean_rel_err))[8])
-print("By func and tpt:")
-print(beta(lm(data=df_human_func_means2, mean_rel_err ~ lot_mean_rel_err))[8])
-print(beta(lm(data=df_human_func_means2, mean_rel_err ~ gp_mean_rel_err))[8])
-print(beta(lm(data=df_human_func_means2, mean_rel_err ~ rbf_mean_rel_err))[8])
-print(beta(lm(data=df_human_func_means2, mean_rel_err ~ ridge_mean_rel_err))[8])
-print("By func, tpt, subj:")
-print(beta(lm(data=df_human_model_sum, norm_abs_err ~ lot_norm_abs_err))[8])
-print(beta(lm(data=df_human_model_sum, norm_abs_err ~ gp_norm_abs_err))[8])
-print(beta(lm(data=df_human_model_sum, norm_abs_err ~ rbf_norm_abs_err))[8])
-print(beta(lm(data=df_human_model_sum, norm_abs_err ~ ridge_norm_abs_err))[8])
-
-```
-#err x/y
-```{r}
-print(beta(lm(data=df_human_model_sum, err_x ~ lot_err_x))[8])
-print(beta(lm(data=df_human_model_sum, err_y ~ lot_err_y))[8])
-print(beta(lm(data=df_human_model_sum, err_x ~ gp_err_x))[8])
-print(beta(lm(data=df_human_model_sum, err_y ~ gp_err_y))[8])
-print(beta(lm(data=df_human_model_sum, err_x ~ ridge_err_x))[8])
-print(beta(lm(data=df_human_model_sum, err_y ~ ridge_err_y))[8])
-print(beta(lm(data=df_human_model_sum, err_x ~ rbf_err_x))[8])
-print(beta(lm(data=df_human_model_sum, err_y ~ rbf_err_y))[8])
-```
-
-#scatters w images
-```{r}
-#beta(lm(data=df_human_model_sum, m ~lot_norm_abs_err))
-temp <- df_human_func_means %>% filter(func.name != "3_pts")
-beta(lm(data=temp, mean_rel_err ~ lot_mean_rel_err))
-ggplot(data=temp, aes(x=lot_mean_rel_err, y=mean_rel_err)) +
-        #geom_text(aes(label=func.name)) +
-        geom_abline(linetype="dotted") +
-        stat_smooth(method="lm",se=TRUE,alpha=0.1) +
-        stat_smooth(method="lm",se=FALSE, aes(color="LoT")) +
-        geom_image(aes(image = image_path), size=0.07) +
-        #geom_point(alpha=1,size=1.25) +
-        #annotate("text", x=0.18, y=0.95, label=expression(R^2 == 0.32), color = "black", size=8) +
-        labs(x="Relative error (LoT)", y="Relative error (Human)") +
-        coord_fixed(xlim=c(0,1.4), ylim=c(0,1.4)) +
-        scale_color_manual(name="Who",values=c("black","darkred", "orange", "dodgerblue","darkgreen","pink"),  breaks=c("Human","GP-SL", "LoT", "GP-RBF","Ridge","3-degree"), labels=c("Human", "GP-SL","LoT", "GP-NC", "Ridge", "Ridge (3)")) +
-        guides(color="none") +
-        paper_theme
-```
-
-```{r}
-beta(lm(data=df_human_model_sum, norm_abs_err ~ gp_norm_abs_err))
-#beta(lm(data=df_human_func_means, mean_rel_err ~ gp_mean_rel_err))
-ggplot(data=df_human_func_means, aes(x=gp_mean_rel_err,y=mean_rel_err)) +
-        #geom_text(aes(label=func.name)) +
-        geom_abline(linetype="dotted") +
-        stat_smooth(method="lm",se=TRUE,alpha=0.1) +
-        stat_smooth(method="lm",se=FALSE, aes(color="GP-SL")) +
-        geom_image(aes(image = image_path), size=0.07) +
-        #geom_point(alpha=1,size=1.25) +
-        #annotate("text", x=0.18, y=0.95, label=expression(R^2 == 0.32), color = "black", size=8) +
-        labs(x="Relative error (GP-SL)", y="Relative error (Human)") +
-        coord_fixed(xlim=c(0,1.7), ylim=c(0,1.7)) +
-        scale_color_manual(name="Who",values=c("black","darkred", "orange", "dodgerblue","darkgreen","pink"),  breaks=c("Human","GP-SL", "LoT", "GP-RBF","Ridge","3-degree"), labels=c("Human", "GP-SL","LoT", "GP-NC", "Ridge", "Ridge (3)")) +
-        guides(color="none") +
-        paper_theme
-```
-```{r}
-beta(lm(data=df_human_model_sum, norm_abs_err ~rbf_norm_abs_err))
-#beta(lm(data=df_human_func_means, mean_rel_err ~ gp_mean_rel_err))
-ggplot(data=df_human_func_means, aes(x=rbf_mean_rel_err,y=mean_rel_err)) +
-        #geom_text(aes(label=func.name)) +
-        geom_abline(linetype="dotted") +
-        stat_smooth(method="lm",se=TRUE,alpha=0.1) +
-        stat_smooth(method="lm",se=FALSE, aes(color="GP-RBF")) +
-        geom_image(aes(image = image_path), size=0.07) +
-        #geom_point(alpha=1,size=1.25) +
-        #annotate("text", x=0.18, y=0.95, label=expression(R^2 == 0.32), color = "black", size=8) +
-        labs(x="Relative error (GP-NC)", y="Relative error (Human)") +
-        coord_fixed(xlim=c(0,1.5), ylim=c(0,1.5)) +
-        scale_color_manual(name="Who",values=c("black","darkred", "orange", "dodgerblue","darkgreen","pink"),  breaks=c("Human","GP-SL", "LoT", "GP-RBF","Ridge","3-degree"), labels=c("Human", "GP-SL","LoT", "GP-NC", "Ridge", "Ridge (3)")) +
-        guides(color="none") +
-        paper_theme
-```
-```{r}
-beta(lm(data=df_human_model_sum, norm_abs_err ~ridge_norm_abs_err))
-#beta(lm(data=df_human_func_means, mean_rel_err ~ gp_mean_rel_err))
-ggplot(data=df_human_func_means, aes(x=ridge_mean_rel_err,y=mean_rel_err)) +
-        #geom_text(aes(label=func.name)) +
-        geom_abline(linetype="dotted") +
-        stat_smooth(method="lm",se=TRUE,alpha=0.1) +
-        stat_smooth(method="lm",se=FALSE, aes(color="Ridge")) +
-        geom_image(aes(image = image_path), size=0.07) +
-        #geom_point(alpha=1,size=1.25) +
-        #annotate("text", x=0.18, y=0.95, label=expression(R^2 == 0.32), color = "black", size=8) +
-        labs(x="Relative error (Ridge)", y="Relative error (Human)") +
-        coord_fixed(xlim=c(0,3.5), ylim=c(0,3.5)) +
-        scale_color_manual(name="Who",values=c("black","darkred", "orange", "dodgerblue","darkgreen","pink"),  breaks=c("Human","GP-SL", "LoT", "GP-RBF","Ridge","3-degree"), labels=c("Human", "GP-SL","LoT", "GP-NC", "Ridge", "Ridge (3)")) +
-        guides(color="none") +
-        paper_theme
-```
-
-
-
-#normal scatters
-```{r}
-beta(lm(data=df_human_model_sum, norm_abs_err ~ ridge_norm_abs_err))
-#beta(lm(data=df_human_func_means, mean_rel_err ~ lot_mean_rel_err))
-p3 <- ggplot(data=df_human_func_means, aes(x=ridge_mean_rel_err,y=mean_rel_err , color="ridge")) +
-        geom_text(aes(label=func.name)) +
-        geom_abline(linetype="dotted") +
-        stat_smooth(method="lm",se=TRUE,alpha=0.1) +
-        stat_smooth(method="lm",se=FALSE) +
-        geom_point(alpha=1,size=1.25) +
-        #annotate("text", x=0.18, y=0.95, label=expression(R^2 == 0.32), color = "black", size=8) +
-        labs(x="Relative error (Ridge)", y="Relative error (Human)") +
-        coord_cartesian(xlim=c(0,3.5), ylim=c(0,3.5)) +
-        scale_color_manual(name="Who",values=c("black","darkred", "orange", "dodgerblue","darkgreen","pink"),  breaks=c("Human","GP-SL", "LoT", "GP-RBF","Ridge","3-degree"), labels=c("Human", "GP-SL","LoT", "GP-NC", "Ridge", "Ridge (3)")) +
-        guides(color="none") +
-        paper_theme
-```
-```{r}
-beta(lm(data=df_human_model_sum, norm_abs_err ~ rbf_norm_abs_err))
-#beta(lm(data=df_human_func_means, mean_rel_err ~ lot_mean_rel_err))
-p4 <- ggplot(data=df_human_func_means, aes(x=rbf_mean_rel_err,y=mean_rel_err , color="GP-RBF")) +
-        geom_text(aes(label=func.name)) +
-        geom_abline(linetype="dotted") +
-        stat_smooth(method="lm",se=TRUE,alpha=0.1) +
-        stat_smooth(method="lm",se=FALSE) +
-        geom_point(alpha=1,size=1.25) +
-        #annotate("text", x=0.18, y=0.95, label=expression(R^2 == 0.32), color = "black", size=8) +
-        labs(x="Relative error (GP-NC)", y="Relative error (Human)") +
-        coord_cartesian(xlim=c(0,1.7), ylim=c(0,1.7)) +
-        scale_color_manual(name="Who",values=c("black","darkred", "orange", "dodgerblue","darkgreen","pink"),  breaks=c("Human","GP-SL", "LoT", "GP-RBF","Ridge","3-degree"), labels=c("Human", "GP-SL","LoT", "GP-NC", "Ridge", "Ridge (3)")) +
-        guides(color="none") +
-        paper_theme
-```
-```{r}
-beta(lm(data=df_human_model_sum, norm_abs_err ~ lot_norm_abs_err))
-print(beta(lm(data=df_human_model_sum, err_x ~ lot_err_x))[8])
-print(beta(lm(data=df_human_model_sum, err_y ~ lot_err_y))[8])
-#beta(lm(data=df_human_func_means, mean_rel_err ~ lot_mean_rel_err))
-p1 <- ggplot(data=df_human_func_means, aes(x=lot_mean_rel_err,y=mean_rel_err )) +
-        geom_text(aes(label=func.name)) +
-        geom_abline(linetype="dotted") +
-        stat_smooth(method="lm",se=TRUE,alpha=0.1, aes(color="LoT")) +
-        stat_smooth(method="lm",se=FALSE,aes(color=color="LoT")) +
-        geom_point(alpha=1,size=1.25) +
-        #annotate("text", x=0.18, y=0.95, label=expression(R^2 == 0.32), color = "black", size=8) +
-        labs(x="Relative error (LoT)", y="Relative error (Human)") +
-        coord_cartesian(xlim=c(0,1.1), ylim=c(0,1.1)) +
-        scale_color_manual(name="Who",values=c("black","darkred", "orange", "dodgerblue","darkgreen","pink"),  breaks=c("Human","GP-SL", "LoT", "GP-RBF","Ridge","3-degree"), labels=c("Human", "GP-SL","LoT", "GP-NC", "Ridge", "Ridge (3)")) +
-        guides(color="none") +
-        paper_theme
-```
-
-
-
-
-
-
-
-
-# learning curves
-```{r}
-ggplot(data=df_human_model_sum) +
-  geom_line(aes(x=n, y=lot_norm_abs_err), color="gold") +
-  geom_line(aes(x=n, y=gp_norm_abs_err), color="darkgreen") +
-  geom_line(aes(x=n, y=norm_abs_err)) +
-  facet_wrap(~func.name, scales="free")
+  print(table(top$model))
   
-```
-```{r}
-ggplot(data=df_human_model_sum) +
-  geom_line(aes(x=n, y=lot_err_x), color="gold") +
-  geom_line(aes(x=n, y=gp_err_x), color="darkgreen") +
-  geom_line(aes(x=n, y=err_x)) +
-  facet_wrap(~func.name, scales="free")
-  
-```
-```{r}
-ggplot(data=df_human_model_sum) +
-  geom_line(aes(x=n, y=lot_err_y), color="gold") +
-  geom_line(aes(x=n, y=gp_err_y), color="darkgreen") +
-  geom_line(aes(x=n, y=err_y)) +
-  facet_wrap(~func.name, scales="free")
-  
-```
-
-
-#make imgs
-```{r}
-df <- df_human %>% rename(func.type = func.name, x_curr = true_x, y_curr = true_y)
-for (tp in unique(df$func.type)) {
-  p <- ggplot() +
-    geom_point(data=df%>%filter(func.type==tp), aes(x=x_curr, y=y_curr, alpha=tpt, fill=tpt),size=15,shape=21) +
-    geom_path(data=df%>%filter(func.type==tp), aes(x=x_curr, y=y_curr, alpha=tpt),size=3) + 
-    theme_void() + theme(legend.title=element_blank(),plot.background = element_rect(color = "black", size=2),legend.position="none", strip.background=element_rect(fill="white", color="white"), strip.text=element_text(color="black"), plot.margin = margin(30, 30, 30, 30) ) +
-    scale_fill_gradient(low = "white", high = "black")
- ggsave(sprintf("../figs/func_ims/%s.png", tp), plot = p, width = 6, height = 6, units = "in", bg="white")
-}
-```
-
-
-
-
-
-
-
-
-
-
-#OLD
-```{r, message=F}
-#now gpsl
-df_human <- read.csv(paste(path, 'trials_cleaned.csv', sep=""))
-df_human <- filter(df_human, func.name %in% unique(df_kid$func.name))
-#df_human <- df_adult
-df_gpsl_2 <- process_df_model(df_gpsl)
-df_human_gp <- add_new_columns_grouped(df_human,df_gpsl_2, get_model_data, c("func.name", "n"), "gp", c("gp_pred_x", "gp_std_x", "gp_pred_y", "gp_std_y", "gp_posterior", "gp_particle"))
-df_human_gp <- df_human_gp %>%
-             unnest(gp_pred_x, gp_pred_y, gp_std_x, gp_std_y, gp_posterior, gp_particle) %>%
-              mutate(gp_err_x = gp_pred_x - true_x) %>%
-              mutate(gp_err_y = gp_pred_y - true_y) %>%
-              mutate(gp_abs_err = (gp_err_x**2. + gp_err_y**2.)**0.5) %>%
-              mutate(gp_norm_abs_err = gp_abs_err/(true_dist))
-df_human_model <- df_human_gp
-
-df_human_model_sum <- df_human_model %>%
-                filter(n>2) %>%
-                group_by(func.name, n) %>%
-                #filter(!is.na(ridge_posterior)) %>%
-                mutate(pred_x = mean(pred_x)) %>%
-                mutate(pred_y = mean(pred_y)) %>%
-                mutate(err_x=mean(err_x)) %>%
-                mutate(err_y = mean(err_y)) %>%
-               mutate(abs_err = mean(abs_err)) %>%
-               mutate(norm_abs_err = mean(norm_abs_err)) %>%
-                group_by(func.name, n, subj_id) %>%
-                #mutate(ridge_posterior = ridge_posterior/sum(ridge_posterior)) %>%
-                # mutate(lot_pred_x = sum(lot_pred_x*lot_posterior)) %>%
-                # mutate(lot_pred_y = sum(lot_pred_y*lot_posterior)) %>%
-                # mutate(lot_err_x = sum(lot_err_x * lot_posterior)) %>%
-                # mutate(lot_err_y = sum(lot_err_y * lot_posterior)) %>%
-                # mutate(lot_abs_err = sum(lot_abs_err * lot_posterior)) %>%
-                # mutate(lot_norm_abs_err = sum(lot_norm_abs_err * lot_posterior)) %>%
-                mutate(gp_pred_x = sum(gp_pred_x*gp_posterior)) %>%
-                mutate(gp_pred_y = sum(gp_pred_y*gp_posterior)) %>%
-                mutate(gp_err_x = sum(gp_err_x * gp_posterior)) %>%
-                mutate(gp_err_y = sum(gp_err_y * gp_posterior)) %>%
-                mutate(gp_abs_err = sum(gp_abs_err * gp_posterior)) %>%
-                mutate(gp_norm_abs_err = sum(gp_norm_abs_err * gp_posterior)) %>%
-                #mutate(rbf_pred_x = sum(rbf_pred_x*rbf_posterior)) %>%
-                #mutate(rbf_pred_y = sum(rbf_pred_y*rbf_posterior)) %>%
-                #mutate(rbf_err_x = sum(rbf_err_x * rbf_posterior)) %>%
-                #mutate(rbf_err_y = sum(rbf_err_y * rbf_posterior)) %>%
-                #mutate(rbf_abs_err = sum(rbf_abs_err * rbf_posterior)) %>%
-                #mutate(rbf_norm_abs_err = sum(rbf_norm_abs_err * rbf_posterior)) %>%
-                #mutate(ridge_pred_x = sum(ridge_pred_x*ridge_posterior)) %>%
-                #mutate(ridge_pred_y = sum(ridge_pred_y*ridge_posterior)) %>%
-                #mutate(ridge_err_x = sum(ridge_err_x * ridge_posterior)) %>%
-                #mutate(ridge_err_y = sum(ridge_err_y * ridge_posterior)) %>%
-                #mutate(ridge_abs_err = sum(ridge_abs_err * ridge_posterior)) %>%
-                #mutate(ridge_norm_abs_err = sum(ridge_norm_abs_err * ridge_posterior)) %>%
-                top_n(n=1, wt=gp_particle) %>%
-                mutate(norm_err_x = err_x/(true_dist+sm)) %>%
-                mutate(norm_err_y = err_y/(true_dist+sm)) %>%
-                # mutate(lot_norm_err_x = lot_err_x/(true_dist+sm)) %>%
-                # mutate(lot_norm_err_y = lot_err_y/(true_dist+sm))# %>%
-                mutate(gp_norm_err_x = gp_err_x/(true_dist+sm)) %>%
-                mutate(gp_norm_err_y = gp_err_y/(true_dist+sm)) #%>%
-                #mutate(ridge_norm_err_x = ridge_err_x/(true_dist+sm)) %>%
-                #mutate(ridge_norm_err_y = ridge_err_y/(true_dist+sm)) %>%
-                #mutate(rbf_norm_err_x = rbf_err_x/(true_dist+sm)) %>%
-                #mutate(rbf_norm_err_y = rbf_err_y/(true_dist+sm))
-
-beta(lm(data=df_human_model_sum, norm_abs_err ~ gp_norm_abs_err))
-```
-
-
-#SCRATCH
-```{r}
-df_human_model_sum <- df_human_model %>%
-                group_by(func.name, n) %>%
-                #filter(!is.na(ridge_posterior)) %>%
-                filter(n>1) %>%
-                mutate(pred_x = mean(pred_x)) %>%
-                mutate(pred_y = mean(pred_y)) %>%
-                mutate(err_x=mean(err_x)) %>%
-                mutate(err_y = mean(err_y)) %>%
-               mutate(abs_err = mean(abs_err)) %>%
-               mutate(norm_abs_err = mean(norm_abs_err)) %>%
-                group_by(func.name, n, subj_id) %>%
-                #mutate(ridge_posterior = ridge_posterior/sum(ridge_posterior)) %>%
-                mutate(lot_pred_x = sum(lot_pred_x*lot_posterior)) %>%
-                mutate(lot_pred_y = sum(lot_pred_y*lot_posterior)) %>%
-                mutate(lot_err_x = sum(lot_err_x * lot_posterior)) %>%
-                mutate(lot_err_y = sum(lot_err_y * lot_posterior)) %>%
-                mutate(lot_abs_err = sum(lot_abs_err * lot_posterior)) %>%
-                mutate(lot_norm_abs_err = sum(lot_norm_abs_err * lot_posterior)) %>%
-                #mutate(gp_pred_x = sum(gp_pred_x*gp_posterior)) %>%
-                #mutate(gp_pred_y = sum(gp_pred_y*gp_posterior)) %>%
-                #mutate(gp_err_x = sum(gp_err_x * gp_posterior)) %>%
-                #mutate(gp_err_y = sum(gp_err_y * gp_posterior)) %>%
-                #mutate(gp_abs_err = sum(gp_abs_err * gp_posterior)) %>%
-                #mutate(gp_norm_abs_err = sum(gp_norm_abs_err * gp_posterior)) %>%
-                #mutate(rbf_pred_x = sum(rbf_pred_x*rbf_posterior)) %>%
-                #mutate(rbf_pred_y = sum(rbf_pred_y*rbf_posterior)) %>%
-                #mutate(rbf_err_x = sum(rbf_err_x * rbf_posterior)) %>%
-                #mutate(rbf_err_y = sum(rbf_err_y * rbf_posterior)) %>%
-                #mutate(rbf_abs_err = sum(rbf_abs_err * rbf_posterior)) %>%
-                #mutate(rbf_norm_abs_err = sum(rbf_norm_abs_err * rbf_posterior)) %>%
-                #mutate(ridge_pred_x = sum(ridge_pred_x*ridge_posterior)) %>%
-                #mutate(ridge_pred_y = sum(ridge_pred_y*ridge_posterior)) %>%
-                #mutate(ridge_err_x = sum(ridge_err_x * ridge_posterior)) %>%
-                #mutate(ridge_err_y = sum(ridge_err_y * ridge_posterior)) %>%
-                #mutate(ridge_abs_err = sum(ridge_abs_err * ridge_posterior)) %>%
-                #mutate(ridge_norm_abs_err = sum(ridge_norm_abs_err * ridge_posterior)) %>%
-                top_n(n=1, wt=lot_particle) %>%
-                mutate(norm_err_x = err_x/(true_dist+sm)) %>%
-                mutate(norm_err_y = err_y/(true_dist+sm)) %>%
-                mutate(lot_norm_err_x = lot_err_x/(true_dist+sm)) %>%
-                mutate(lot_norm_err_y = lot_err_y/(true_dist+sm))# %>%
-                #mutate(gp_norm_err_x = gp_err_x/(true_dist+sm)) %>%
-                #mutate(gp_norm_err_y = gp_err_y/(true_dist+sm)) #%>%
-                #mutate(ridge_norm_err_x = ridge_err_x/(true_dist+sm)) %>%
-                #mutate(ridge_norm_err_y = ridge_err_y/(true_dist+sm)) %>%
-                #mutate(rbf_norm_err_x = rbf_err_x/(true_dist+sm)) %>%
-                #mutate(rbf_norm_err_y = rbf_err_y/(true_dist+sm))
-
-```
-```{r, message=F}
-model <- df_lot
-df_model <- preprocess_model(model)
-#add prev pt
-df_model <- df_model %>%
-            group_by(func.name, particle) %>%
-            arrange(tpt) %>%  # Sort the DataFrame by tpt to ensure correct lagging
-            mutate(prev_x = lag(true_x), prev_y = lag(true_y)) %>%
+  df_aic <- grouped %>%
+            group_by(model) %>%
+            summarize(LL_mean_model=mean(LL_mean_model),
+                      model_sum_LL=mean(model_sum_LL), o_sd_mean=mean(o_sd_mean),
+                      l_sd_mean=mean(l_sd_mean), l_p_mean=mean(l_p_mean)) %>%
+            group_by(model) %>%
+            mutate(n_params = ifelse(model%in%c("Prev pt", "True pt"), n_subjs, n_subjs*3)) %>%
+            mutate(AIC = (2*n_params) - (2*model_sum_LL)) %>%
             ungroup() %>%
-            mutate(true_dist=((true_x-prev_x)**2. + (true_y-prev_y)**2.)**0.5) %>%
-            mutate(err_x=pred_x-true_x) %>%
-            mutate(err_y=pred_y-true_y) %>%
-            mutate(abs_err = ((err_x**2)+(err_y)**2) **0.5) %>%  
-            mutate(norm_abs_err = abs_err/(true_dist)) %>%
-            group_by(func.name, tpt) %>%
-            mutate(test = sum(posterior)) %>%
-            mutate(norm_abs_err = sum(norm_abs_err * posterior)) %>%
-            top_n(n=1, wt=particle) %>%
-            #add unique id col
-            ungroup()
+            mutate(delta_AIC = AIC - min(AIC))
 
-#mean rel err first across tpts with subjs/funcs, then across subjs within funcs
-df_human <- df_human_prev %>% group_by(func.name) %>% mutate(scaled_err = scale(norm_abs_err)[,1]) %>% ungroup()
-df_human <- df_human %>% filter(scaled_err < 3, na.rm=TRUE)   
-df_human <- df_human %>% filter(!(func.name=="hourglass_1" & subj_id=="bpmhxv5wmp")) %>% group_by(subj_id, func.name) %>% summarize(mean_norm_abs_err = mean(norm_abs_err,  na.rm=T)) %>% ungroup() %>% group_by(func.name) %>% summarize(hum_mean_norm_abs_err = mean(mean_norm_abs_err,  na.rm=T))%>% ungroup()
-                                                                                                                             
-df_mod <- df_model %>% group_by(func.name) %>% summarize(mod_mean_norm_abs_err = mean(norm_abs_err,  na.rm=T)) %>% ungroup()
-#plot_df <- df_human %>%
-#          group_by(func.name) %>%
-#          summarize(mean_human_norm_abs_err = mean(norm_abs_err, na.rm = TRUE), mean_model_norm_abs_err = mean(model_norm_abs_err, na.rm = TRUE)) %>%
-#          ungroup()
+  return(df_aic)
+}
 
-plot_df <- merge(df_human, df_mod, by="func.name")
-ggplot(data=plot_df) +
-  geom_abline(slope = 1, intercept = 0, color = "gray", linetype = "dashed") +
-  geom_point(aes(x=mod_mean_norm_abs_err, y=hum_mean_norm_abs_err)) +
-  geom_smooth(aes(x=mod_mean_norm_abs_err, y=hum_mean_norm_abs_err), method = "lm", se = FALSE) +
-  coord_cartesian(xlim=c(0,1.1),ylim=c(0,1.1))
-cor(plot_df$hum_mean_norm_abs_err, plot_df$mod_mean_norm_abs_err)
-```
+all_fits_adult <- bind_rows(lot_adult %>%mutate(model="LoT"),
+                           gpnc_adult%>%mutate(model="GPNC"),
+                           gpsl_adult%>%mutate(model="GPSL"),
+                           ridge_adult%>%mutate(model="Ridge"),
+                           lin_adult%>%mutate(model="Lin."))
 
-```{r}
-df_human <- df_human_prev
-
-df_human_model <- add_new_columns_grouped(df_human, df_model, get_model_data, c("func.name", "n"), "model", c("model_pred_x", "model_std_x", "model_pred_y", "model_std_y", "model_posterior", "model_particle"))
-df_human_model <- df_human_model %>%
-             unnest(model_pred_x, model_pred_y, model_std_x, model_std_y, model_posterior, model_particle) %>%
-              mutate(model_err_x = model_pred_x - true_x) %>%
-              mutate(model_err_y = model_pred_y - true_y) %>%
-              mutate(model_abs_err = (model_err_x**2. + model_err_y**2.)**0.5) %>%
-              mutate(model_norm_abs_err = model_abs_err/(true_dist+))
-df_human_sub <- df_human_model %>%
-                group_by(func.name, n) %>%
-                mutate(pred_x = mean(pred_x)) %>%
-                mutate(pred_y = mean(pred_y)) %>%
-                mutate(err_x=mean(err_x)) %>%
-                mutate(err_y = mean(err_y)) %>%
-                mutate(abs_err = mean(abs_err)) %>%
-                mutate(norm_abs_err = mean(norm_abs_err)) %>%
-                group_by(func.name, n, subj_id) %>%
-                mutate(model_std_x = f_weighted_sd(0, model_std_x, model_posterior)) %>%
-                mutate(model_std_y = f_weighted_sd(0, model_std_y, model_posterior)) %>%
-                mutate(model_pred_x = sum(model_pred_x*model_posterior)) %>%
-                mutate(model_pred_y = sum(model_pred_y*model_posterior)) %>%
-                mutate(model_err_x = sum(model_err_x * model_posterior)) %>%
-                mutate(model_err_y = sum(model_err_y * model_posterior)) %>%
-                mutate(model_abs_err = sum(model_abs_err * model_posterior)) %>%
-                mutate(model_norm_abs_err = sum(model_norm_abs_err * model_posterior)) %>%
-                top_n(n=1, wt=model_particle) %>%
-                ungroup() %>%
-                group_by(func.name, n) %>%
-                mutate(model_pred_x = mean(model_pred_x)) %>%
-                mutate(model_pred_y = mean(model_pred_y)) %>%
-                mutate(model_err_x = sum(model_err_x )) %>%
-                mutate(model_err_y = mean(model_err_y )) %>%
-                mutate(model_abs_err = mean(model_abs_err )) %>%
-                mutate(model_norm_abs_err = mean(model_norm_abs_err )) %>%
-                top_n(n=1, wt=id) %>%
-                group_by(func.name) %>%
-                mutate(mean_abs_err = mean(abs_err,na.rm=TRUE)) %>%
-                mutate(mean_rel_err = mean(norm_abs_err,na.rm=TRUE)) %>%
-                ungroup() %>%
-                arrange(mean_rel_err) %>%
-                filter(n>2)
-```
-
-```{r}
-
-plot_df <- df_human_sub %>% group_by(func.name) %>% summarize(model_norm_abs_err = mean(model_norm_abs_err, na.rm=T), norm_abs_err = mean(norm_abs_err, na.rm=T),)
-ggplot(data=plot_df) +
-  geom_abline(slope = 1, intercept = 0, color = "gray", linetype = "dashed") +
-  geom_point(aes(x=model_norm_abs_err, y=norm_abs_err)) +
-  geom_smooth(aes(x=model_norm_abs_err, y=norm_abs_err), method = "lm", se = FALSE) +
-  coord_cartesian(xlim=c(0,1.1),ylim=c(0,1.1))
-cor(plot_df$model_norm_abs_err, plot_df$norm_abs_err)
-```
-
-```{r}
-plot_df <- df_human_sub %>%
-          group_by(func.name) %>%
-          summarize(mean_human_norm_abs_err = mean(norm_abs_err, na.rm = TRUE), mean_model_norm_abs_err = mean(model_norm_abs_err, na.rm = TRUE)) %>%
-          ungroup()
-
-ggplot(data=plot_df) +
-  geom_point(aes(x=mean_human_norm_abs_err, y=mean_model_norm_abs_err, color=func.name))
-cor(plot_df$mean_human_norm_abs_err, plot_df$mean_model_norm_abs_err)
-
-```
+all_fits_kid <- bind_rows(lot_kid%>%mutate(model="LoT"),
+                         gpnc_kid%>%mutate(model="GPNC"),
+                         gpsl_kid%>%mutate(model="GPSL"),
+                         ridge_kid%>%mutate(model="Ridge"),
+                         lin_kid%>%mutate(model="Lin."))
 
 
+all_fits_monkey <- bind_rows(lot_monkey%>%mutate(model="LoT"),
+                            gpsl_monkey%>%mutate(model="GPSL"),
+                            gpnc_monkey%>%mutate(model="GPNC"),
+                            ridge_monkey%>%mutate(model="Ridge"),
+                            lin_monkey%>%mutate(model="Lin."))
 
-#testing out single functions
-```{r}
-#what's going on with zigzag 2, why is gpnc so much better
-df_kid <- read.csv("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/kids/dots_app_kids/data/clean_data/data.csv")
-df_true <- df_kid[order(df_kid$tpt),] %>% rename(func.name = seq_id)%>% mutate(func.name = ifelse(func.name == "example_line", "line", func.name))
-funcs <- c('zigzag_3')
-plot_df <- df_lot
-ggplot() +
-  geom_point(data=df_true%>%filter(func.name %in% funcs, tpt %in% c(0:14)), aes(x=true_x, y=true_y, alpha=tpt+1)) +
-  geom_path(data=df_true%>%filter(func.name %in% funcs, tpt %in% c(0:14)), aes(x=true_x, y=true_y, alpha=tpt+1), linetype="solid") +
-  geom_point(data=plot_df%>%filter(func.name %in% funcs, tpt %in% c(12:14)), aes(x=pred_x, y=pred_y, color=tpt), alpha=0.5) +
-  geom_point(data=df_adult%>%rename(func.name = seq_id)%>%filter(func.name %in% funcs, tpt %in% c(12:14)), aes(x=response_x, y=response_y, color=tpt), shape=8, alpha=0.8) +
-  geom_errorbar(data=plot_df%>%filter(func.name %in% funcs, tpt %in% c(12:14)), aes(x=pred_x, ymin=pred_y-sd_y, ymax=pred_y+sd_y, alpha=posterior, color=tpt)) +
-  geom_errorbar(data=plot_df%>%filter(func.name %in% funcs, tpt %in% c(12:14)), aes(y=pred_y, xmin=pred_x-sd_x, xmax=pred_x+sd_x, alpha=posterior, color=tpt)) +
-  coord_cartesian(xlim=c(-10,5), ylim=c(-5,5)) +
-  theme_void() + theme(legend.title=element_blank(), legend.text=element_blank(), panel.background = element_rect(fill = "white"))+
-  scale_color_gradient(low = "purple", high = "orange") +
-  guides(color="none", alpha="none") +
-  facet_wrap(~func.name, scales="free")
-```
+print("Adults bet fit:")
+df_aic_adult <- get_AIC(all_fits_adult)
+print("Kids best fit:")
+df_aic_kid <- get_AIC(all_fits_kid)
+print("Monkeys best fit:")
+df_aic_monkey <- get_AIC(all_fits_monkey)
 
-```{r}
-plot_df <- grouped_wide
 
-#scatter LoT LL vs other model LL for each subj
-p1 <- ggplot(plot_df, aes(x = lot_LL_mean, y= gpsl_LL_mean)) +
-  geom_point() + coord_cartesian(xlim=c(-5,-0.5), ylim=c(-5,-0.5)) + theme_light() + geom_abline(slope = 1, intercept = 0, color = "gray", linetype = "dashed")
-p2 <- ggplot(plot_df, aes(x = lot_LL_mean, y= gpnc_LL_mean)) +
-  geom_point() + coord_cartesian(xlim=c(-5,-0.5), ylim=c(-5,-0.5)) + theme_light() + geom_abline(slope = 1, intercept = 0, color = "gray", linetype = "dashed")
-p3 <- ggplot(plot_df, aes(x = lot_LL_mean, y= ridge_LL_mean)) +
-  geom_point() + coord_cartesian(xlim=c(-5,-0.5), ylim=c(-5,-0.5)) + theme_light() + geom_abline(slope = 1, intercept = 0, color = "gray", linetype = "dashed")
-
-p <- grid.arrange(p1, p2, p3, ncol=3)
-#ggplot(data=grouped_wide, aes(x=lot_LL_mean)) +
-#  geom_point() +
-#  facet_grid(. ~ c("gpsl_LL_mean", "gpnc_LL_mean", "ridge_LL_mean"))
-
-ggsave(paste0("../figs/","scattas.png"), plot=p, width=12, height=5)
-```
-
-```{r}
-ggplot() +
-  geom_point(data=grouped, aes(x=subj_id, y=lot_LL_mean), color="blue", alpha=0.8) +
-  geom_point(data=grouped, aes(x=subj_id, y=gpsl_LL_mean), color="pink", alpha=0.8) + 
-  geom_point(data=grouped, aes(x=subj_id, y=gpnc_LL_mean), color="orange", alpha=0.8) +
-  geom_point(data=grouped, aes(x=subj_id, y=ridge_LL_mean), color="lightgreen", alpha=0.8) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-```
-
-```{r}
-beta(lm(data=df_human_lot, pred_x ~ lot_pred_x))
-beta(lm(data=df_human_lot, pred_y ~ lot_pred_y))
-beta(lm(data=df_human_sub, norm_abs_err ~ lot_norm_abs_err))
 ```
 
 
 ```{r}
-df_temp <- df_use %>%
-           group_by(func.name) %>%
-           summarize(mean_LL = mean(LL))
-sum(df_temp$mean_LL)
+grouped_kid <- all_fits_kid %>%
+                  group_by(model) %>%
+                  mutate(model_sum_LL = sum(LL, na.rm=T)) %>%
+                  group_by(subj_id, model, func.name) %>%
+                  summarize(LL_mean = mean(LL, na.rm = TRUE),
+                            model_sum_LL = mean(model_sum_LL), o_sd = mean(o_sd),
+                            l_sd = mean(l_sd), l_p = mean(l_p)) %>%
+                  ungroup() %>%
+                  group_by(subj_id, model) %>%
+                  summarize(LL_mean = mean(LL_mean, na.rm=TRUE),
+                            model_sum_LL = mean(model_sum_LL), o_sd = mean(o_sd),
+                            l_sd = mean(l_sd), l_p = mean(l_p)) %>%
+                  ungroup() %>%
+                  group_by(model) %>%
+                  mutate(LL_mean_model = mean(LL_mean),
+                         model_sum_LL = mean(model_sum_LL), o_sd_mean = mean(o_sd),
+                         l_sd_mean = mean(l_sd), l_p_mean = mean(l_p))
+  
+n_subjs = length(unique(grouped_kid$subj_id))
+  
+top <- grouped_kid %>%
+    group_by(subj_id) %>%
+    slice_max(order_by = LL_mean) %>%
+    ungroup()
+mean(top$o_sd)
+mean(top$l_sd)
 ```
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-### Other nice plots
-```{r, fig.width=9,fig.height=4}
-ggplot(data=df_human_sub,  aes(x=reorder(df_human_sub$func.name, df_human_sub$mean_rel_err))) +
-  #    stat_summary(data=df_ridge_use, aes(y=abs_err_1, color="1-degree"),fun="mean",geom="point",size=2.25) +
-        stat_summary(data=df_human_sub, aes(y=norm_abs_err, color="Human", fill="Human"), geom="bar", fun="mean", alpha=0.8) +
-        stat_summary(data=df_human_sub, aes(y=lot_norm_abs_err,  color="LoT", fill="LoT"), geom="point", fun="mean", alpha=0.8) +
-        scale_fill_manual(name="Who",values=c("gray","darkred", "orange", "dodgerblue","pink","gold"),  breaks=c("Human","GP", "LoT", "1-degree","2-degree","3-degree"), labels=c("Human", "GP","LoT", "Ridge (1)", "Ridge (2)", "Ridge (3)")) +
-        scale_color_manual(name="Who",values=c("black","darkred", "orange", "dodgerblue","pink","gold"),  breaks=c("Human","GP", "LoT", "1-degree","2-degree","3-degree"), labels=c("Human", "GP","LoT", "Ridge (1)", "Ridge (2)", "Ridge (3)")) +
-        paper_theme +
-        labs(x="Trial", y="Absolute error") +
-        paper_theme + theme(axis.text.x=element_text(angle=-90,size=12,hjust=0), legend.title=element_blank(), axis.title.x=element_blank())
 ```
 
-```{r, fig.width=16,fig.height=10}
-ggplot() +
-      geom_path(data=df_lot, aes(x=true_x, y=true_y),linetype="dotted", alpha=0.5,size=0.5) +
-        geom_point( data=df_lot,aes(x=true_x, y=true_y, group=func.name), alpha=0.8,size=0.9) +
-          geom_point(data=df_lot, aes(x=pred_x, y=pred_y,color=n, alpha=(n/50)**0.5),size=1.25) +
-      labs(x="",y="") + guides(color="none", alpha="none") +
-     facet_wrap(~func.name, scales="free",nrow=5) +
-                    scale_color_gradientn(colors=c("blue","red","orange","gold")) +
-            paper_theme + theme(legend.title=element_blank(), legend.text=element_blank(),
-                        strip.text=element_blank(), 
-                           axis.line.x=element_blank(), axis.line.y=element_blank(),     panel.grid.major = element_blank(),
-    panel.grid.minor = element_blank(),     axis.line = element_blank(), axis.text.x=element_blank(), axis.text.y=element_blank(), axis.ticks=element_blank(),   panel.background = element_rect(color = NA))
+```{r}
+grouped_adult <- all_fits_adult %>%
+                  group_by(model) %>%
+                  mutate(model_sum_LL = sum(LL, na.rm=T)) %>%
+                  group_by(subj_id, model, func.name) %>%
+                  summarize(LL_mean = mean(LL, na.rm = TRUE),
+                            model_sum_LL = mean(model_sum_LL), o_sd = mean(o_sd),
+                            l_sd = mean(l_sd), l_p = mean(l_p)) %>%
+                  ungroup() %>%
+                  group_by(subj_id, model) %>%
+                  summarize(LL_mean = mean(LL_mean, na.rm=TRUE),
+                            model_sum_LL = mean(model_sum_LL), o_sd = mean(o_sd),
+                            l_sd = mean(l_sd), l_p = mean(l_p)) %>%
+                  ungroup() %>%
+                  group_by(model) %>%
+                  mutate(LL_mean_model = mean(LL_mean),
+                         model_sum_LL = mean(model_sum_LL), o_sd_mean = mean(o_sd),
+                         l_sd_mean = mean(l_sd), l_p_mean = mean(l_p))
+  
+n_subjs = length(unique(grouped_adult$subj_id))
+  
+top <- grouped_adults %>%
+    group_by(subj_id) %>%
+    slice_max(order_by = LL_mean) %>%
+    ungroup()
+print(table(top$model))
 ```
-
-```{r, fig.width=12,fig.height=5}
-ggplot() +
-      geom_ellipse(data=df_human_sub, aes(x0 = lot_pred_x, y0 = lot_pred_y, a =lot_std_x, b = lot_std_y, angle = 0, fill=n, color=n), alpha=0.1,size=0.2) + #, color=adjustcolor("white", alpha.f=0)) +
-      geom_path(data=df_funcs, aes(x=true_x, y=true_y),linetype="dotted", alpha=0.5,size=0.5) +
-        geom_point( data=df_funcs,aes(x=true_x, y=true_y, group=func.name), alpha=0.8,size=0.9) +
-          geom_path(data=df_human_sub, aes(x=lot_pred_x, y=lot_pred_y,color=n, alpha=(n/50)**0.5),size=0.5) +
-          geom_point(data=df_human_sub, aes(x=lot_pred_x, y=lot_pred_y,color=n, alpha=(n/50)**0.5),size=2) +
-      labs(x="",y="") + guides(fill="none", alpha="none") +
-     facet_wrap(~func.name, scales="free",nrow=5) +
-                    scale_color_gradientn(colors=c("blue","red","orange","gold"),labels=c("t=1", "t=20"),
-                                        breaks=c(1,20)) +
-                    scale_fill_gradientn(colors=c("blue","red","orange","gold")) +
-       scale_alpha(range=c(0.2,0.5)) +
-            paper_theme + theme( legend.title=element_blank(),
-                      #   legend.text=element_text(hjust=-1),
-                        strip.text=element_blank(), 
-                           axis.line.x=element_blank(), axis.line.y=element_blank(),     panel.grid.major = element_blank(),
-    panel.grid.minor = element_blank(),     axis.line = element_blank(), axis.text.x=element_blank(), axis.text.y=element_blank(),
-            axis.ticks=element_blank(),  panel.background = element_rect(color = NA))
-#ggsave(paste0("figs/","all_funcs_lot.pdf"),width=12, height=5)
-```
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
