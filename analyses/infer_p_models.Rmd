@@ -1,5 +1,5 @@
 ---
-title: "estimate_model_probs"
+title: "infer p models"
 output: html_document
 ---
 

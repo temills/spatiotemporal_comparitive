@@ -102,7 +102,6 @@ preprocess_model <- function(df_model) {
   df_model <- df_model %>%
         get_ll() %>%
         rename(func.name = seq_id, n = tpt) %>%
-        rescale_line() %>%
         rowwise() %>%
         mutate(std_x = sd_x) %>%
         mutate(std_y = sd_y) %>%
