@@ -99,6 +99,9 @@ df_gpsl <- preprocess_df_model(read.csv("data/models/gpsl.csv"))
 df_lin <- preprocess_df_model(read.csv("data/models/linear.csv"))
 df_ridge <- preprocess_df_model(read.csv("data/models/ridge.csv"))
 ```
+```{r}
+write.csv(tmp, '../mia/polynomial.csv')
+```
 
 # Stan model helpers
 ```{r}
@@ -124,7 +127,7 @@ get_stan_df <- function(human_df, model_df_list, model_name_list) {
             mutate(x_pred = ifelse(x_pred < 0, 0, x_pred),
                    x_pred = ifelse(x_pred > 1, 1, x_pred),
                    y_pred = ifelse(y_pred < 0, 0, y_pred),
-                   y_pred = ifelse(y_pred > 1, 1, y_pred)) %>%
+                   y_pred = ifelse(y_pred > 0.75, 0.75, y_pred)) %>%
             group_by(func.type, tpt) %>%
             arrange(particle) %>%
             summarise(!!paste0(model_name, "_x_pred") := list(x_pred),
@@ -199,23 +202,43 @@ run_inference <- function(stan_df, n_iter, n_chains, model_name_list) {
 
 refactor_posterior <- function(posterior_samples) {
   refactored_post <- posterior_samples %>%
+                     #going from .subj.model to .model.subj
                      rename_with(~ gsub("posterior_probs\\.(\\d+)\\.(\\d+)", "posterior_probs.\\2.\\1", .x)) %>%
                      rename_with(~ gsub("log_likelihoods\\.(\\d+)\\.(\\d+)", "log_likelihoods.\\2.\\1", .x)) %>%
-                     rename_with(~ gsub("p_lapse_type\\.(\\d+)\\.(\\d+)", "p_lapse_type.\\2.\\1", .x)) %>%
-                     pivot_longer(cols = matches("p_lapse\\.\\d+|lapse_sd\\.\\d+|motor_sd\\.\\d+|posterior_probs\\.\\d+|log_likelihoods\\.\\d+|p_lapse_type\\.\\d+"),
+                     rename_with(~ gsub("p_lapse\\.(\\d+)\\.(\\d+)", "p_lapse.\\2.\\1", .x)) %>%
+                     rename_with(~ gsub("lapse_sd\\.(\\d+)\\.(\\d+)", "lapse_sd.\\2.\\1", .x)) %>%
+                     rename_with(~ gsub("motor_sd\\.(\\d+)\\.(\\d+)", "motor_sd.\\2.\\1", .x)) %>%
+                     #going from .subj.model.strategy to .strategy.model.subj
+                     rename_with(~ gsub("p_lapse_type\\.(\\d+)\\.(\\d+)\\.(\\d+)", "p_lapse_type.\\3.\\2.\\1", .x)) %>%
+                     #make .subj part of all these columns into a new column
+                     pivot_longer(cols = matches("p_lapse\\.\\d+|lapse_sd\\.\\d+|motor_sd\\.\\d+|posterior_probs\\.\\d+|log_likelihoods\\.\\d+"),
                                   names_to = c(".value", "subj"),
-                                  names_pattern = "(p_lapse|lapse_sd|motor_sd|posterior_probs.\\d+|log_likelihoods.\\d+|p_lapse_type.\\d+)\\.(\\d+)")          
+                                  names_pattern = "(p_lapse.\\d+|lapse_sd.\\d+|motor_sd.\\d+|p_lapse_type.\\d+.\\d+|posterior_probs.\\d+|log_likelihoods.\\d+)\\.(\\d+)")          
   refactored_post$subject_id <- names(var_maps$subject_id)[match(refactored_post$subj, var_maps$subject_id)]
   return(refactored_post)
 }
 
+# refactor_posterior <- function(posterior_samples) {
+#   refactored_post <- posterior_samples %>%
+#                      rename_with(~ gsub("posterior_probs\\.(\\d+)\\.(\\d+)", "posterior_probs.\\2.\\1", .x)) %>%
+#                      rename_with(~ gsub("log_likelihoods\\.(\\d+)\\.(\\d+)", "log_likelihoods.\\2.\\1", .x)) %>%
+#                      #rename_with(~ gsub("p_lapse_type\\.(\\d+)\\.(\\d+)", "p_lapse_type.\\2.\\1", .x)) %>%
+#                      pivot_longer(cols = matches("p_lapse\\.\\d+|lapse_sd\\.\\d+|motor_sd\\.\\d+|posterior_probs\\.\\d+|log_likelihoods\\.\\d+|p_lapse_type\\.\\d+"),
+#                                   names_to = c(".value", "subj"),
+#                                   names_pattern = "(p_lapse|lapse_sd|motor_sd|posterior_probs.\\d+|log_likelihoods.\\d+|p_lapse_type.\\d+)\\.(\\d+)")          
+#   refactored_post$subject_id <- names(var_maps$subject_id)[match(refactored_post$subj, var_maps$subject_id)]
+#   return(refactored_post)
+# }
+
+
 run_inference_mixture <- function(stan_df, n_iter, n_chains, model_name_list) {
   stan_data <- get_stan_data(stan_df, model_name_list)
-  model_path <- "/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/spatiotemporal_comparitive/stan_models/infer_p_models_mixture.stan"
+  model_path <- "stan_models/infer_p_models_mixture.stan"
   fit <- stan(file=model_path, data=stan_data, iter=n_iter, chains=n_chains, cores=n_chains)
   return(fit)
 }
 
+#add p_lapse to this
 refactor_posterior_mixture <- function(posterior_samples) {
   refactored_post <- posterior_samples %>%
                      rename_with(~ gsub("p_models_ind\\.(\\d+)\\.(\\d+)", "p_models_ind_\\2.\\1", .), 
@@ -339,10 +362,14 @@ ggplot(data=post) +
 
 # Mixture
 ```{r}
-#fit_children_mixture <- readRDS("model_fits/infer_p_models_fit_kids_mixture.rds")
+#fit_children_mixture <- readRDS("model_fits/infer_p_models_fit_kids_mixture2.rds")
+fit_children_mixture <- readRDS("../fit_children_mixture.rds")
 posterior_samples_lst_mixture <- rstan::extract(fit_children_mixture)
 posterior_samples_mixture <- as.data.frame(posterior_samples_lst_mixture)
 post_mixture <- refactor_posterior_mixture(posterior_samples_mixture)
+```
+```{r}
+traceplot(fit_children_mixture, pars="p_lapse")
 ```
 # Group posterior
 ```{r}
@@ -396,9 +423,12 @@ ggplot(data=plot_df) +
   xlab("P(model)") +
   ylab("N. posterior samples") +
   facet_wrap(~subject_id, ncol=10)
-ggsave("figs/infer_p_models_kids_mixture.png", plot=last_plot(), width=15,height=6, dpi=500)
+#ggsave("figs/infer_p_models_kids_mixture.png", plot=last_plot(), width=15,height=6, dpi=500)
 ```
-
+```{r}
+ggplot(data=plot_df) +
+  geom_boxplot(y=p_lapse, x=subject_id)
+```
 
 # Compute posterior for adults
 # Assume participants use one model

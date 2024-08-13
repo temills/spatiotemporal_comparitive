@@ -8,6 +8,7 @@ data {
   vector<lower=0, upper=1>[N] y_curr;
   vector<lower=0, upper=1>[N] lin_x_pred;
   vector<lower=0, upper=1>[N] lin_y_pred;
+  real<lower=0, upper=1> upper_bound_y[N];
   int<lower=1, upper=12> guess_num[N];  // timepoint of guess within function
   vector<lower=0, upper=1>[N] next_is_repeat; // next pt is at a repeat location
   int<lower=1> n_subjs; // number of subjects
@@ -22,10 +23,11 @@ parameters {
   vector[n_func_types] beta_func_type;
   //real<lower=0> beta_guess_num;
   vector[12] beta_guess_num_func_type[n_func_types];
-  real<lower=0> sd_true; 
-  real<lower=0> sd_curr;
-  real<lower=0> sd_lin;
-  real<lower=0, upper=1> sd_prop_of_dist;
+  real<lower=0> motor_sd; 
+  real<lower=0> percept_sd; 
+  real<lower=0> lapse_sd;
+  //real<lower=0> sd_lin;
+  //real<lower=0, upper=1> sd_prop_of_dist;
   real<lower=0, upper=10> sd_subj;
   simplex[3] p_rand_strategy;
   real<lower=0, upper=1> max_p;
@@ -41,27 +43,29 @@ model { //When beta guess num is a vector, it fails to initialize. divergent tra
   beta_func_type ~ normal(0,3);
   //some noise in distance bt curr and next pt, which is relative to distance
   //between 0 and 1, proportion of distance we are off 
-  sd_prop_of_dist ~ beta(1,5);
-  sd_true ~ exponential(10);
-  sd_curr ~ exponential(10);
-  sd_lin ~ exponential(10);
+  //sd_prop_of_dist ~ beta(1,5);
+  motor_sd ~ exponential(10);
+  percept_sd ~ exponential(10);
+  lapse_sd ~ exponential(10);
+  //sd_lin ~ exponential(10);
   max_p ~ beta(1,1);
   p_rand_strategy ~ dirichlet(rep_vector(1,3));
   for (i in 1:N) {
     real p_true = max_p * inv_logit(use_true_icpt + use_true_icpt_subj[subj[i]] + beta_func_type[func_type[i]] + beta_guess_num_func_type[func_type[i]][guess_num[i]]);
-    vector[4] log_probs;
+    vector[3] log_probs;
     //if true
-    real sd_dist_x = 0;
-    real sd_dist_y = 0;
+    //real sd_dist_x = 0;
+    //real sd_dist_y = 0;
+    real if_percept_sd = 0;
     if (next_is_repeat[i]==0) {
-      sd_dist_x = abs(x_next[i] - x_curr[i]) * sd_prop_of_dist;
-      sd_dist_y = abs(y_next[i] - y_curr[i]) * sd_prop_of_dist;
+     if_percept_sd = percept_sd;      //sd_dist_x = abs(x_next[i] - x_curr[i]) * sd_prop_of_dist;sd_dist_y = abs(y_next[i] - y_curr[i]) * sd_prop_of_dist;
     }
-    log_probs[1] = log(p_true) + normal_lpdf(x_pred[i] | x_next[i], sd_true + sd_dist_x) + normal_lpdf(y_pred[i] | y_next[i], sd_true + sd_dist_y);
+    //log_probs[1] = log(p_true) + normal_lpdf(x_pred[i] | x_next[i], (sd_true**2 + sd_dist_x**2)**0.5) + normal_lpdf(y_pred[i] | y_next[i], (sd_true**2 + sd_dist_y**2)**0.5);
+    log_probs[1] = log(p_true) + normal_lpdf(x_pred[i] | x_next[i], (motor_sd^2 + if_percept_sd^2)^0.5) + normal_lpdf(y_pred[i] | y_next[i], (motor_sd^2 + if_percept_sd^2)^0.5);
     //otherwise
-    log_probs[2] = log((1-p_true) * p_rand_strategy[1]) + normal_lpdf(x_pred[i] | x_curr[i], sd_curr) + normal_lpdf(y_pred[i] | y_curr[i], sd_curr);
-    log_probs[3] = log((1-p_true) * p_rand_strategy[2]) + uniform_lpdf(x_pred[i] | 0, 1) + uniform_lpdf(y_pred[i] | 0, 1);
-    log_probs[4] = log((1-p_true) * p_rand_strategy[3]) + normal_lpdf(x_pred[i] | lin_x_pred[i], sd_lin) + normal_lpdf(y_pred[i] | lin_y_pred[i], sd_lin);
+    log_probs[2] = log((1-p_true) * p_rand_strategy[1]) + normal_lpdf(x_pred[i] | x_curr[i], lapse_sd) + normal_lpdf(y_pred[i] | y_curr[i], lapse_sd);
+    log_probs[3] = log((1-p_true) * p_rand_strategy[2]) + uniform_lpdf(x_pred[i] | 0, 1) + uniform_lpdf(y_pred[i] | 0, upper_bound_y[i]);
+    //log_probs[4] = log((1-p_true) * p_rand_strategy[3]) + normal_lpdf(x_pred[i] | lin_x_pred[i], sd_lin) + normal_lpdf(y_pred[i] | lin_y_pred[i], sd_lin);
     target += log_sum_exp(log_probs);
   }
 }

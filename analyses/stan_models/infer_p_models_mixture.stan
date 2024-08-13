@@ -38,7 +38,7 @@ parameters {
 
 model {
   p_models_group ~ dirichlet(rep_vector(1,M));
-  conc_param ~ gamma(1, 0.2);
+  conc_param ~ gamma(1, 0.2); //relax sparseness prior
   p_models_ind ~ dirichlet(p_models_group * conc_param);
   motor_sd ~ exponential(10);
   p_lapse_group_alpha ~ gamma(5, 4);

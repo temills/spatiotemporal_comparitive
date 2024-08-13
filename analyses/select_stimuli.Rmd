@@ -1,0 +1,296 @@
+---
+title: "select stimuli"
+output: html_document
+---
+
+```{r, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.width=4, fig.height=3,fig.align = "center",cache=TRUE)
+library(ggplot2)
+library(reshape)
+library(grid)
+library(dplyr)
+library(gridExtra)
+library(lme4)
+library(reghelper)
+library(RColorBrewer)
+library(robustbase)
+library(tidylog)
+library(tidyr)
+library(hash)
+library(rstan)
+library(png)
+library(gtable)
+library(hash)
+library(purrr)
+library(stringr)
+#library(rjson)
+library(ggforce)
+
+get_ll <- function(df) {
+  logsumexp <- function(x) {
+    max_x <- max(x)
+    max_x + log(sum(exp(x - max_x)))
+  }
+  df <- df %>%
+    group_by(tpt, seq_id) %>%
+    mutate(norm = logsumexp(score)) %>%
+    ungroup() %>%
+    mutate(posterior = exp(score - norm)) 
+  return(df)
+}
+
+preprocess_df_model <- function(df_model) {
+  df_model$id <- seq.int(1,nrow(df_model))
+  df_model <- df_model %>%
+        filter(!(tpt>2 & is.na(pred_x))) %>%
+        get_ll() %>%
+        rename(func.name = seq_id, n = tpt) %>%
+        rowwise() %>%
+        mutate(std_x = sd_x) %>%
+        mutate(std_y = sd_y) %>%
+        group_by(func.name) %>%
+        filter(n > 0) %>%
+        mutate(range_x = max(true_x) - min(true_x)) %>%
+        mutate(range_y = max(true_y) - min(true_y)) %>%
+        mutate(mean_x = mean(true_x)) %>%
+        mutate(mean_y = mean(true_y)) %>%
+        group_by(func.name, n) %>%
+        ungroup() %>%
+        group_by(func.name) %>%
+        mutate(abs_err = ((true_x-pred_x)**2 + (true_y-pred_y)**2)**0.5) %>%
+        mutate(mean_abs_err = mean(abs_err, na.rm=TRUE))
+  return(df_model)
+}
+
+
+preprocess_df_human <- function(df) {
+  df$attempt = 1
+  df$id <- seq_len(nrow(df))
+  df$n <- df$tpt
+  df <- df[order(df$tpt),] %>%
+      rename(pred_x = response_x, pred_y = response_y, func.name = seq_id, subj_id = subject_id) %>%
+      group_by(subj_id, trial_idx, tpt) %>%
+      mutate(r_id = subj_id) %>%
+      ungroup() %>%
+  return(df)
+}
+
+```
+
+
+###Load model data
+```{r}
+div_path <- 'model_divergence/'
+```
+
+```{r}
+#participants
+df_kid <- preprocess_df_human(read.csv("data/participants/kids.csv"))
+df_adult <- preprocess_df_human(read.csv("data/participants/adults.csv"))
+
+#models
+df_gpnc <- preprocess_df_model(read.csv('data/models/gpnc.csv'))
+df_gpsl <- preprocess_df_model(read.csv('data/models/gpsl.csv'))
+df_ridge <- preprocess_df_model(read.csv('data/models/ridge.csv'))
+df_lot <- preprocess_df_model(read.csv('data/models/lot.csv'))
+df_lin <- preprocess_df_model(read.csv('data/models/linear.csv'))
+```
+
+```{r}
+df <- bind_rows(df_lot%>%mutate(model="LoT"),
+                df_gpsl%>%mutate(model="GPSL"),
+                df_gpnc%>%mutate(model="GPNC"),
+                df_ridge%>%mutate(model="Ridge"),
+                df_lin%>%mutate(model="Lin"),
+                df_adult%>%mutate(model="adult"),
+                df_kid%>%mutate(model="kid")) %>%
+                filter(func.name %in% df_kid$func.name)
+
+df <- df %>%group_by(func.name) %>%
+            mutate(min_x = mean(min_x, na.rm=T), min_y = mean(min_y, na.rm=T),
+                   max_x = mean(max_x, na.rm=T), max_y = mean(max_y, na.rm=T)) %>%
+            ungroup() %>%
+            filter(n>2) %>%
+            filter(n<15) %>%
+            filter(score!=-Inf) %>%
+            mutate(scale_by = (max_x-min_x)) %>%
+            mutate(pred_x = (pred_x-min_x)/scale_by) %>%
+            mutate(pred_y = (pred_y-min_y)/scale_by) %>%
+            mutate(std_x = (std_x)/scale_by) %>%
+            mutate(std_y = (std_y)/scale_by)
+
+write.csv(df, paste(div_path, 'models.csv', sep=""))
+```
+
+
+#Let's find functions where each model diverges most from each other
+```{r, message=F, cache=T}
+sort_and_concat <- function(str1, str2) {
+  sorted_strings <- sort(c(str1, str2))
+  return(paste(sorted_strings, collapse = ","))
+}
+div_tpt <- read.csv(paste(div_path, 'div.csv', sep="")) %>%
+           filter(n>2) %>% filter(n<15) %>%
+           rowwise() %>%
+           mutate(model_pair = sort_and_concat(model1, model2)) %>%
+           group_by(model_pair, func.name, n) %>%
+           mutate(sym_kl = sum(kl)) %>%
+           ungroup()
+
+div_func <- div_tpt %>%
+       group_by(func.name, model1, model2, model_pair) %>%
+       summarize(mean_kl = mean(kl), mean_sym_kl = mean(sym_kl), mean_tv=mean(tv),
+                 median_kl = median(kl),  median_sym_kl = median(sym_kl), median_tv=median(tv))
+
+#preprocess div data
+div <- div_func %>%
+        group_by(func.name, model_pair) %>%
+        summarize(mean_sym_kl = mean(mean_sym_kl), median_sym_kl = mean(median_sym_kl), mean_tv=mean(mean_tv)) %>%
+        group_by(model_pair) %>%
+        mutate(func_order = rank(mean_sym_kl)) %>%
+        ungroup() %>%
+        filter(!(model_pair %in% c('Lin,Lin', 'LoT,LoT', 'Ridge,Ridge', 'GPSL,GPSL', 'GPNC,GPNC')))
+write.csv(div, "model_divergence/preprocessed_div.csv")
+
+```
+
+# Choose stimuli 
+```{r}
+
+#want 5 stimuli which maximize min KL across tpts between model pairs
+#for each stimulus set, look at max KL for each model pair
+#maximize that
+#and try to maximize average KL too
+df = read.csv("model_divergence/div_by_set.csv")
+
+#for each func set, compute min of mins
+convert_to_numeric_list <- function(x) {
+  x <- gsub("\\[|\\]", "", x)  # Remove brackets
+  as.numeric(unlist(strsplit(x, ",")))  # Split by comma and convert to numeric
+}
+# Add a new column with the medians of the lists
+
+
+df$median_kl_pair = sapply(df$all_kl, function(x) median(convert_to_numeric_list(x)))
+df_mean <-  df %>%
+       rename(min_kl_pair = min_kl,
+              mean_kl_pair = mean_kl,
+              max_kl_pair = max_kl,
+              all_kl_pair = all_kl) %>%
+              group_by(func_set) %>%
+              mutate(min_min_kl = min(min_kl_pair),
+                     min_max_kl = min(max_kl_pair),
+                     min_mean_kl = min(mean_kl_pair),
+                     mean_min_kl = mean(min_kl_pair),
+                     median_median_kl = median(median_kl_pair),
+                     mean_mean_kl = mean(mean_kl_pair)) 
+
+df_mean <- df_mean %>% group_by(func_set) %>%
+                   summarize(min_min_kl = mean(min_min_kl),
+                             min_max_kl = mean(min_max_kl),
+                             min_mean_kl = min(min_mean_kl),
+                             mean_min_kl = mean(mean_min_kl),
+                             median_median_kl = mean(median_median_kl),
+                             mean_mean_kl = mean(mean_mean_kl))
+
+#first off, we find the min across pairs of max kl (how well we can tell each model apart), and maximize that
+#now we also want to make sure that overall the functions tell the models apart
+#so we could say, for each model pair, what's the mean KL?
+#the annoying thing is, one model can dominate mean (KL very dif from other things)
+#could also make sure that for all model pairs, all functions can tell them a part a decent amount
+#max min across model pairs for min kl
+tmp <- df_mean[with(df_mean, order(min_max_kl, min_min_kl, decreasing = TRUE)),]
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+# div_tpt_no_motor_sd <- read.csv(paste(div_path, 'no_motor_sd_div.csv', sep="")) %>%
+#            filter(n>2) %>% filter(n<15) %>%
+#            rowwise() %>%
+#            mutate(model_pair = sort_and_concat(model1, model2)) %>%
+#            group_by(model_pair, func.name, n) %>%
+#            mutate(sym_kl = sum(kl)) %>%
+#            ungroup()
+# div_func_no_motor_sd <- div_tpt_no_motor_sd %>%
+#        group_by(func.name, model1, model2, model_pair) %>%
+#        summarize(mean_kl = mean(kl), mean_sym_kl2 = mean(sym_kl), mean_tv=mean(tv),
+#                  median_kl = median(kl),  median_sym_kl = median(sym_kl), median_tv=median(tv))
+# tmp <- merge(div_func, div_func_no_motor_sd, by=c('model1', 'model2', 'model_pair', 'func.name'))
+# beta(lm(data=tmp, mean_sym_kl ~ mean_sym_kl2))
+# ggplot(data=tmp) +
+#   geom_point(aes(x=mean_sym_kl, y=mean_sym_kl2), alpha=0.5)
+```
+
+
+```{r}
+beta(lm(data=div_func, mean_sym_kl ~ mean_tv))
+ggplot(data=div_func) +
+  geom_point(aes(x=mean_sym_kl, y=mean_kl), alpha=0.5)
+```
+
+```{r}
+#maybe rank functions for each model pair
+ggplot(data=div, aes(x=reorder(func.name, mean_sym_kl), y=mean_sym_kl, color=model_pair)) +
+  geom_point() +
+  stat_summary(geom="point", fun="mean", color="black") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+```{r}
+#maybe rank functions for each model pair
+ggplot(data=div, aes(x=reorder(func.name, mean_sym_kl), y=mean_sym_kl)) +
+  geom_point() +
+  stat_summary(geom="point", fun="mean", color="black") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  facet_wrap(~model_pair)
+
+```
+
+
+# TV #################
+
+```{r}
+ggplot(data=div, aes(x=reorder(func.name, mean_tv), y=mean_tv, color=model_pair)) +
+  geom_point() +
+  stat_summary(geom="point", fun="mean", color="black") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+
+```{r}
+ggplot(data=div, aes(x=reorder(func.name, mean_tv), y=mean_tv)) +
+  geom_point() +
+  stat_summary(geom="point", fun="mean", color="black") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  facet_wrap(~model_pair)
+```
+
+
+```{r}
+#earth mover distance
+del <- c("GPSL", "GPNC")
+
+temp <- mean_div %>%
+        filter(!(model1 %in% del)) %>%
+        filter(!(model2 %in% del)) %>%
+        group_by(func.name) %>%
+        summarize(kl=mean(kl), tv = mean(tv))
+
+# when is LoT most unlike GPNC?
+ggplot(data=temp, aes(x=reorder(func.name, tv), y=tv)) +
+  #geom_line(aes(y=mod1_emd-ord)) +
+  stat_summary(geom="point", fun="mean", alpha=0.8) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+```
+
+
+

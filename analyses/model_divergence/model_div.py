@@ -173,37 +173,37 @@ def construct_df(model_names, model_pair, outfile, bin_centers_x, bin_centers_y)
 
 
 
-def test(bin_centers_x, bin_centers_y):
-    # read model data
-    model_df = pd.read_csv('models.csv')
+# def test(bin_centers_x, bin_centers_y):
+#     # read model data
+#     model_df = pd.read_csv('models.csv')
         
-    # iterate thru models
-    model1_name = "LoT"
-    model1 = model_df[model_df["model"]==model1_name]
-    model2_name = "GPSL"
-    model2 = model_df[model_df["model"]==model2_name]
-    # iterate thru funcs
-    for (i, func) in enumerate(["triangle_1"]):#pd.unique(model1['func.name'])):
-        print("function " + str(i) + "/" + str(len(pd.unique(model1['func.name']))) + ": " + func)
-        # iterate thru tpts
-        for tpt in sorted(pd.unique(model1['n'])):
-            model1_tpt = model1[(model1['n']==tpt) & (model1['func.name']==func)]
-            model2_tpt = model2[(model2['n']==tpt) & (model2['func.name']==func)]
-            # compute pdfs
-            model1_pdf, model2_pdf = compute_pdfs_tpt(model1_tpt, model2_tpt, bin_centers_x, bin_centers_y)
-            # compute divergence
-            kl= compute_kl_divergence(model1_pdf, model2_pdf)
-            tv = compute_total_variation_distance(model1_pdf, model2_pdf)
-            emd = compute_emd(model1_pdf, model2_pdf, bin_centers_x, bin_centers_y)
-            #emd = None
-            # plot distributions
-            plot_res(model1_pdf, model2_pdf, model1_name, model2_name, kl, tv)
+#     # iterate thru models
+#     model1_name = "LoT"
+#     model1 = model_df[model_df["model"]==model1_name]
+#     model2_name = "GPSL"
+#     model2 = model_df[model_df["model"]==model2_name]
+#     # iterate thru funcs
+#     for (i, func) in enumerate(["triangle_1"]):#pd.unique(model1['func.name'])):
+#         print("function " + str(i) + "/" + str(len(pd.unique(model1['func.name']))) + ": " + func)
+#         # iterate thru tpts
+#         for tpt in sorted(pd.unique(model1['n'])):
+#             model1_tpt = model1[(model1['n']==tpt) & (model1['func.name']==func)]
+#             model2_tpt = model2[(model2['n']==tpt) & (model2['func.name']==func)]
+#             # compute pdfs
+#             model1_pdf, model2_pdf = compute_pdfs_tpt(model1_tpt, model2_tpt, bin_centers_x, bin_centers_y)
+#             # compute divergence
+#             kl= compute_kl_divergence(model1_pdf, model2_pdf)
+#             tv = compute_total_variation_distance(model1_pdf, model2_pdf)
+#             emd = compute_emd(model1_pdf, model2_pdf, bin_centers_x, bin_centers_y)
+#             #emd = None
+#             # plot distributions
+#             plot_res(model1_pdf, model2_pdf, model1_name, model2_name, kl, tv)
             
 
 def compute_divergence():
     bin_edges = np.arange(0, 1+bin_width, bin_width)
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-    model_names = ['Lin', 'LoT', 'GPSL', 'GPNC', 'Ridge', 'GPSL_new', 'GPNC_new']
+    model_names = ['Lin', 'LoT', 'GPSL', 'GPNC', 'Ridge']
     
     if len(sys.argv) > 1:
         i = int(sys.argv[1])
@@ -234,7 +234,6 @@ def select_stimuli():
     data = {'func_set' : [], 'model_pair' : [], 'mean_kl' : [], 'all_kl' : [], 'min_kl' : [], 'max_kl' : []}
     for (i, fs) in enumerate(all_func_sets):
         for mp in pd.unique(df["model_pair"]):
-            
             kls = []
             #get div for each func in func set
             for func in fs:
@@ -256,7 +255,7 @@ def select_stimuli():
 
 
 if __name__=="__main__":
-    motor_sd = 0.021
+    motor_sd = 0.027
     bin_width = .001
     #compute_divergence()
     #run_test()

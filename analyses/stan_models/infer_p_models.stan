@@ -22,7 +22,7 @@ data {
 
 parameters {
   //simplex[M] p_models_group;
-  real<lower=0> p_lapse_group_alpha;
+  real<lower=0>[M] p_lapse_group_alpha;
   real<lower=0> p_lapse_group_beta;
   real<lower=0, upper=1.0> p_lapse[n_subjs];
   simplex[2] p_lapse_type[n_subjs];
@@ -35,9 +35,9 @@ model {
   //p_models_group ~ dirichlet(rep_vector(1,M)); //inferred group prior
 
   //group level p_lapse
-  p_lapse_group_alpha ~ gamma(5, 4);
-  p_lapse_group_beta ~ gamma(12, 1);
-  p_lapse ~ beta(p_lapse_group_alpha, p_lapse_group_beta);
+  p_lapse_group ~ beta()
+  p_lapse_group_conc ~ 
+  p_lapse ~ beta(p_lapse_group*p_lapse_group_conc, (1-p_lapse_group)*p_lapse_group_conc);
   p_lapse_type ~ dirichlet(rep_vector(1,2));
   lapse_sd ~ exponential(10);
   motor_sd ~ exponential(10);
@@ -46,6 +46,7 @@ model {
 
   //compute prob of all datapoints under each model, then marginalize across models
   matrix[n_subjs, M] log_likelihoods = rep_matrix(0, n_subjs, M);
+  
   //compute log lik for each model for each subj, summing across datapoints
   for (i in 1:N) {
     //compute log lik of data for given strategy
