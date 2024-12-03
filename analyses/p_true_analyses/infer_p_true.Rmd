@@ -1,0 +1,372 @@
+---
+title: "infer p true"
+output: html_document
+---
+
+```{r, include=FALSE, echo=FALSE, cache=T}
+knitr::opts_chunk$set(echo = TRUE,fig.width=4, fig.height=3,fig.align = "center",cache=TRUE)
+library(ggplot2)
+library(reshape)
+library(grid)
+library(dplyr)
+library(gridExtra)
+library(lme4)
+library(reghelper)
+library(robustbase)
+library(tidylog)
+library(hash)
+library(rstan)
+library(png)
+library(gtable)
+library(tidyr)
+
+
+inv_logit <- function(x) { exp(x)/(1+exp(x))}
+is_repeat_df <- read.csv("../data/next_is_repeat.csv")
+
+preprocess_df_human <- function(df) {
+  df <- df %>%
+        filter(!(is.na(trial_idx))) %>%
+        rename(x_curr = prev_x, y_curr = prev_y, x_next = true_x, y_next = true_y,
+               x_pred = response_x, y_pred = response_y, func.type = seq_id) %>%
+        group_by(subject_id, func.type) %>%
+        arrange(tpt) %>%
+        mutate(x_prev = lag(x_curr), y_prev = lag(y_curr)) %>%
+        mutate(dx=x_curr-x_prev, dy=y_curr-y_prev) %>%
+        mutate(pred_dx=dx, pred_dy=dy) %>%
+        mutate(lin1_x_pred=x_curr+pred_dx, lin1_y_pred=y_curr+pred_dy) %>%
+        mutate(prev_dx = lag(dx), prev_dy = lag(dy)) %>%
+        group_by(subject_id, func.type, tpt) %>%
+        mutate(mean_dx = mean(c(prev_dx, dx), na.rm=T), mean_dy = mean(c(prev_dy, dy), na.rm=T)) %>%
+        mutate(std_dx = ifelse(!is.na(prev_dx), sd(na.omit(c(prev_dx, dx))), 0),
+               std_dy = ifelse(!is.na(prev_dx), sd(na.omit(c(prev_dy, dy))), 0)) %>%
+        mutate(lin2_x_pred = x_curr + mean_dx, lin2_y_pred = y_curr + mean_dy) %>%
+        ungroup()
+  
+  #cut off lin predictions at min/max
+  df$lin1_x_pred <- pmin(pmax(df$lin1_x_pred, df$min_x), df$max_x)
+  df$lin1_y_pred <- pmin(pmax(df$lin1_y_pred, df$min_y), df$max_y)
+  df$lin2_x_pred <- pmin(pmax(df$lin2_x_pred, df$min_x), df$max_x)
+  df$lin2_y_pred <- pmin(pmax(df$lin2_y_pred, df$min_y), df$max_y)
+        
+  # scale
+  df <-df %>%
+      mutate(scale_by = (max_x-min_x)) %>%
+      mutate(upper_bound_y = (max_y-min_y)/(max_x-min_x)) %>%
+      mutate(x_curr = (x_curr-min_x)/scale_by,
+             x_pred = (x_pred-min_x)/scale_by,
+             x_next = (x_next-min_x)/scale_by,
+             y_curr = (y_curr-min_y)/scale_by,
+             y_pred = (y_pred-min_y)/scale_by,
+             y_next = (y_next-min_y)/scale_by,
+             lin1_x_pred = (lin1_x_pred-min_x)/scale_by,
+             lin1_y_pred = (lin1_y_pred-min_y)/scale_by,
+             lin2_x_pred = (lin2_x_pred-min_x)/scale_by,
+             lin2_y_pred = (lin2_y_pred-min_y)/scale_by) %>%
+             mutate(max_y_tmp = (max_y-min_y)/scale_by,
+                   min_x_tmp = (min_x-min_x)/scale_by,
+                   max_x_tmp = (max_x-min_x)/scale_by,
+                   min_y_tmp = (min_y-min_y)/scale_by) %>%
+            mutate(max_x=max_x_tmp, min_x=min_x_tmp, max_y=max_y_tmp, min_y=min_y_tmp) %>%
+      mutate(guess_num = tpt - 2) %>%
+      mutate(guess_num_std = (guess_num-mean(guess_num))/sd(guess_num))
+  
+  df <- merge(df, is_repeat_df, by = c("func.type", "tpt"), suffixes=c("", ".temp")) %>%
+        subset(select = -c(X, X.temp, x_next.temp, y_next.temp))
+  df <- df[order(df$tpt),]
+  
+  
+  return(df)
+}
+
+preprocess_df_monkey <- function(df) {
+  df <- df[order(df$n),] %>%
+      rename(tpt = n, subject_id = monkey_name) %>%
+      group_by(subject_id, r_id, tpt) %>%
+      ungroup() %>%
+      #add linear predictions
+      group_by(func.type) %>%
+      arrange(tpt) %>%
+      ungroup() %>%
+      group_by(subject_id, r_id, func.type) %>%
+      arrange(tpt) %>%
+      mutate(x_prev = lag(x_curr), y_prev = lag(y_curr)) %>%
+      mutate(dx=x_curr-x_prev, dy=y_curr-y_prev) %>%
+      mutate(pred_dx=dx, pred_dy=dy) %>%
+      mutate(lin1_x_pred=x_curr+pred_dx, lin1_y_pred=y_curr+pred_dy) %>%
+      mutate(prev_dx = lag(dx), prev_dy = lag(dy)) %>%
+      group_by(subject_id, func.type, tpt) %>%
+      mutate(mean_dx = mean(c(prev_dx, dx), na.rm=T), mean_dy = mean(c(prev_dy, dy), na.rm=T)) %>%
+      mutate(std_dx = ifelse(!is.na(prev_dx), sd(na.omit(c(prev_dx, dx))), 0), std_dy = ifelse(!is.na(prev_dx), sd(na.omit(c(prev_dy, dy))), 0)) %>%
+      mutate(lin2_x_pred = x_curr + mean_dx, lin2_y_pred = y_curr + mean_dy) %>%
+      ungroup()
+  
+  #cut off lin predictions at min/max
+  df$lin1_x_pred <- pmin(pmax(df$lin1_x_pred, df$min_x), df$max_x)
+  df$lin1_y_pred <- pmin(pmax(df$lin1_y_pred, df$min_y), df$max_y)
+  df$lin2_x_pred <- pmin(pmax(df$lin2_x_pred, df$min_x), df$max_x)
+  df$lin2_y_pred <- pmin(pmax(df$lin2_y_pred, df$min_y), df$max_y)
+  
+  df <-df %>%
+      mutate(scale_by = (max_x-min_x)) %>%
+      mutate(upper_bound_y = (max_y-min_y)/(max_x-min_x)) %>%
+      mutate(x_curr = (x_curr-min_x)/scale_by,
+             x_pred = (x_pred-min_x)/scale_by,
+             x_next = (x_next-min_x)/scale_by,
+             y_curr = (y_curr-min_y)/scale_by,
+             y_pred = (y_pred-min_y)/scale_by,
+             y_next = (y_next-min_y)/scale_by,
+             lin1_x_pred = (lin1_x_pred-min_x)/scale_by,
+             lin1_y_pred = (lin1_y_pred-min_y)/scale_by,
+             lin2_x_pred = (lin2_x_pred-min_x)/scale_by,
+             lin2_y_pred = (lin2_y_pred-min_y)/scale_by) %>%
+             mutate(max_y_tmp = (max_y-min_y)/scale_by,
+                   min_x_tmp = (min_x-min_x)/scale_by,
+                   max_x_tmp = (max_x-min_x)/scale_by,
+                   min_y_tmp = (min_y-min_y)/scale_by) %>%
+            mutate(max_x=max_x_tmp, min_x=min_x_tmp, max_y=max_y_tmp, min_y=min_y_tmp) %>%
+      mutate(guess_num = tpt - 2) %>%
+      mutate(guess_num_std = (guess_num-mean(guess_num))/sd(guess_num))
+  
+  
+  df <- merge(df, is_repeat_df, by = c("func.type", "tpt"), suffixes=c("", ".temp")) %>%
+        subset(select = -c(X, X.temp, x_next.temp, y_next.temp))
+  df <- df[order(df$tpt),]
+  return(df)
+}
+```
+
+
+```{r}
+df <- read.csv("../data/models/lot.csv")
+
+```
+
+
+# Load participant data
+```{r, message=F}
+df_kid <- preprocess_df_human(read.csv("../data/participants/kids.csv"))
+df_adult <-preprocess_df_human(read.csv("../data/participants/adults.csv"))
+df_monkey <-  preprocess_df_monkey(read.csv("../data/participants/monkeys_all.csv"))
+```
+
+
+# Stan model helpers
+```{r}
+
+run_inference <- function(df, n_iter, n_chains, var_maps) {
+  stan_df <- df %>% filter(!is.na(x_pred) & (!is.na(y_pred)))
+  stan_data <- list(
+    N = length(stan_df$x_pred),
+    x_pred = stan_df$x_pred,
+    y_pred = stan_df$y_pred,
+    x_next = stan_df$x_next,
+    y_next = stan_df$y_next,
+    x_curr = stan_df$x_curr,
+    y_curr = stan_df$y_curr,
+    upper_bound_y = stan_df$upper_bound_y,
+    lin_x_pred = stan_df$lin1_x_pred,
+    lin_y_pred = stan_df$lin1_y_pred,
+    next_is_repeat = stan_df$next_is_repeat,
+    guess_num = stan_df$guess_num,
+    guess_num_std = stan_df$guess_num_std,
+    n_subjs = length(unique(stan_df$subject_id)),
+    subj = setNames(var_maps$subject_id[stan_df$subject_id], NULL),
+    n_func_types = length(unique(stan_df$func.type)),
+    func_type = setNames(var_maps$func_type[stan_df$func.type], NULL)
+  )
+  fit <- stan(file="infer_p_true.stan", data=stan_data, iter=n_iter, chains=n_chains, cores=n_chains)
+  return (fit)
+}
+
+
+refactor_posterior <- function(posterior_samples, var_maps) {
+  refactored_post <- posterior_samples
+  #refactored_post$subject_id <- names(var_maps$subject_id)[match(refactored_post$subj, var_maps$subject_id)]
+  refactored_post <- refactored_post %>%
+                      pivot_longer(cols = starts_with(c("beta_func_type.", "beta_guess_num_func_type.")), # select cols
+                      names_to = c(".value", "func_type"),  # New column name for the 'beta_func_type.x' columns
+                      names_pattern = "(beta_func_type|beta_guess_num_func_type)\\.(\\d+)",
+                      values_to = c("beta_func_type", "beta_guess_num_func_type"))
+  refactored_post$func.type <- names(var_maps$func_type)[match(refactored_post$func_type, var_maps$func_type)]
+
+  refactored_post <- refactored_post %>%
+                     #slice(rep(1:n(), each = 12)) %>%
+                     mutate(p_true = inv_logit(use_true_icpt+beta_func_type)) %>%
+                     mutate(p_lin = p_rand_strategy.3*(1-p_true),
+                            p_rand = p_rand_strategy.2*(1-p_true),
+                            p_prev = p_rand_strategy.1*(1-p_true))
+
+  return(refactored_post)
+}
+
+
+```
+
+
+```{r}
+
+fit_subjs <- function(df, group) {
+  i=0
+  for (subj in unique(df$subject_id)) {
+    df_subj <- df%>%filter(subject_id==subj)
+    func_to_num_map <- setNames(as.numeric(factor(unique(df_subj$func.type))), unique(df_subj$func.type))
+    subj_to_num_map <- setNames(as.numeric(factor(unique(df_subj$subject_id))), unique(df_subj$subject_id))
+    var_maps <- list("func_type"=func_to_num_map, "subject_id"=subj_to_num_map)
+    
+    # do this for each subj
+    fit <- run_inference(df_subj, 2000, 4, var_maps)
+    summ <- data.frame(summary(fit))
+    saveRDS(fit, file = paste0("stan_fits/", group, "/", subj, ".rds"))
+    i=i+1
+  }
+}
+```
+
+
+```{r}
+# load fits and make vids for each subj
+# then vids for all subjects
+library(matrixStats)
+
+generate_videos <- function(df, group) {
+  i = 0
+  for (subj in unique(df$subject_id)) {
+    #now, for each prediction, can we get prob under each model?
+    df_subj <- df%>%filter(subject_id==subj)
+    func_to_num_map <- setNames(as.numeric(factor(unique(df_subj$func.type))), unique(df_subj$func.type))
+    subj_to_num_map <- setNames(as.numeric(factor(unique(df_subj$subject_id))), unique(df_subj$subject_id))
+    var_maps <- list("func_type"=func_to_num_map, "subject_id"=subj_to_num_map)
+    fit <- readRDS(file = paste0("stan_fits/", group, "/", subj, ".rds"))
+    posterior_samples_lst <- rstan::extract(fit)
+    posterior_samples <- as.data.frame(posterior_samples_lst)
+    posterior_samples$subj = subj
+    post_subj <- refactor_posterior(posterior_samples, var_maps)
+  
+
+    df_subj <- merge(df_subj, post_subj, "func.type") %>%
+               mutate(LL_true = log(dnorm(x_pred, mean=x_next, sd=motor_sd)) +
+                                log(dnorm(y_pred, mean=y_next, sd=motor_sd)), 
+                      LL_lin =  log(dnorm(x_pred, mean=lin1_x_pred, sd=motor_sd)) +
+                                log(dnorm(y_pred, mean=lin1_y_pred, sd=motor_sd)), 
+                      LL_prev = log(dnorm(x_pred, mean=x_curr, sd=motor_sd)) +
+                                log(dnorm(y_pred, mean=y_curr, sd=motor_sd)), 
+                      LL_rand = log(dunif(x_pred, min=min_x, max=max_x)) +
+                                log(dunif(y_pred, min=min_y, max=max_y))) %>%
+               mutate(logprob_true = LL_true + log(p_true),
+                      logprob_lin = LL_lin + log(p_lin),
+                      logprob_prev = LL_prev + log(p_prev),
+                      logprob_rand = LL_rand + log(p_rand)) %>%
+              rowwise() %>%
+              mutate(logprob_norm = logSumExp(c(logprob_true, logprob_lin, logprob_prev, logprob_rand))) %>%
+              ungroup() %>%
+              mutate(logprob_true = logprob_true-logprob_norm,
+                      logprob_lin = logprob_lin-logprob_norm,
+                      logprob_prev = logprob_prev-logprob_norm,
+                      logprob_rand = logprob_rand-logprob_norm) %>%
+              mutate(prob_true = exp(logprob_true),
+                      prob_lin = exp(logprob_lin),
+                      prob_prev = exp(logprob_prev),
+                      prob_rand = exp(logprob_rand))
+
+    file <- paste0(group, "/", "individual_subjects/", subj)
+    make_subj_video(df_subj, file)
+    
+    i=i+1
+    if(i==1) {
+      df_all <- df_subj
+    } else {
+      df_all <- bind_rows(df_all, df_subj)
+    }
+  }
+  file <- paste0(group, "/", "all_subjects")
+  make_subj_video(df_all, file)
+}
+
+
+```
+
+```{r, echo=F, message=F}
+make_subj_video <- function(df_subj, file) {
+  out_folder <- paste0("../figs/videos/p_true/", file)
+  df <- df_subj %>%
+        group_by(func.type, tpt, subj, r_id) %>%
+        summarize(x_pred=mean(x_pred),
+                           y_pred=mean(y_pred),
+                           x_next=mean(x_next),
+                           y_next=mean(y_next),
+                           prob_true=mean(prob_true),
+                           prob_rand=mean(prob_rand),
+                           prob_lin=mean(prob_lin),
+                           prob_prev=mean(prob_prev)) %>%
+        ungroup() %>%
+        mutate(top_model = apply(select(., prob_true, prob_rand, prob_prev, prob_lin), 1, 
+                                 function(row) c("true", "rand", "prev", "lin")[which.max(row)])) %>%
+        filter(tpt>0)
+  
+  df <- df[order(df$tpt),] %>% filter(func.type != "example_line")
+  
+  unlink(out_folder, recursive=TRUE)
+  dir.create(out_folder)
+  
+  f_plot_func_sbs <- function(f) {
+    df_seq <- subset(df, (df$func.type == f))
+    dir.create(paste(out_folder, f, sep="/"))
+  
+    x_min <- min(min(df_seq$x_next, na.rm=TRUE), min(df_seq$x_pred, na.rm=TRUE))
+    x_max <- max(max(df_seq$x_next, na.rm=TRUE), max(df_seq$x_pred, na.rm=TRUE))
+    y_min <- min(min(df_seq$y_next, na.rm=TRUE), min(df_seq$y_pred, na.rm=TRUE))
+    y_max <- max(max(df_seq$y_next, na.rm=TRUE), max(df_seq$y_pred, na.rm=TRUE))
+    
+    range_x <- (x_max-x_min)
+    range_y <- (y_max-y_min)
+    range_x = range_x
+    range_y = range_y
+    
+    shift_x1<-0
+    shift_y1<-0
+    
+    for (i in (min(df$tpt)+1):max(df$tpt)) {
+      df_tpt <- subset(df_seq, (df_seq$tpt == i))
+      df_hist <- df_seq[order(df_seq$tpt),] %>% filter(tpt<i)
+      
+      df_tpt$top_model <- factor(df_tpt$top_model, levels = c("true", "lin", "prev", "rand"))
+      
+      p <- ggplot() +
+        #prev points and path
+        geom_path(data=df_hist, aes(x=shift_x1+x_next, y=shift_y1+y_next), linewidth=0.25, linetype="dotted") +
+        geom_point(data=df_hist, aes(x=shift_x1+x_next, y=shift_y1+y_next), size=3) +
+        #next true point
+        geom_point(data=df_tpt, aes(x=shift_x1+x_next, y=shift_y1+y_next), color="gold", shape=8, size=4, stroke=2.0) +
+        #first human response
+        geom_point(data=df_tpt, aes(x=shift_x1+x_pred, y=shift_y1+y_pred, color=top_model), shape=20, size=3, stroke=1) +
+
+        scale_color_manual(
+          name = "Model",
+          values = c("true" = "#8BC34A", "lin" = "orange", "prev" = "blue2", "rand" = "purple1"),
+          breaks = c("true", "lin", "prev", "rand"), 
+          limits = c("true", "lin", "prev", "rand")  
+        ) +
+        coord_cartesian(xlim=c(x_min-range_x*.5, x_max+(range_x*.5)), ylim=c(y_min-(range_y*.5), y_max+(range_y*.5))) +
+        theme_void() +
+        theme(panel.background = element_rect(fill = "white"), legend.background = element_rect(fill = "white", color=NA),
+              legend.text=element_text(size=12), legend.title=element_blank(), legend.position = "top")
+              
+      f_name <- paste0(out_folder, "/", f, "/", f, "_n", as.character(i), ".png",sep="")
+      ggsave(f_name, plot=p,width=12,height=6, dpi=500, bg="white")
+    }
+  }
+  
+  for (id in sort(unique(df$func.type))) {
+    f_plot_func_sbs(id)
+  }
+}
+```
+
+
+
+```{r}
+#fit_subjs(df_monkey, "monkeys")
+generate_videos(df_monkey, "monkeys")
+
+```

@@ -1,0 +1,329 @@
+---
+title: "model comparison"
+output: html_document
+---
+
+```{r, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.width=4, fig.height=3,fig.align = "center",cache=TRUE)
+library(ggplot2)
+library(reshape)
+library(grid)
+library(dplyr)
+library(gridExtra)
+library(lme4)
+library(reghelper)
+library(RColorBrewer)
+library(robustbase)
+library(tidylog)
+library(tidyr)
+library(hash)
+library(rstan)
+library(png)
+library(gtable)
+library(hash)
+library(purrr)
+library(stringr)
+library(ggforce)
+
+preprocess_df_human <- function(df) {
+  sm <- 1e-10
+  df$attempt = 1
+  df$id <- seq_len(nrow(df))
+  df$n <- df$tpt
+  df <- df[order(df$tpt),] %>%
+      rename(pred_x = response_x, pred_y = response_y, func.name = seq_id, subj_id = subject_id) %>%
+      group_by(subj_id, trial_idx, tpt) %>%
+      mutate(r_id = subj_id) %>%
+      mutate(true_dist=((true_x-prev_x)**2. + (true_y-prev_y)**2.)**0.5) %>%
+      mutate(err_x=pred_x-true_x) %>%
+      mutate(err_y=pred_y-true_y) %>%
+      mutate(norm_err_x = err_x/(true_dist+sm)) %>%
+      mutate(norm_err_y = err_y/(true_dist+sm)) %>%
+      mutate(abs_err = ((err_x**2)+(err_y**2)) **0.5) %>%  
+      mutate(abs_rel_err = abs_err/(true_dist)) %>%
+      mutate(dist_from_prev = (((pred_x-true_x)**2)+((pred_y-true_y)**2)) **0.5) %>%
+      ungroup() %>%
+      mutate(scaled_err = scale(abs_rel_err)[,1])
+  return(df)
+}
+
+
+preprocess_df_monkey <- function(df) {
+  df$attempt = 1
+  df$id <- seq_len(nrow(df))
+  df <- df[order(df$n),] %>%
+      rename(true_x=x_next, true_y=y_next,
+             prev_x=x_curr, prev_y=y_curr,
+             pred_x=x_pred,  pred_y=y_pred, 
+             subj_id=monkey_name, func.name=func_id) %>%
+      rename(tpt = n) %>%
+      mutate(func.name=ifelse(func.name=="example_line", "line", func.name)) %>%
+      group_by(r_id, game_n, tpt) %>%
+      mutate(true_dist=((true_x-prev_x)**2. + (true_y-prev_y)**2.)**0.5) %>%
+      mutate(err_x=pred_x-true_x) %>%
+      mutate(err_y=pred_y-true_y) %>%
+      mutate(abs_err = ((err_x**2)+(err_y**2)) **0.5) %>%  
+      mutate(abs_rel_err = abs_err/(true_dist)) %>%
+      mutate(dist_from_prev = (((pred_x-true_x)**2)+((pred_y-true_y)**2)) **0.5) %>%
+      ungroup() %>%
+      mutate(n=tpt)
+  return(df)
+}
+
+
+get_ll <- function(df) {
+  logsumexp <- function(x) {
+    max_x <- max(x)
+    max_x + log(sum(exp(x - max_x)))
+  }
+  df <- df %>%
+    group_by(tpt, seq_id) %>%
+    mutate(norm = logsumexp(score)) %>%
+    ungroup() %>%
+    mutate(posterior = exp(score - norm)) 
+  return(df)
+}
+
+preprocess_model <- function(df_model) {
+  df_model$id <- seq.int(1,nrow(df_model))
+  
+  #if sample in cols, keep every 100,000 samples
+  #then separate samples into particles
+  if ("sample" %in% colnames(df_model)) {
+    df_model <- df_model %>% filter(sample%%100000==0) %>%
+    mutate(particle_sample = paste(particle, sample, sep = "_")) %>%
+    mutate(particle_sample_id = as.integer(factor(particle_sample))) %>%
+    rename(og_particle=particle) %>%
+    rename(particle=particle_sample_id)
+  }
+  df_model <- df_model %>%
+        get_ll() %>%
+        rename(func.name = seq_id, n = tpt) %>%
+        rowwise() %>%
+        mutate(std_x = sd_x) %>%
+        mutate(std_y = sd_y) %>%
+        mutate(err_x = pred_x - true_x) %>%
+        mutate(err_y = pred_y - true_y) %>%
+        group_by(func.name) %>%
+        mutate(range_x = max(true_x) - min(true_x)) %>%
+        mutate(range_y = max(true_y) - min(true_y)) %>%
+        mutate(mean_x = mean(true_x)) %>%
+        mutate(mean_y = mean(true_y)) %>%
+        group_by(func.name, particle) %>%
+        arrange(n) %>%
+        mutate(prev_x = lag(true_x), prev_y = lag(true_y)) %>%
+        mutate(
+          true_x_prev1 = lag(true_x, 1),
+          true_x_prev2 = lag(true_x, 2),
+          true_y_prev1 = lag(true_y, 1),
+          true_y_prev2 = lag(true_y, 2)
+        ) %>%
+        ungroup() %>%
+        mutate(pred_x_lin = ifelse(is.na(true_x_prev2), true_x_prev1, true_x_prev1 + (true_x_prev1 - true_x_prev2)),
+               pred_y_lin = ifelse(is.na(true_y_prev2), true_y_prev1, true_y_prev1 + (true_y_prev1 - true_y_prev2))) %>%
+        mutate(true_dist=((true_x-prev_x)**2. + (true_y-prev_y)**2.)**0.5) %>%
+        mutate(err_x=pred_x-true_x) %>%
+        mutate(err_y=pred_y-true_y) %>%
+        mutate(abs_err = ((err_x**2)+(err_y)**2) **0.5) %>%  
+        mutate(abs_rel_err = abs_err/(true_dist)) %>%
+        group_by(func.name, n) %>%
+        mutate(norm_abs_rel_err = sum(abs_rel_err * posterior, na.rm=T)) %>%
+  
+  return(df_model)
+}
+```
+
+# Load participant data
+```{r}
+df_adult <- preprocess_df_human(read.csv("data/participants/adults.csv"))
+df_kid <- preprocess_df_human(read.csv("data/participants/kids.csv"))
+df_monkey <- preprocess_df_monkey(read.csv("data/participants/monkeys_all.csv"))
+```
+# Load model paths
+```{r}
+lot_path <- 'data/models/lot.csv'
+gpnc_path <- 'data/models/gpnc.csv'
+gpsl_path <- 'data/models/gpsl.csv'
+ridge_path <- 'data/models/ridge.csv'
+lin_path <- 'data/models/linear.csv'
+true_path <- 'data/models/true.csv'
+prev_path <- 'data/models/prev.csv'
+```
+
+
+# Likelihood based analyses
+```{r}
+get_model_data <- function(df_model, s_id, t,  model_type) {
+  s_id <- as.character(s_id[1])
+  t <- t[1]
+  df_use <- subset(df_model, (df_model$n==t) & (as.character(df_model$func.name) == as.character(s_id)))
+    if (nrow(df_use) == 0) {
+    return(NA) 
+  } else {
+    return(list(df_use$pred_x, df_use$pred_y,
+                df_use$std_x, df_use$std_y,
+                df_use$pred_x_lin, df_use$pred_y_lin,
+                df_use$posterior, df_use$particle))
+  }
+}
+
+add_new_columns_grouped <- function(df, df_model, func, group_cols, model_type, new_col_names) {
+  # Number of times you want each row to be repeated
+  n_particle <- length(unique(df_model$particle))
+  # Create a new data frame by repeating each row
+  df_expanded <- df %>% 
+    slice(rep(1:n(), n_particle)) %>%
+    group_by(id) %>%
+    mutate(particle = rep(1:n_particle))
+  df_expanded %>%
+    group_by(across(all_of(group_cols))) %>%
+    summarize(result = list(func(df_model, func.name, n, model_type)), .groups = 'drop') %>%
+    unnest_wider(result, names_sep = "_") %>%
+    setNames(., c(group_cols, new_col_names)) %>%
+    left_join(df, by = group_cols) 
+}
+
+get_df_participant_model <- function(df_participant, df_model) {
+  df_participant_model <- add_new_columns_grouped(df_participant, df_model, get_model_data, c("func.name", "n"), "model",
+                          c("model_pred_x", "model_pred_y", "model_std_x", "model_std_y",
+                            "pred_x_lin", "pred_y_lin", "model_posterior", "model_particle")) %>%
+                          unnest(model_pred_x, model_pred_y, model_std_x, model_std_y,
+                                 pred_x_lin, pred_y_lin, model_posterior, model_particle) %>%
+                          group_by(func.name) %>%
+                          mutate(min_x = mean(min_x, na.rm=T), min_y = mean(min_y, na.rm=T),
+                                 max_x = mean(max_x, na.rm=T), max_y = mean(max_y, na.rm=T)) %>%
+                          ungroup() %>%
+                          mutate(scale_by = (max_x-min_x)) %>%
+                          mutate(pred_x = (pred_x-min_x)/scale_by) %>%
+                          mutate(pred_y = (pred_y-min_y)/scale_by) %>%
+                          mutate(prev_x = (prev_x-min_x)/scale_by) %>%
+                          mutate(prev_y = (prev_y-min_y)/scale_by) %>%
+                          mutate(true_x = (true_x-min_x)/scale_by) %>%
+                          mutate(true_y = (true_y-min_y)/scale_by) %>%
+                          mutate(pred_x_lin = (pred_x_lin-min_x)/scale_by) %>%
+                          mutate(pred_y_lin = (pred_y_lin-min_y)/scale_by) %>%
+                          mutate(model_pred_x = (model_pred_x-min_x)/scale_by) %>%
+                          mutate(model_pred_y = (model_pred_y-min_y)/scale_by) %>%
+                          mutate(model_std_x = (model_std_x)/scale_by) %>%
+                          mutate(model_std_y = (model_std_y)/scale_by) %>%
+                          mutate(max_y_tmp = (max_y-min_y)/scale_by,
+                                 min_x_tmp = (min_x-min_x)/scale_by,
+                                 max_x_tmp = (max_x-min_x)/scale_by,
+                                 min_y_tmp = (min_y-min_y)/scale_by) %>%
+                          mutate(max_x=max_x_tmp, min_x=min_x_tmp, max_y=max_y_tmp, min_y=min_y_tmp)
+  return (df_participant_model)
+}
+```
+
+
+
+```{r message=FALSE}
+write_preprocessed_data <- function() {
+  path <- "preprocessed_data/"
+  model_paths = c(lot_path, gpnc_path, gpsl_path, ridge_path, true_path, prev_path, lin_path)
+  models = c("lot", "gpnc", "gpsl", "ridge", "true", "prev", "lin")
+  participants = c('adult', "kid", "monkey")
+  for (i in seq_along(models)) {
+    model_name <- models[i]
+    df_model <- preprocess_model(read.csv(model_paths[i]))
+    for (j in seq_along(participants)) {
+      if (participants[j] == 'adult') {
+         df_participant <- df_adult
+      } else if (participants[j] == 'kid') {
+         df_participant <- df_kid
+      } else if (participants[j] == 'monkey') {
+         df_participant <- df_monkey
+      }
+      print(model_name)
+      print(participants[j])
+      df_participant <- df_participant
+      df_participant_model <- get_df_participant_model(df_participant, df_model)
+      out_file <- paste(path, model_name, "_", participants[j], ".csv", sep="")
+      write.csv(df_participant_model, out_file)
+    }
+  }
+}
+```
+
+
+
+
+```{r}
+read_model_fit_data <- function(participant) {
+  path <- "model_fits/LLs/"
+  models = c("lot", "gpnc", "gpsl", "ridge", "lin", "prev", "true")
+  df <- data.frame()
+  for (i in seq_along(models)) {
+    model_name <- models[i]
+    file <- paste(path, model_name, "_", participant, ".csv", sep="")
+    df <- bind_rows(df, read.csv(file)%>%mutate(model=model_name))
+  }
+  return(df)
+}
+
+df_adult <- read_model_fit_data("adult")
+df_monkey <- read_model_fit_data("monkey")
+df_kid <- read_model_fit_data("kid")
+
+```
+
+
+# Stats
+```{r, message=F}
+get_LLs <- function(all_fits) {
+  n_params_per_subj <- 6
+  grouped <- all_fits %>%
+                  group_by(model) %>%
+                  mutate(model_sum_LL = sum(LL, na.rm=T)) %>%
+                  group_by(subj_id, model, func.name) %>%
+                  summarize(LL_mean = mean(LL, na.rm = TRUE),
+                            model_sum_LL = mean(model_sum_LL),
+                            sd_motor = mean(sd_motor), sd_prev = mean(sd_prev), sd_lin = mean(sd_lin),
+                            p_lapse = mean(p_lapse), p_prev = mean(p_prev), p_rand = mean(p_rand), p_lin = mean(p_lin)) %>%
+                  ungroup() %>%
+                  group_by(subj_id, model) %>%
+                  summarize(LL_mean = mean(LL_mean, na.rm=TRUE),
+                            model_sum_LL = mean(model_sum_LL),
+                            sd_motor = mean(sd_motor), sd_prev = mean(sd_prev), sd_lin = mean(sd_lin),
+                            p_lapse = mean(p_lapse), p_prev = mean(p_prev), p_rand = mean(p_rand), p_lin = mean(p_lin)) %>%
+                  ungroup() %>%
+                  group_by(model) %>%
+                  mutate(LL_mean_model = mean(LL_mean),
+                         model_sum_LL = mean(model_sum_LL),
+                         sd_motor = mean(sd_motor), sd_prev = mean(sd_prev), sd_lin = mean(sd_lin),
+                        p_lapse = mean(p_lapse), p_prev = mean(p_prev), p_rand = mean(p_rand), p_lin = mean(p_lin))
+  
+  n_subjs = length(unique(grouped$subj_id))
+  
+  top <- grouped %>%
+         group_by(subj_id) %>%
+         slice_max(order_by = LL_mean) %>%
+         ungroup()
+  
+  print(table(top$model))
+  
+  df_aic <- grouped %>%
+            group_by(model) %>%
+            summarize(LL_mean_model=mean(LL_mean_model),
+                      model_sum_LL=mean(model_sum_LL), mean_sd_motor = mean(sd_motor), mean_sd_prev = mean(sd_prev), mean_sd_lin = mean(sd_lin),
+                      mean_p_lapse = mean(p_lapse), mean_p_prev = mean(p_prev), mean_p_rand = mean(p_rand), mean_p_lin = mean(p_lin)) %>%
+            group_by(model) %>%
+            mutate(n_params = n_subjs*n_params_per_subj) %>% 
+            mutate(AIC = (2*n_params) - (2*model_sum_LL)) %>%
+            ungroup() %>%
+            mutate(delta_AIC = AIC - min(AIC))
+
+  return(df_aic)
+}
+
+print("Adults best fit:")
+df_aic_adult <- get_LLs(df_adult)
+print("Kids best fit:")
+df_aic_kid <- get_LLs(df_kid)
+print("Monkeys best fit:")
+df_aic_monkey <- get_LLs(df_monkey)
+df_aic_monkey1 <- get_LLs(df_monkey%>%filter(subj_id=="BP22"))
+df_aic_monkey2 <- get_LLs(df_monkey%>%filter(subj_id=="BP24"))
+```
+
+
