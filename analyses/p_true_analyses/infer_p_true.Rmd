@@ -139,7 +139,8 @@ preprocess_df_monkey <- function(df) {
 
 ```{r}
 df <- read.csv("../data/models/lot.csv")
-
+df <- df %>% filter(sample%%100000==0)
+write.csv(df, "../data/models/lot.csv")
 ```
 
 

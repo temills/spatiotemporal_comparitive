@@ -135,19 +135,19 @@ preprocess_model <- function(df_model) {
 
 # Load participant data
 ```{r}
-df_adult <- preprocess_df_human(read.csv("data/participants/adults.csv"))
-df_kid <- preprocess_df_human(read.csv("data/participants/kids.csv"))
-df_monkey <- preprocess_df_monkey(read.csv("data/participants/monkeys_all.csv"))
+df_adult <- preprocess_df_human(read.csv("../data/participants/adults.csv"))
+df_kid <- preprocess_df_human(read.csv("../data/participants/kids.csv"))
+df_monkey <- preprocess_df_monkey(read.csv("../data/participants/monkeys_all.csv"))
 ```
 # Load model paths
 ```{r}
-lot_path <- 'data/models/lot.csv'
-gpnc_path <- 'data/models/gpnc.csv'
-gpsl_path <- 'data/models/gpsl.csv'
-ridge_path <- 'data/models/ridge.csv'
-lin_path <- 'data/models/linear.csv'
-true_path <- 'data/models/true.csv'
-prev_path <- 'data/models/prev.csv'
+lot_path <- '../data/models/lot.csv'
+gpnc_path <- '../data/models/gpnc.csv'
+gpsl_path <- '../data/models/gpsl.csv'
+ridge_path <- '../data/models/ridge.csv'
+lin_path <- '../data/models/linear.csv'
+true_path <- '../data/models/true.csv'
+prev_path <- '../data/models/prev.csv'
 ```
 
 
@@ -218,10 +218,11 @@ get_df_participant_model <- function(df_participant, df_model) {
 
 
 ```{r message=FALSE}
+lot_new_path <- "../../models/LoT/new_grammar_output/lot_all.csv"
 write_preprocessed_data <- function() {
   path <- "preprocessed_data/"
-  model_paths = c(lot_path, gpnc_path, gpsl_path, ridge_path, true_path, prev_path, lin_path)
-  models = c("lot", "gpnc", "gpsl", "ridge", "true", "prev", "lin")
+  model_paths = c(lot_new_path)#lot_path, gpnc_path, gpsl_path, ridge_path, true_path, prev_path, lin_path)
+  models = c("lot_new")#lot", "gpnc", "gpsl", "ridge", "true", "prev", "lin")
   participants = c('adult', "kid", "monkey")
   for (i in seq_along(models)) {
     model_name <- models[i]
@@ -243,6 +244,8 @@ write_preprocessed_data <- function() {
     }
   }
 }
+
+write_preprocessed_data()
 ```
 
 
@@ -251,7 +254,7 @@ write_preprocessed_data <- function() {
 ```{r}
 read_model_fit_data <- function(participant) {
   path <- "model_fits/LLs/"
-  models = c("lot", "gpnc", "gpsl", "ridge", "lin", "prev", "true")
+  models = c("lot", "gpnc", "gpsl", "ridge", "lin")#, "prev", "true")
   df <- data.frame()
   for (i in seq_along(models)) {
     model_name <- models[i]
