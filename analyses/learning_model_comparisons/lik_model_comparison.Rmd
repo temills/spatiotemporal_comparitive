@@ -90,7 +90,7 @@ preprocess_model <- function(df_model) {
   #if sample in cols, keep every 100,000 samples
   #then separate samples into particles
   if ("sample" %in% colnames(df_model)) {
-    df_model <- df_model %>% filter(sample%%100000==0) %>%
+    df_model <- df_model %>% filter(sample%%10000==0) %>%
     mutate(particle_sample = paste(particle, sample, sep = "_")) %>%
     mutate(particle_sample_id = as.integer(factor(particle_sample))) %>%
     rename(og_particle=particle) %>%
@@ -142,12 +142,15 @@ df_monkey <- preprocess_df_monkey(read.csv("../data/participants/monkeys_all.csv
 # Load model paths
 ```{r}
 lot_path <- '../data/models/lot.csv'
+lot_no_recursion_path <- '../data/models/lot_no_recursion.csv'
 gpnc_path <- '../data/models/gpnc.csv'
 gpsl_path <- '../data/models/gpsl.csv'
 ridge_path <- '../data/models/ridge.csv'
 lin_path <- '../data/models/linear.csv'
 true_path <- '../data/models/true.csv'
 prev_path <- '../data/models/prev.csv'
+
+ss_path <- '../../models/hier_dumb/output/ss_all.csv'
 ```
 
 
@@ -216,13 +219,11 @@ get_df_participant_model <- function(df_participant, df_model) {
 ```
 
 
-
 ```{r message=FALSE}
-lot_new_path <- "../../models/LoT/new_grammar_output/lot_all.csv"
 write_preprocessed_data <- function() {
   path <- "preprocessed_data/"
-  model_paths = c(lot_new_path)#lot_path, gpnc_path, gpsl_path, ridge_path, true_path, prev_path, lin_path)
-  models = c("lot_new")#lot", "gpnc", "gpsl", "ridge", "true", "prev", "lin")
+  model_paths = c(lot_path, lot_no_recursion_path, gpnc_path, gpsl_path, ridge_path, true_path, prev_path, lin_path)
+  models = c("lot", "lot_no_recursion", "gpnc", "gpsl", "ridge", "true", "prev", "lin")
   participants = c('adult', "kid", "monkey")
   for (i in seq_along(models)) {
     model_name <- models[i]
@@ -244,7 +245,6 @@ write_preprocessed_data <- function() {
     }
   }
 }
-
 write_preprocessed_data()
 ```
 
@@ -252,9 +252,13 @@ write_preprocessed_data()
 
 
 ```{r}
+read.csv(file)
+```
+# ANALYSES
+```{r}
 read_model_fit_data <- function(participant) {
   path <- "model_fits/LLs/"
-  models = c("lot", "gpnc", "gpsl", "ridge", "lin")#, "prev", "true")
+  models = c("lot", "lot_no_recursion", "gpnc", "gpsl", "ridge", "lin")#,# "ss")#, "prev")#, "true")
   df <- data.frame()
   for (i in seq_along(models)) {
     model_name <- models[i]
@@ -264,9 +268,10 @@ read_model_fit_data <- function(participant) {
   return(df)
 }
 
+
 df_adult <- read_model_fit_data("adult")
-df_monkey <- read_model_fit_data("monkey")
 df_kid <- read_model_fit_data("kid")
+df_monkey <- read_model_fit_data("monkey")
 
 ```
 
@@ -274,7 +279,7 @@ df_kid <- read_model_fit_data("kid")
 # Stats
 ```{r, message=F}
 get_LLs <- function(all_fits) {
-  n_params_per_subj <- 6
+
   grouped <- all_fits %>%
                   group_by(model) %>%
                   mutate(model_sum_LL = sum(LL, na.rm=T)) %>%
@@ -296,9 +301,16 @@ get_LLs <- function(all_fits) {
                          sd_motor = mean(sd_motor), sd_prev = mean(sd_prev), sd_lin = mean(sd_lin),
                         p_lapse = mean(p_lapse), p_prev = mean(p_prev), p_rand = mean(p_rand), p_lin = mean(p_lin))
   
-  n_subjs = length(unique(grouped$subj_id))
+  return(grouped)
   
-  top <- grouped %>%
+}
+
+
+get_aic <- function(grouped) {
+    n_params_per_subj <- 6
+    n_subjs = length(unique(grouped$subj_id))
+  
+    top <- grouped %>%
          group_by(subj_id) %>%
          slice_max(order_by = LL_mean) %>%
          ungroup()
@@ -308,8 +320,10 @@ get_LLs <- function(all_fits) {
   df_aic <- grouped %>%
             group_by(model) %>%
             summarize(LL_mean_model=mean(LL_mean_model),
-                      model_sum_LL=mean(model_sum_LL), mean_sd_motor = mean(sd_motor), mean_sd_prev = mean(sd_prev), mean_sd_lin = mean(sd_lin),
-                      mean_p_lapse = mean(p_lapse), mean_p_prev = mean(p_prev), mean_p_rand = mean(p_rand), mean_p_lin = mean(p_lin)) %>%
+                      model_sum_LL=mean(model_sum_LL), mean_sd_motor = mean(sd_motor),
+                      mean_sd_prev = mean(sd_prev), mean_sd_lin = mean(sd_lin),
+                      mean_p_lapse = mean(p_lapse), mean_p_prev = mean(p_prev),
+                      mean_p_rand = mean(p_rand), mean_p_lin = mean(p_lin)) %>%
             group_by(model) %>%
             mutate(n_params = n_subjs*n_params_per_subj) %>% 
             mutate(AIC = (2*n_params) - (2*model_sum_LL)) %>%
@@ -319,14 +333,234 @@ get_LLs <- function(all_fits) {
   return(df_aic)
 }
 
+
 print("Adults best fit:")
-df_aic_adult <- get_LLs(df_adult)
+df_LL_adult <- get_LLs(df_adult)
+df_aic_adult <- get_aic(df_LL_adult)
 print("Kids best fit:")
-df_aic_kid <- get_LLs(df_kid)
+df_LL_kid <- get_LLs(df_kid)
+df_aic_kid <- get_aic(df_LL_kid)
 print("Monkeys best fit:")
-df_aic_monkey <- get_LLs(df_monkey)
-df_aic_monkey1 <- get_LLs(df_monkey%>%filter(subj_id=="BP22"))
-df_aic_monkey2 <- get_LLs(df_monkey%>%filter(subj_id=="BP24"))
+df_LL_monkey <- get_LLs(df_monkey)
+df_aic_monkey <- get_aic(df_LL_monkey)
+df_LL_monkey1 <- get_LLs(df_monkey%>%filter(subj_id=="BP22"))
+df_aic_monkey1 <- get_aic(df_LL_monkey1)
+df_LL_monkey2 <- get_LLs(df_monkey%>%filter(subj_id=="BP24"))
+df_aic_monkey2 <- get_aic(df_LL_monkey2)
+```
+# Figure out what counts as significant
+# Get kids params 
+```{r}
+df_param <- df_kid %>%
+            group_by(subj_id, model) %>%
+            summarize(sd_prev = mean(sd_prev),
+                      sd_motor = mean(sd_motor),
+                      p_lapse = mean(p_lapse),
+                      p_prev = mean(p_prev),
+                      p_rand = mean(p_rand)) %>%
+            ungroup()
+          
+write.csv(df_param, 'fit_params_kids_by_model_by_subj.csv')
+
+```
+```{r}
+
+# get kids motor error etc
+# for each kid, mean LL for each model by func
+top_models <- df_kid %>%
+  group_by(subj_id, model) %>%
+  summarize(mean_LL = mean(LL)) %>%
+  ungroup() %>%
+  group_by(subj_id) %>%
+  slice_max(mean_LL, with_ties = FALSE) %>%
+  select(subj_id, model, mean_LL) %>%
+  rename(top_model = model, top_model_LL = mean_LL)
+
+df_kid_top <- df_kid %>%
+              group_by(subj_id, model, func.name) %>%
+              summarize(LL = mean(LL, na.rm = TRUE),
+                        sd_prev = mean(sd_prev),
+                        sd_motor = mean(sd_motor),
+                        p_lapse = mean(p_lapse),
+                        p_prev = mean(p_prev),
+                        p_rand = mean(p_rand)) %>%
+              ungroup() %>% 
+              left_join(top_models, by = "subj_id") %>%
+              group_by(subj_id) %>%
+              filter(model == top_model) %>%
+              ungroup()
+
+# mean and max params across kids
+df_params_by_subj <- df_kid_top %>%
+           group_by(subj_id, top_model) %>%
+           # mean across funcs
+           summarize(LL = mean(LL, na.rm = TRUE),
+                    sd_prev = mean(sd_prev),
+                    sd_motor = mean(sd_motor),
+                    p_lapse = mean(p_lapse),
+                    p_prev = mean(p_prev),
+                    p_rand = mean(p_rand)) %>%
+          ungroup()
+          
+write.csv(df_params_by_subj, 'fit_params_kids_by_subj.csv')
+
+# now take either max of mean across kids
+df_params_summ <- df_params_by_subj %>%
+                  summarize(sd_prev_max = max(sd_prev),
+                            sd_prev_mean = mean(sd_prev),
+                            sd_motor_max = max(sd_motor),
+                            sd_motor_mean = mean(sd_motor),
+                            p_lapse_max = max(p_lapse),
+                            p_lapse_mean = mean(p_lapse),
+                            p_prev_max = max(p_prev),
+                            p_prev_mean = mean(p_prev),
+                            p_rand_max = max(p_rand),
+                            p_rand_mean = mean(p_rand))
+
+write.csv(df_params_summ, 'fit_params_kids.csv')
 ```
 
+```{r}
+
+df <- rbind(df_LL_adult %>% mutate(agent="Adults"),
+            df_LL_kid %>% mutate(agent="Children"),
+            df_LL_monkey %>% mutate(agent="Monkeys"))
+```
+
+```{r}
+df <- df %>% mutate(model = ifelse(model=="gpsl", "Comp. GP", model),
+                    model = ifelse(model=="gpnc", "GP", model),
+                    model = ifelse(model=="lin", "Linear", model),
+                    model = ifelse(model=="ridge", "Polynomial", model),
+                    model = ifelse(model=="lot_new", "LoT", model),
+                     model = ifelse(model=="prev", "Prev", model)
+                    )
+```
+```{r}
+# Specify the order of models
+df$model <- factor(df$model, levels = c("LoT",  "Comp. GP", "GP", "Polynomial",  "Linear"))#, "Prev"))
+```
+
+```{r}
+
+df_summary <- df %>%
+          group_by(subj_id) %>%
+         slice_max(order_by = LL_mean) %>%
+         ungroup() %>%
+  group_by(agent, model) %>%
+summarise(count = n_distinct(subj_id), .groups = "drop") %>%
+  complete(agent, model, fill = list(count = 0)) %>%
+  group_by(agent) %>%
+  mutate(prop = count / sum(count)) %>%
+  mutate(prop_plot = ifelse(prop == 0, 0.003, prop))
+
+custom_colors <- c("Adults" = "#329828", "Children" = "orchid", "Monkeys" = "dodgerblue")
+
+# Create the barplot
+ggplot(df_summary, aes(x = model, y = prop_plot, fill = agent)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(values = custom_colors) +
+  labs(x = element_blank(), y = "Proportion of subjects best fit", title = "Proportion of subjects best fit by each model") +
+  ylim(0,1) +
+  my_theme +
+  theme(axis.ticks.x = element_blank())
+
+ggsave("../figs/prop_subj.png", width=10, height=4)
+
+```
+
+
+```{r}
+# sum across subjs, then norm, then take mean
+
+logsumexp <- function(x) {
+  max_x <- max(x)
+  max_x + log(sum(exp(x - max_x)))
+}
+
+
+
+get_LLs2 <- function(all_fits) {
+  grouped <- all_fits %>%
+                  group_by(model, subj_id) %>%
+                  summarize(LL_sum = sum(LL, na.rm = TRUE)) %>%
+                  ungroup() %>%
+                  group_by(subj_id) %>%
+                  mutate(norm = logsumexp(LL_sum),
+                        norm_LL = LL_sum - norm,
+                        prob = exp(norm_LL),
+                        prob_sum = sum(prob)) %>%
+                  ungroup()
+  
+  return(grouped)
+  
+}
+
+
+tmp_adult <- get_LLs2(df_adult) %>% mutate(agent="Adults")
+tmp_kid <- get_LLs2(df_kid) %>% mutate(agent="Children")
+tmp_monkey <- get_LLs2(df_monkey) %>% mutate(agent="Monkeys")
+tmp <- rbind(tmp_adult, tmp_kid, tmp_monkey) %>%
+       #mutate(agent = ifelse(subj_id=="BP22", "Monkey1", agent),
+      #        agent = ifelse(subj_id=="BP24", "Monkey2", agent)) %>%
+      group_by(agent, model) %>%
+      summarize(prob=mean(prob)) %>%
+      mutate(model = ifelse(model=="gpsl", "Comp. GP", model),
+              model = ifelse(model=="gpnc", "GP", model),
+              model = ifelse(model=="lin", "Linear", model),
+              model = ifelse(model=="ridge", "Polynomial", model),
+              model = ifelse(model=="lot_new", "LoT", model),
+              model = ifelse(model=="prev", "Prev", model)
+              ) 
+
+tmp$model <- factor(tmp$model, levels = c("LoT",  "Comp. GP", "GP", "Polynomial",  "Linear"))#, "Prev"))
+
+```
+```{r}
+# ind differences
+# power analysis
+
+
+ggplot(data=tmp_kid, aes(x=model, y=prob)) +
+  geom_bar(stat="identity", position="dodge") +
+  facet_wrap(~subj_id)
+
+```
+
+```{r}
+
+#norm across subjects then within
+
+custom_colors <- c("Adults" = "#329828", "Children" = "orchid", "Monkeys" = "dodgerblue" )
+
+# Create the barplot
+ggplot(tmp, aes(x = model, y = prob, fill = agent)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(values = custom_colors) +
+  labs(x = element_blank(), y = "Mean LL", title = "Mean P(model) across subjects") +
+  my_theme +
+  theme(axis.ticks.x = element_blank())
+
+ggsave("../figs/Ll_group.png", width=8, height=4)
+
+```
+
+
+
+```{r}
+my_theme <- theme_light() + theme( axis.title.x = element_text(size=22),
+                                      axis.text.x=element_text(
+                                        size = 20, color="black"), 
+                                      axis.title.y = element_blank(),
+                                      axis.text.y  = element_text(size = 16),
+                             strip.text=element_text(size=16),
+                                      title = element_text(size=20, color="black"),
+                                      axis.line.x = element_line(colour = "black"), 
+                                      axis.line.y = element_line(colour = "black"),
+                                      legend.title=element_blank(),
+                                      legend.text=element_text(size=16),
+                                      #panel.grid.major=element_blank(),
+                #   panel.background = element_rect(color = NA), 
+                                      panel.grid.minor=element_blank())  
+```
 

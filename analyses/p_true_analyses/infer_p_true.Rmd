@@ -19,10 +19,67 @@ library(rstan)
 library(png)
 library(gtable)
 library(tidyr)
-
+library(matrixStats)
+library(ggimage)
+library(forcats)
 
 inv_logit <- function(x) { exp(x)/(1+exp(x))}
 is_repeat_df <- read.csv("../data/next_is_repeat.csv")
+
+add_png_to_facet <- function(ggplot_object, data, facet_var, x_loc,y_loc, width, height, out_file) {
+  # Get the ggplotGrob
+  gtable <- ggplotGrob(ggplot_object)
+  # Get the unique facet labels in the order they appear in the data
+  facet_labels <- rev(unique(data[[facet_var]]))
+  # Extract panel positions from the layout
+  panel_positions <- subset(gtable$layout, grepl("panel", name))
+  # Order the panels by their left (l) and top (t) positions
+  ordered_panel_positions <- with(panel_positions, order(t, l))
+  # Ensure the facet labels order matches the plot
+  # For each ordered panel position, add the PNG
+  for (i in seq_along(ordered_panel_positions)) {
+    panel_index <- ordered_panel_positions[i]
+    facet_label <- facet_labels[i]
+    if (!is.na(facet_label)) {
+      img <- readPNG(paste0("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/spatiotemporal_comparitive/figs/func_ims/", facet_label, ".png"))
+      # Convert to raster and add it to the gtable
+      g <- rasterGrob(img, interpolate = TRUE, width = unit(0.24, "npc"), height = unit(0.3, "npc"))
+      g <- editGrob(g, vp = viewport(x = x_loc, y = y_loc, just = c("right", "top")))
+      gtable <- gtable_add_grob(gtable, g, t = panel_positions$t[panel_index], l = panel_positions$l[panel_index])
+    }
+  }
+  png(filename = out_file, width = width, height = height, units = 'mm', res = 400)
+  grid.draw(gtable)
+  dev.off()
+}
+
+add_png_to_plot <- function(ggplot_object, data, y_loc, width, height, out_file) {
+  labels = ggplot_build(ggplot_object)$layout$panel_params[[1]]$x$get_labels()
+  for (i in seq_along(labels)) {
+    facet_label <- labels[i]
+    img <- readPNG(paste0("../figs/func_ims/", facet_label, ".png"))
+    g <- rasterGrob(img, interpolate = TRUE, width = unit(0.5, "npc"), height = unit(0.8, "npc"))
+    ggplot_object <- ggplot_object + annotation_custom(g, xmin = i-.85, xmax = i+.85, ymin = y_loc-0.28, ymax = y_loc)
+  }
+  png(filename = out_file, width = width, height = height, units = 'mm', res = 400)
+  grid.draw(ggplot_object)
+  dev.off()
+}
+
+
+paper_theme <- theme_light() + theme( axis.title.x = element_text(size=22),
+                                      axis.text.x=element_text(
+                                        size = 18), 
+                                      axis.title.y = element_text(size = 22, vjust = 1),
+                                      axis.text.y  = element_text(size = 18),
+                             strip.text=element_text(size=16),
+                                      axis.line.x = element_line(colour = "black"), 
+                                      axis.line.y = element_line(colour = "black"),
+                                      legend.title=element_text(size=20),
+                                      legend.text=element_text(size=16),
+                                      panel.grid.major=element_blank(),
+                                      panel.grid.minor=element_blank()) 
+
 
 preprocess_df_human <- function(df) {
   df <- df %>%
@@ -41,7 +98,8 @@ preprocess_df_human <- function(df) {
         mutate(std_dx = ifelse(!is.na(prev_dx), sd(na.omit(c(prev_dx, dx))), 0),
                std_dy = ifelse(!is.na(prev_dx), sd(na.omit(c(prev_dy, dy))), 0)) %>%
         mutate(lin2_x_pred = x_curr + mean_dx, lin2_y_pred = y_curr + mean_dy) %>%
-        ungroup()
+        ungroup() %>%
+        mutate(r_id = subject_id)
   
   #cut off lin predictions at min/max
   df$lin1_x_pred <- pmin(pmax(df$lin1_x_pred, df$min_x), df$max_x)
@@ -137,21 +195,6 @@ preprocess_df_monkey <- function(df) {
 ```
 
 
-```{r}
-df <- read.csv("../data/models/lot.csv")
-df <- df %>% filter(sample%%100000==0)
-write.csv(df, "../data/models/lot.csv")
-```
-
-
-# Load participant data
-```{r, message=F}
-df_kid <- preprocess_df_human(read.csv("../data/participants/kids.csv"))
-df_adult <-preprocess_df_human(read.csv("../data/participants/adults.csv"))
-df_monkey <-  preprocess_df_monkey(read.csv("../data/participants/monkeys_all.csv"))
-```
-
-
 # Stan model helpers
 ```{r}
 
@@ -205,6 +248,7 @@ refactor_posterior <- function(posterior_samples, var_maps) {
 ```
 
 
+
 ```{r}
 
 fit_subjs <- function(df, group) {
@@ -226,26 +270,20 @@ fit_subjs <- function(df, group) {
 
 
 ```{r}
-# load fits and make vids for each subj
-# then vids for all subjects
-library(matrixStats)
-
-generate_videos <- function(df, group) {
-  i = 0
-  for (subj in unique(df$subject_id)) {
-    #now, for each prediction, can we get prob under each model?
-    df_subj <- df%>%filter(subject_id==subj)
-    func_to_num_map <- setNames(as.numeric(factor(unique(df_subj$func.type))), unique(df_subj$func.type))
-    subj_to_num_map <- setNames(as.numeric(factor(unique(df_subj$subject_id))), unique(df_subj$subject_id))
-    var_maps <- list("func_type"=func_to_num_map, "subject_id"=subj_to_num_map)
-    fit <- readRDS(file = paste0("stan_fits/", group, "/", subj, ".rds"))
-    posterior_samples_lst <- rstan::extract(fit)
-    posterior_samples <- as.data.frame(posterior_samples_lst)
-    posterior_samples$subj = subj
-    post_subj <- refactor_posterior(posterior_samples, var_maps)
+get_subj_df <- function(participant_df, group, subj) {
+  df_subj <- participant_df%>%filter(subject_id==subj)
+  
+  func_to_num_map <- setNames(as.numeric(factor(unique(df_subj$func.type))), unique(df_subj$func.type))
+  subj_to_num_map <- setNames(as.numeric(factor(unique(df_subj$subject_id))), unique(df_subj$subject_id))
+  var_maps <- list("func_type"=func_to_num_map, "subject_id"=subj_to_num_map)
+  fit <- readRDS(file = paste0("stan_fits/", group, "/", subj, ".rds"))
+  posterior_samples_lst <- rstan::extract(fit)
+  posterior_samples <- as.data.frame(posterior_samples_lst)
+  posterior_samples$subj = subj
+  post_subj <- refactor_posterior(posterior_samples, var_maps)
   
 
-    df_subj <- merge(df_subj, post_subj, "func.type") %>%
+  df_subj <- merge(df_subj, post_subj, "func.type") %>%
                mutate(LL_true = log(dnorm(x_pred, mean=x_next, sd=motor_sd)) +
                                 log(dnorm(y_pred, mean=y_next, sd=motor_sd)), 
                       LL_lin =  log(dnorm(x_pred, mean=lin1_x_pred, sd=motor_sd)) +
@@ -269,10 +307,22 @@ generate_videos <- function(df, group) {
                       prob_lin = exp(logprob_lin),
                       prob_prev = exp(logprob_prev),
                       prob_rand = exp(logprob_rand))
+  
+  return(df_subj)
+}
+```
 
+```{r, echo=F}
+# load fits and make vids for each subj
+# then vids for all subjects
+
+generate_videos <- function(df, group) {
+  i = 0
+  for (subj in unique(df$subject_id)) {
+    #now, for each prediction, can we get prob under each model?
+    df_subj <- get_subj_df(df, group, subj)
     file <- paste0(group, "/", "individual_subjects/", subj)
     make_subj_video(df_subj, file)
-    
     i=i+1
     if(i==1) {
       df_all <- df_subj
@@ -284,10 +334,6 @@ generate_videos <- function(df, group) {
   make_subj_video(df_all, file)
 }
 
-
-```
-
-```{r, echo=F, message=F}
 make_subj_video <- function(df_subj, file) {
   out_folder <- paste0("../figs/videos/p_true/", file)
   df <- df_subj %>%
@@ -368,6 +414,194 @@ make_subj_video <- function(df_subj, file) {
 
 ```{r}
 #fit_subjs(df_monkey, "monkeys")
-generate_videos(df_monkey, "monkeys")
+#generate_videos(df_monkey, "monkeys")
+```
+
+
+
+```{r}
+get_mean_df <- function(df, group) {
+  i=0
+  for (subj in unique(df$subject_id)) {
+    #now, for each prediction, can we get prob under each model?
+    df_subj <- get_subj_df(df, group, subj)  %>%
+               filter(guess_num>0) %>%
+               group_by(func.type, tpt, subj, r_id) %>%
+               summarize(x_pred=mean(x_pred),
+                         y_pred=mean(y_pred),
+                         x_next=mean(x_next),
+                         y_next=mean(y_next),
+                          motor_sd=mean(motor_sd),
+                         prob_true=mean(prob_true),
+                         prob_rand=mean(prob_rand),
+                         prob_lin=mean(prob_lin),
+                         prob_prev=mean(prob_prev)) %>%
+               ungroup()
+    
+    i=i+1
+    if(i==1) {
+      df_all <- df_subj
+    } else {
+      df_all <- bind_rows(df_all, df_subj)
+    }
+  }
+
+  df_all$group = group
+  return(df_all)
+}
+
+
+```
+
+
+
+# Load participant data
+```{r, message=F}
+df_kid <- preprocess_df_human(read.csv("../data/participants/kids.csv"))
+df_adult <-preprocess_df_human(read.csv("../data/participants/adults.csv"))
+df_monkey <-  preprocess_df_monkey(read.csv("../data/participants/monkeys_all.csv"))
+```
+
+```{r, echo=F}
+#df_mean_kid <- get_mean_df(df_kid, "kids")
+#df_mean_adult <- get_mean_df(df_adult, "adults")
+#df_mean_monkey <- get_mean_df(df_monkey, "monkeys")  %>% mutate(r_id = as.character(r_id))
+
+df_mean_kid <- read.csv(df_mean_kid, "kid.csv")
+df_mean_adult <- read.csv(df_mean_adult, "adult.csv")
+df_mean_monkey <- read.csv(df_mean_monkey, "monkey.csv") %>% mutate(r_id = as.character(r_id))
+df_mean_monkey <- df_mean_monkey %>% mutate(guess_num=tpt-2)
+df_mean_adult <- df_mean_adult %>% mutate(guess_num=tpt-2)
+df_mean_kid <- df_mean_kid %>% mutate(guess_num=tpt-2)
+
+```
+
+
+# P true by func.type, tpt
+```{r, cache=T}
+df_all <- bind_rows(df_mean_kid, df_mean_monkey, df_mean_adult)
+df_all <- df_all %>% mutate(agent = ifelse(group=="monkeys", subj, group)) %>% mutate(guess_num=tpt-2)
+df_all$agent <- factor(df_all$agent, 
+                       levels = c("adults", "kids", "BP22", "BP24"),
+                       labels = c("Adults", "Children", "Monkey 1", "Monkey 2"))
+df_all <- df_all %>%
+          group_by(func.type, agent) %>%
+          mutate(mean_p_true_kid = ifelse(agent == "Children", mean(prob_true, na.rm = TRUE), NA)) %>%
+          group_by(func.type) %>%
+          mutate(mean_p_true_kid = mean(mean_p_true_kid, na.rm = TRUE)) %>%
+          arrange(mean_p_true_kid) %>%
+          ungroup()
+
+df_all$func.type =  factor(df_all$func.type, levels=unique(df_all$func.type[order(1-df_all$mean_p_true_kid)]))
+df_all$func.type <- fct_reorder(df_all$func.type, df_all$mean_p_true_kid, .desc=T)
+
+# Plot p(learned) over time
+fname <-  '../figs/p_true_curves_no_error.png'
+
+p.1 <- ggplot(data = df_all, aes(x = guess_num, y = prob_true, color = agent)) +
+  stat_summary(fun = "mean", na.rm = TRUE, geom = "point", size = 1) +
+  stat_summary(fun = "mean", na.rm = TRUE, geom = "line", alpha = 0.5) +
+  stat_summary(
+    fun.data = "mean_sdl",
+    fun.args = list(mult = 1),
+    na.rm = TRUE,
+    geom = "ribbon",
+    aes(ymin = ..ymin.., ymax = ..ymax.., fill = agent), 
+    color = NA, # No border
+    alpha = 0.0 # Transparency
+  ) +
+  coord_cartesian(xlim = c(1, 13), ylim = c(-0.4, 1.3)) +
+  scale_color_manual(values = c("#329828",  "orchid", "dodgerblue", "blue")) +
+  scale_fill_manual(values = c("#329828",  "orchid", "dodgerblue", "blue")) +
+  facet_wrap(~func.type, ncol = 7) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  scale_x_continuous(breaks = c(1, 6, 12)) +
+  paper_theme +
+  theme(
+    legend.title = element_blank(),
+    legend.position = "top",
+    strip.background = element_blank(),
+    strip.text = element_blank()
+  ) +
+  labs(x = "Guess number", y = "P(correct)")
+
+
+add_png_to_facet(p.1, df_all, "func.type",  1.35,.67,700/2,230/2, fname)
+print(knitr::include_graphics(fname))
+
+```
+
+
+# P true by func.type
+```{r, cache=T}
+# summarize data
+summary_stats <- df_all %>%
+  group_by(agent, func.type, guess_num) %>%
+    summarize(
+    mean_p_true_kid = mean(mean_p_true_kid),
+    prob_true = mean(prob_true),
+  ) %>%
+  ungroup() %>%
+  group_by(agent, func.type) %>%
+  summarize(
+    median = median(prob_true),
+    mean_p_true_kid = mean(mean_p_true_kid),
+    lower_q = quantile(prob_true, 0.25),
+    upper_q = quantile(prob_true, 0.75),
+    mean_p_true = mean(prob_true),
+    sd_p_true = sd(prob_true),
+    se_p_true = sd(prob_true)/ sqrt(length(prob_true))) #%>%
+  #mutate(agent = ifelse(agent=="BP22", "Monkey 1", agent),
+  #       agent = ifelse(agent=="BP24", "Monkey 2", agent))
+
+summary_stats$func.type <- fct_reorder(summary_stats$func.type, summary_stats$mean_p_true_kid, .desc=T)
+
+p <- ggplot(data=summary_stats) +
+  geom_point(aes(color=agent, fill=agent, x = func.type, y = mean_p_true), size=2,  position = position_dodge(width = .7), shape=8, stroke=1) +
+  geom_errorbar(aes(x=func.type, ymin = mean_p_true-sd_p_true, ymax = mean_p_true+sd_p_true, color=agent), width = 0.2, position = position_dodge(width = .7), alpha=0.3) +
+  scale_color_manual(values = c("#329828",  "orchid", "dodgerblue", "blue")) +
+  scale_y_continuous(breaks = seq(0,1,by=0.5)) +
+  coord_cartesian(clip = 'off') +
+  paper_theme + theme(legend.title=element_blank(), legend.position="top", plot.margin = unit(c(0, 0, 15, 0), "mm"), axis.text.x = element_blank(), strip.background=element_rect(fill="white", color="white")) +
+  labs(x="", y="P(true)")
+
+#p
+fname <- "../figs/p_true.png"
+add_png_to_plot(p, plot_df, -0.13,440,100, fname)
+print(knitr::include_graphics(fname))
+```
+# Scatter plots
+```{r}
+plot_scatter <- function(dfx, dfy, name_x, name_y) {
+  plot_df1 <- dfy %>% select(prob_true, guess_num, func.type) %>% group_by(func.type) %>% summarize(mean_p_true_dfy = mean(prob_true, rm.na=T))
+  plot_df2 <- dfx %>% select(prob_true, guess_num, func.type) %>% group_by(func.type) %>% summarize(mean_p_true_dfx = mean(prob_true, rm.na=T))
+  plot_df <- merge(plot_df1, plot_df2, by="func.type")
+  plot_df <- plot_df %>%
+              mutate(image_path = sprintf("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/spatiotemporal_comparitive/figs/func_ims/%s.png", func.type))
+  ggplot(data=plot_df%>%arrange(mean_p_true_dfx), aes(x=mean_p_true_dfx, y=mean_p_true_dfy)) +
+    geom_abline(slope = 1, intercept = 0, color = "gray", linetype = "dashed") +
+    #stat_smooth(color="orange", method="lm",se=TRUE, linewidth=0.8, alpha=0.2) +
+    geom_image(aes(x=mean_p_true_dfx+.05, y=mean_p_true_dfy+.05, image = image_path), size=0.09) +
+    geom_point(color="#FF8C00") +
+    coord_fixed(xlim=c(0,1),ylim=c(0,1)) +
+    scale_x_continuous(breaks = c(0, 0.5, 1)) +
+    scale_y_continuous(breaks = c(0, 0.5, 1)) +
+    annotate("text",  x = 0.9, y = 0.05, size=5,
+             label = paste("R² =", round(summary(lm(mean_p_true_dfx ~ mean_p_true_dfy, data = plot_df))$r.squared, 3)),
+             hjust = 1, vjust = 0) +
+    paper_theme +
+    labs(x=paste0("P(correct)  (", name_x, ")"), y=paste0("P(correct)  (",name_y,")"))
+  ggsave(paste0("../figs/scatters/",name_x,"_vs_",name_y,".png"), plot = last_plot(), width = 5, height = 4.8, units = "in", bg="white")
+  beta(lm(data=plot_df, mean_p_true_dfx~ mean_p_true_dfy))
+}
+
+plot_scatter(df_mean_monkey %>% filter(subj=="BP22"), df_mean_monkey %>% filter(subj=="BP24"), "Monkey1", "Monkey2")
+# plot_scatter(df_mean_monkey %>% filter(subj=="BP22"), df_mean_adult, "Monkey1", "Adults")
+# plot_scatter(df_mean_monkey %>% filter(subj=="BP24"), df_mean_adult, "Monkey2", "Adults")
+# plot_scatter(df_mean_monkey %>% filter(subj=="BP22"), df_mean_kid, "Monkey1", "Children")
+# plot_scatter(df_mean_monkey %>% filter(subj=="BP24"), df_mean_kid, "Monkey2", "Children")
+# plot_scatter(df_mean_monkey, df_mean_adult, "Monkeys", "Adults")
+# plot_scatter(df_mean_monkey, df_mean_kid, "Monkeys", "Children")
+# plot_scatter(df_mean_kid, df_mean_adult, "Children", "Adults")
 
 ```

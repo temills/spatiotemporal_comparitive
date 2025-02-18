@@ -58,13 +58,19 @@ def compute_ll(df_participant_model, out_path, fit_rand=False, fit_lin=False):
         df_result = df_result[df_result['n'] > 2]
         df_result = compute_p_data(df_result)
         
+        
+        if np.any(df_result['p_data_x'] <= 0) or np.any(df_result['p_data_y'] <= 0):
+            print("Warning: Zero or negative values in p_data_x or p_data_y!")
+            print(df_result[df_result['p_data_x'] <= 0])
+            print(df_result[df_result['p_data_y'] <= 0])
+            
         df_result['LL'] = np.log(df_result['p_data_x']) + np.log(df_result['p_data_y'])
         return -np.nansum(df_result['LL'])
 
     subj_param_dict = {}
     for subj in df_participant_model['subj_id'].unique():
         init_pars = [0.2, 0.08, 0.08]
-        bounds = [(0, 1), (1e-5, 1), (1e-5, 1)]
+        bounds = [(0, 0.99), (1e-5, 1), (1e-5, 1)]
         
         if fit_rand:
             init_pars.append(0.1)
@@ -110,15 +116,12 @@ def compute_ll(df_participant_model, out_path, fit_rand=False, fit_lin=False):
     df_result.to_csv(out_path, index=False)
 
 
-
-
-
-for model_name in ["lot", "gpnc", "gpsl", "ridge", "lin", "true", "prev"]:
+for model_name in ["lot", "lot_no_recursion", "gpnc", "gpsl", "ridge", "lin"]:
     print(model_name)
-    for participant_name in ["adult", "kid", "monkey"]:
+    for participant_name in ["kid", "adult", "monkey"]:
+        print(participant_name)
         df_participant_model = pd.read_csv("preprocessed_data/" + model_name + "_" + participant_name + ".csv")
         out_path = "model_fits/LLs/" + model_name + "_" + participant_name + ".csv"
-        compute_ll(df_participant_model, out_path, True, True)
-        
+        compute_ll(df_participant_model, out_path, True, False)
 
 

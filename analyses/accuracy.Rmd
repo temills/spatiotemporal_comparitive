@@ -1,0 +1,703 @@
+---
+title: "model comparison"
+output: html_document
+---
+
+```{r, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.width=4, fig.height=3,fig.align = "center",cache=TRUE)
+library(ggplot2)
+library(reshape)
+library(grid)
+library(dplyr)
+library(gridExtra)
+library(lme4)
+library(reghelper)
+library(RColorBrewer)
+library(robustbase)
+library(tidylog)
+library(tidyr)
+library(hash)
+library(rstan)
+library(png)
+library(gtable)
+library(hash)
+library(purrr)
+library(stringr)
+#library(rjson)
+library(ggforce)
+
+paper_theme <- theme_light() + theme( axis.title.x = element_text(size=22),
+                                      axis.text.x=element_text(
+                                        size = 18), 
+                                      axis.title.y = element_text(size = 22, vjust = 1),
+                                      axis.text.y  = element_text(size = 18),
+                             strip.text=element_text(size=16),
+                                      axis.line.x = element_line(colour = "black"), 
+                                      axis.line.y = element_line(colour = "black"),
+                                      legend.title=element_text(size=20),
+                                      legend.text=element_text(size=16),
+                                      panel.grid.major=element_blank(),
+                #   panel.background = element_rect(color = NA), 
+                                      panel.grid.minor=element_blank())  
+
+
+get_ll <- function(df) {
+  logsumexp <- function(x) {
+    max_x <- max(x)
+    max_x + log(sum(exp(x - max_x)))
+  }
+  df <- df %>%
+    group_by(tpt, seq_id) %>%
+    mutate(norm = logsumexp(score)) %>%
+    ungroup() %>%
+    mutate(posterior = exp(score - norm)) 
+  return(df)
+}
+
+preprocess_df_human <- function(df) {
+  sm <- 1e-10
+  df$attempt = 1
+  df$id <- seq_len(nrow(df))
+  df$n <- df$tpt
+  df <- df[order(df$tpt),] %>%
+      rename(pred_x = response_x, pred_y = response_y, func.name = seq_id, subj_id = subject_id) %>%
+      group_by(subj_id, trial_idx, tpt) %>%
+      mutate(r_id = subj_id) %>%
+      mutate(true_dist=((true_x-prev_x)**2. + (true_y-prev_y)**2.)**0.5) %>%
+      mutate(err_x=pred_x-true_x) %>%
+      mutate(err_y=pred_y-true_y) %>%
+      mutate(norm_err_x = err_x/(true_dist+sm)) %>%
+      mutate(norm_err_y = err_y/(true_dist+sm)) %>%
+      mutate(abs_err = ((err_x**2)+(err_y**2)) **0.5) %>%  
+      mutate(abs_rel_err = abs_err/(true_dist)) %>%
+      mutate(dist_from_prev = (((pred_x-true_x)**2)+((pred_y-true_y)**2)) **0.5) %>%
+      ungroup() %>%
+      mutate(scaled_err = scale(abs_rel_err)[,1])
+  return(df)
+}
+
+
+preprocess_df_monkey <- function(df) {
+  df$attempt = 1
+  df$id <- seq_len(nrow(df))
+  df <- df[order(df$n),] %>%
+      rename(true_x=x_next, true_y=y_next, prev_x=x_curr, prev_y=y_curr, pred_x=x_pred, subj_id = monkey_name, pred_y=y_pred, func.name=func_id) %>%
+      rename(tpt = n) %>%
+      mutate(func.name=ifelse(func.name=="example_line", "line", func.name)) %>%
+      group_by(r_id, game_n, tpt) %>%
+      mutate(true_dist=((true_x-prev_x)**2. + (true_y-prev_y)**2.)**0.5) %>%
+      mutate(err_x=pred_x-true_x) %>%
+      mutate(err_y=pred_y-true_y) %>%
+      mutate(abs_err = ((err_x**2)+(err_y**2)) **0.5) %>%  
+      mutate(abs_rel_err = abs_err/(true_dist)) %>%
+      mutate(dist_from_prev = (((pred_x-true_x)**2)+((pred_y-true_y)**2)) **0.5) %>%
+      ungroup() %>%
+      mutate(n=tpt)
+  return(df)
+}
+
+preprocess_model <- function(df_model) {
+  df_model$id <- seq.int(1,nrow(df_model))
+  df_model <- df_model %>%
+        get_ll() %>%
+        rename(func.name = seq_id, n = tpt) %>%
+        rowwise() %>%
+        mutate(std_x = sd_x) %>%
+        mutate(std_y = sd_y) %>%
+        mutate(err_x = pred_x - true_x) %>%
+        mutate(err_y = pred_y - true_y) %>%
+        group_by(func.name) %>%
+        mutate(range_x = max(true_x) - min(true_x)) %>%
+        mutate(range_y = max(true_y) - min(true_y)) %>%
+        mutate(mean_x = mean(true_x)) %>%
+        mutate(mean_y = mean(true_y)) %>%
+        group_by(func.name, particle) %>%
+        arrange(n) %>%
+        mutate(prev_x = lag(true_x), prev_y = lag(true_y)) %>%
+        ungroup() %>%
+        mutate(true_dist=((true_x-prev_x)**2. + (true_y-prev_y)**2.)**0.5) %>%
+        mutate(err_x=pred_x-true_x) %>%
+        mutate(err_y=pred_y-true_y) %>%
+        mutate(abs_err = ((err_x**2)+(err_y)**2) **0.5) %>%  
+        mutate(abs_rel_err = abs_err/(true_dist)) %>%
+        group_by(func.name, n) %>%
+        mutate(norm_abs_rel_err = sum(abs_rel_err * posterior, na.rm=T)) %>%
+  
+  
+  return(df_model)
+}
+
+get_model_data <- function(df_model, s_id, t,  model_type) {
+  s_id <- as.character(s_id[1])
+  t <- t[1]
+  df_use <- subset(df_model, (df_model$n==t) & (as.character(df_model$func.name) == as.character(s_id)))
+    if (nrow(df_use) == 0) {
+    return(NA) 
+  } else {
+    return(list(df_use$pred_x, df_use$std_x, df_use$pred_y, df_use$std_y, df_use$posterior, df_use$particle))
+  }
+}
+
+add_new_columns_grouped <- function(df, df_model, func, group_cols, model_type, new_col_names) {
+  # Number of times you want each row to be repeated
+  n_particle <- length(unique(df_model$particle))
+  # Create a new data frame by repeating each row
+  df_expanded <- df %>% 
+    slice(rep(1:n(), n_particle)) %>%
+    group_by(id) %>%
+    mutate(particle = rep(1:n_particle))
+  df_expanded %>%
+    group_by(across(all_of(group_cols))) %>%
+    #summarize(result = list(func(!!sym(input_col))), .groups = 'drop') %>%
+    summarize(result = list(func(df_model, func.name, n, model_type)), .groups = 'drop') %>%
+    unnest_wider(result, names_sep = "_") %>%
+    setNames(., c(group_cols, new_col_names)) %>%
+    left_join(df, by = group_cols) 
+}
+```
+
+
+###Load participant data
+```{r}
+df_adult <- preprocess_df_human(read.csv("data/participants/adults.csv"))
+df_kid <- preprocess_df_human(read.csv("data/participants/kids.csv"))
+df_monkey <- preprocess_df_monkey(read.csv("data/participants/monkeys_1.csv"))
+```
+# Load model paths
+```{r}
+gpnc_path <- 'data/models/gpnc.csv'
+gpsl_path <- 'data/models/gpsl.csv'
+ridge_path <- 'data/models/ridge.csv'
+lot_path <- 'data/models/lot.csv'
+lin_path <- 'data/models/linear.csv'
+```
+
+
+# error based analyses
+```{r, message=F}
+df_lot <- preprocess_model(read.csv(lot_path))
+df_gpsl <- preprocess_model(read.csv(gpsl_path))
+df_ridge <- preprocess_model(read.csv(ridge_path))
+df_lin <- preprocess_model(read.csv(lin_path))
+df_gpnc <- preprocess_model(read.csv(gpnc_path))
+```
+# add acceptance dist
+```{r}
+df_acc <- df_adult %>% group_by(func.name) %>% summarize(acceptance_dist = mean(acceptance_dist, na.rm=T))
+```
+
+```{r}
+df_lot <- merge(df_lot, df_acc) %>% mutate(correct = (acceptance_dist>=abs_err)*1) %>% group_by(func.name, n) %>%
+        mutate(norm_correct = sum(correct * posterior, na.rm=T))
+df_gpsl <- merge(df_gpsl, df_acc) %>% mutate(correct = (acceptance_dist>=abs_err)*1) %>% group_by(func.name, n) %>%
+        mutate(norm_correct = sum(correct * posterior, na.rm=T))
+df_gpnc <- merge(df_gpnc, df_acc) %>% mutate(correct = (acceptance_dist>=abs_err)*1) %>% group_by(func.name, n) %>%
+        mutate(norm_correct = sum(correct * posterior, na.rm=T))
+df_ridge <- merge(df_ridge, df_acc) %>% mutate(correct = (acceptance_dist>=abs_err)*1) %>% group_by(func.name, n) %>%
+        mutate(norm_correct = sum(correct * posterior, na.rm=T))
+```
+
+```{r}
+add_png_to_facet <- function(ggplot_object, data, facet_var, x_loc,y_loc, width, height, out_file) {
+  # Get the ggplotGrob
+  gtable <- ggplotGrob(ggplot_object)
+  # Get the unique facet labels in the order they appear in the data
+  facet_labels <- levels(data[[facet_var]])#rev(unique(data[[facet_var]]))
+  # Extract panel positions from the layout
+  panel_positions <- subset(gtable$layout, grepl("panel", name))
+  # Order the panels by their left (l) and top (t) positions
+  ordered_panel_positions <- with(panel_positions, order(t, l))
+  # Ensure the facet labels order matches the plot
+  # For each ordered panel position, add the PNG
+  for (i in seq_along(ordered_panel_positions)) {
+    panel_index <- ordered_panel_positions[i]
+    facet_label <- facet_labels[i]
+    if (!is.na(facet_label)) {
+      img <- readPNG(paste0("../figs/func_ims/", facet_label, ".png"))
+      # Convert to raster and add it to the gtable
+      g <- rasterGrob(img, interpolate = TRUE, width = unit(0.28, "npc"), height = unit(0.3, "npc"))
+      g <- editGrob(g, vp = viewport(x = x_loc, y = y_loc, just = c("right", "top")))
+      gtable <- gtable_add_grob(gtable, g, t = panel_positions$t[panel_index], l = panel_positions$l[panel_index])
+    }
+  }
+  png(filename = out_file, width = width, height = height, units = 'mm', res = 400)
+  grid.draw(gtable)
+  dev.off()
+}
+```
+
+
+```{r}
+adult_color = "#7c7fff"
+monkey_color = "#00695C" 
+kid_color = "#f335f7"
+
+
+adult_color ="#7c7fff"
+lot_color = "#8BC34A"
+gpsl_color = "#ff5c5c"
+
+
+adult_color = "#7c7fff"
+ridge_color = "#9C27B0"
+gpnc_color = "#fece30" 
+
+
+
+ggplot() +
+  geom_hline(aes(yintercept=1, xmin=0, xmax=0.5), color=adult_color, linewidth=2) +
+  geom_hline(aes(yintercept=1.1, xmin=0, xmax=0.5), color=kid_color, linewidth=2) +
+  geom_hline(aes(yintercept=1.2, xmin=0, xmax=0.5), color=monkey_color, linewidth=2) +
+  geom_hline(aes(yintercept=1.3, xmin=0, xmax=0.5), color=gpnc_color, linewidth=2) +
+  geom_hline(aes(yintercept=1.4, xmin=0, xmax=0.5), color=gpsl_color, linewidth=2) +
+  geom_hline(aes(yintercept=1.5, xmin=0, xmax=0.5), color=ridge_color, linewidth=2) +
+  geom_hline(aes(yintercept=1.6, xmin=0, xmax=0.5), color=lot_color, linewidth=2)
+  
+```
+
+# correct over time
+```{r}
+
+summary_adult <- df_adult %>%
+  group_by(func.name, n) %>%
+  summarise(mean_correct = mean(correct), 
+            se_correct = sd(correct) / sqrt(n()))
+
+summary_adult$func.name <- factor(summary_adult$func.name,levels=unique(summary_adult$func.name))
+# Create the plot with a ribbon and a line
+
+p <- ggplot() +
+  geom_point(data=summary_adult%>%filter(n>2& n<15), aes(x=n, y=mean_correct)) +
+  geom_errorbar(data=summary_adult%>%filter(n>2& n<15), aes(x=n, ymin = mean_correct - se_correct, ymax = mean_correct + se_correct)) +
+    geom_line(data=df_lot%>%filter(n>2 & n<15), aes(x=n, y=norm_correct), color="darkolivegreen3", linewidth=1) +
+    geom_line(data=df_gpsl%>%filter(n>2 & n<15), aes(x=n, y=norm_correct), color="tomato", linewidth=1) +
+    #geom_line(data=df_gpnc%>%filter(n>2 & n<15), aes(x=n, y=norm_correct), color="purple2", linewidth=1) +
+    #geom_line(data=df_ridge%>%filter(n>2 & n<15), aes(x=n, y=norm_correct), color="orange1", linewidth=0.7) +
+    paper_theme +
+    theme(legend.title=element_blank(), legend.position="top", plot.margin = unit(c(0, 0, 15, 0), "mm"),
+          axis.text.x = element_blank(), strip.background=element_rect(fill="white", color="white")) +
+  facet_wrap(~func.name, ncol=7) + labs(y="Accuracy", x="Timepoint") + scale_x_continuous(breaks = c(4, 8, 12))
+fname <- "../figs/learning_curves/adult_lot_gpsl.png"
+
+add_png_to_facet(p, summary_adult, "func.name",  1.33,.67,700/2,300/2, fname)
+print(knitr::include_graphics(fname))
+
+#ggsave(f_name, plot=p,width=16,height=7, dpi=500)
+```
+
+
+# correct over time adult and monkey
+```{r}
+summary_adult <- df_adult %>%
+  group_by(func.name, n) %>%
+  summarise(mean_correct = mean(correct), 
+            se_correct = sd(correct) / sqrt(n()))
+
+summary_kid <- df_kid %>%
+  group_by(func.name, n) %>%
+  summarise(mean_correct = mean(correct, na.rm=T), 
+            se_correct = sd(correct, na.rm=T) / sqrt(n()))
+
+summary_monkey <- df_monkey %>%
+  group_by(func.name, n) %>%
+  summarise(mean_correct = mean(correct), 
+            se_correct = sd(correct) / sqrt(n()))
+
+summary_adult$func.name <- factor(summary_adult$func.name,levels=unique(summary_adult$func.name))
+p <- ggplot() +
+  geom_errorbar(data=summary_adult%>%filter(n>2& n<15), aes(x=n, ymin = mean_correct - se_correct, ymax = mean_correct + se_correct), color=adult_color, width=0.4, alpha=0.3) +
+  geom_errorbar(data=summary_kid%>%filter(n>2& n<15), aes(x=n, ymin = mean_correct - se_correct, ymax = mean_correct + se_correct), color=kid_color, width=0.3, alpha=0.3) +
+  geom_errorbar(data=summary_monkey%>%filter(n>2& n<15), aes(x=n, ymin = mean_correct - se_correct, ymax = mean_correct + se_correct), color=monkey_color, width=0.3, alpha=0.3) +
+
+  #geom_line(data=summary_monkey%>%filter(n>2& n<15), aes(x=n, y=mean_correct), color=monkey_color, alpha=0.3, linetype="solid") +
+  geom_line(data=summary_kid%>%filter(n>2& n<15), aes(x=n, y=mean_correct), color=kid_color, alpha=0.3,linetype="solid") +
+  geom_line(data=summary_adult%>%filter(n>2& n<15), aes(x=n, y=mean_correct), color=adult_color, alpha=0.3, linetype="solid") +
+  
+  geom_point(data=summary_adult%>%filter(n>2& n<15), aes(x=n, y=mean_correct), color=adult_color, size=2) +
+  geom_point(data=summary_kid%>%filter(n>2& n<15), aes(x=n, y=mean_correct), color=kid_color, size=2) +
+  #geom_point(data=summary_monkey%>%filter(n>2& n<15), aes(x=n, y=mean_correct), color=monkey_color, size=2) +
+  
+  paper_theme + theme(legend.title=element_blank(), legend.position="top", plot.margin = unit(c(0, 0, 0, 0), "mm"), strip.background=element_rect(fill="white", color="white")) +
+  facet_wrap(~func.name, ncol=7) + labs(y="Accuracy", x="Timepoint") + scale_x_continuous(breaks = c(4, 8, 12)) + scale_y_continuous(breaks = c(0, 0.5, 1))
+
+fname <- "../figs/accuracy/learning_curves/adult_kid_ind.png"
+p
+#add_png_to_facet(p, summary_adult, "func.name",  1.33,.67,700/2,300/2, fname)
+#print(knitr::include_graphics(fname))
+
+#ggsave(f_name, plot=p,width=16,height=7, dpi=500)
+```
+
+
+# correct by func
+# Mean and SD CI by func
+```{r, cache=T}
+library(forcats)
+
+add_png_to_plot <- function(ggplot_object, data, y_loc, width, height, out_file) {
+  labels = ggplot_build(ggplot_object)$layout$panel_params[[1]]$x$get_labels()
+  for (i in seq_along(labels)) {
+    facet_label <- labels[i]
+    img <- readPNG(paste0("../figs/func_ims/", facet_label, ".png"))
+    g <- rasterGrob(img, interpolate = TRUE, width = unit(0.5, "npc"), height = unit(0.8, "npc"))
+    ggplot_object <- ggplot_object + annotation_custom(g, xmin = i-.85, xmax = i+.85, ymin = y_loc-0.28, ymax = y_loc)
+  }
+  png(filename = out_file, width = width, height = height, units = 'mm', res = 400)
+  grid.draw(ggplot_object)
+  dev.off()
+}
+
+
+plot_df <- bind_rows(plot_df_adult, plot_df_kid, plot_df_monkey) %>% mutate(image_path = sprintf("../figs/func_ims/%s.png", func.name))
+
+summary1 <- plot_df %>%
+  group_by(func.name, subj_id, agent) %>%
+  summarize(mean_correct = mean(correct, na.rm=T),
+            mean_kid_correct = mean(kid_correct, na.rm=T)) %>%
+  group_by(func.name) %>%
+  mutate(mean_kid_correct = mean(mean_kid_correct, na.rm=T))
+# summarize data
+summary2 <- plot_df %>%
+  group_by(agent, func.name) %>%
+  summarize(
+    mean_correct = mean(correct, na.rm=T),
+    sd_correct = sd(correct),
+    se_correct = sd(correct)/ sqrt(length(correct)))
+
+p <- ggplot() +
+  geom_point(data=summary1, aes(color=as.factor(agent), fill=as.factor(agent), x = fct_rev(reorder(func.name, mean_kid_correct)), y = mean_correct), size=1, position = position_dodge(width = .7), alpha=0.3) +
+  geom_point(data=summary2, aes(color=as.factor(agent), fill=as.factor(agent), x = func.name, y = mean_correct), size=2, shape=8, stroke=1, position = position_dodge(width = .7), alpha=0.8) +
+  #stat_summary(data=plot_df, aes(color=agent, fill=agent, x = func.name, y = correct), size=2,  position = position_dodge(width = .7), shape=8, stroke=1) +
+  #geom_point(data=summary_stats, aes(color=agent, fill=agent, x = func.name, y = mean_correct), size=2,  position = position_dodge(width = .7), shape=8, stroke=1) +
+  #stat_summary(aes(color=agent, fill=agent, x = fct_rev(reorder(func_type_str, mean_p_true_kid)), y = p_true), fun = "median", na.rm = TRUE, geom = "point", size=2,  position = position_dodge(width = .7), shape=8, stroke=1) +
+  #geom_errorbar(aes(x=fct_rev(reorder(func_type_str, mean_p_true_kid)), ymin = mean_p_true-sd_p_true, ymax = mean_p_true+sd_p_true, color=agent), width = 0.2, position = position_dodge(width = .7)) +
+   #geom_errorbar(aes(x=fct_rev(reorder(func_type_str, mean_p_true_kid)), ymin = lower_q, ymax = upper_q, color=agent), width = 0.2, position = position_dodge(width = .7)) +
+  #stat_summary(aes(color=agent), fun.data="median_hilow", conf.int=.5, na.rm = TRUE, alpha=0.5, width=0.1, position = position_dodge(width = .7)) +
+  #stat_summary(aes(color=agent), fun.data="mean_sdl", na.rm = TRUE, geom="errorbar", alpha=0.5, width=0.1, position = position_dodge(width = .7)) +
+  #stat_summary(aes(color=agent), fun = "mean_cl_normal", na.rm = TRUE, geom = "errorbar", position = position_dodge(width = .7)) +
+  #geom_point(aes(color=agent, fill=agent, group=agent), size=1, alpha=0.7, position = position_dodge(width = .7)) +
+  scale_color_manual(values = c("orchid", "#106430", "dodgerblue")) +
+  scale_fill_manual(values = c("orchid", "#106430", "dodgerblue")) +
+  scale_y_continuous(breaks = seq(0,1,by=0.5)) +
+  coord_cartesian(clip = 'off') +
+  paper_theme + theme(legend.title=element_blank(), legend.position="top", plot.margin = unit(c(0, 0, 15, 0), "mm"), axis.text.x = element_blank(), strip.background=element_rect(fill="white", color="white")) +
+  labs(x="", y="Accuracy")
+
+#p
+fname <- "../figs/accuracy/all_funcs.png"
+add_png_to_plot(p, plot_df, -0.13,410,100, fname)
+print(knitr::include_graphics(fname))
+```
+
+
+# Lets make scatters for accuracy
+```{r}
+plot_df_adult <- df_adult %>% mutate(agent="Adults") %>% select(correct, tpt, subj_id, func.name, agent) %>% mutate(adult_correct = correct)#%>% group_by(func.name) #%>% summarize(mean_p_true_adult = mean(correct, na.rm=T))
+plot_df_monkey <- df_monkey %>% mutate(agent="Monkeys") %>% select(correct, tpt, subj_id, func.name, agent) #%>% group_by(func.name) #%>% summarize(mean_p_true_monkey = mean(correct, na.rm=T))
+plot_df_kid <- df_kid %>% mutate(agent="Children") %>% select(correct, tpt, subj_id, func.name, agent) %>% mutate(kid_correct = correct)#%>% group_by(func.name) #%>% summarize(mean_p_true_kid = mean(correct, na.rm=T))
+```
+#monkeys vs adults
+```{r}
+plot_df <- merge(plot_df_adult, plot_df_monkey, by="func.name") %>% mutate(image_path = sprintf("../figs/func_ims/%s.png", func.name))
+ggplot(data=plot_df%>%arrange(mean_p_true_monkey), aes(x=mean_p_true_monkey, y=mean_p_true_adult)) +
+  geom_abline(slope = 1, intercept = 0, color = "gray", linetype = "dashed") +
+  #stat_smooth(data=plot_df, aes(x=mean_p_true_monkey, y=mean_p_true_adult),color="orange", method="lm",se=TRUE, linewidth=0.8, alpha=0.2) +
+  geom_image(aes(x=mean_p_true_monkey+.05, y=mean_p_true_adult+.05, image = image_path), size=0.09) +
+  geom_point(color="#FF8C00") +
+  coord_fixed(xlim=c(0,1),ylim=c(0,1)) +
+  scale_x_continuous(breaks = c(0, 0.5, 1)) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  annotate("text", x = 0.95, y = 0.05, size=5,
+           label = paste("R² =", round(summary(lm(mean_p_true_adult ~ mean_p_true_monkey, data = plot_df))$r.squared, 3)), hjust = 1, vjust = 0) +
+  paper_theme +
+  labs(x="Accuracy (Monkeys)", y="Accuracy (Adults)")
+ggsave("../figs/scatters/monkeys_vs_adults.png", plot = last_plot(), width = 5, height = 4.4, units = "in", bg="white")
+
+```
+#kids vs adults
+```{r}
+plot_df <- merge(plot_df_adult, plot_df_kid, by="func.name") %>% mutate(image_path = sprintf("../figs/func_ims/%s.png", func.name))
+ggplot(data=plot_df%>%arrange(mean_p_true_kid), aes(x=mean_p_true_kid, y=mean_p_true_adult)) +
+  geom_abline(slope = 1, intercept = 0, color = "gray", linetype = "dashed") +
+  geom_image(aes(x=mean_p_true_kid+.05, y=mean_p_true_adult+.05, image = image_path), size=0.09) +
+  geom_point(color="#FF8C00") +
+  coord_fixed(xlim=c(0,1),ylim=c(0,1)) +
+  scale_x_continuous(breaks = c(0, 0.5, 1)) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  annotate("text", x = 0.95, y = 0.05, size=5,
+           label = paste("R² =", round(summary(lm(mean_p_true_adult ~ mean_p_true_kid, data = plot_df))$r.squared, 3)), hjust = 1, vjust = 0) +
+  paper_theme +
+  labs(x="Accuracy (Children)", y="Accuracy (Adults)")
+ggsave("../figs/scatters/kids_vs_adults.png", plot = last_plot(), width = 5, height = 4.4, units = "in", bg="white")
+```
+
+#kids vs monkeys
+```{r}
+plot_df <- merge(plot_df_monkey, plot_df_kid, by="func.name") %>% mutate(image_path = sprintf("../figs/func_ims/%s.png", func.name))
+ggplot(data=plot_df%>%arrange(mean_p_true_kid), aes(x=mean_p_true_kid, y=mean_p_true_monkey)) +
+  geom_abline(slope = 1, intercept = 0, color = "gray", linetype = "dashed") +
+  geom_image(aes(x=mean_p_true_kid+.05, y=mean_p_true_monkey+.05, image = image_path), size=0.09) +
+  geom_point(color="#FF8C00") +
+  coord_fixed(xlim=c(0,1),ylim=c(0,1)) +
+  scale_x_continuous(breaks = c(0, 0.5, 1)) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  annotate("text", x = 0.98, y = 0.05, size=5,
+           label = paste("R² =", round(summary(lm(mean_p_true_monkey ~ mean_p_true_kid, data = plot_df))$r.squared, 3)), hjust = 1, vjust = 0) +
+  paper_theme +
+  labs(x="Accuracy (Children)", y="Accuracy (Monkeys)")
+ggsave("../figs/scatters/kids_vs_monkeys.png", plot = last_plot(), width = 5, height = 4.4, units = "in", bg="white")
+```
+
+```{r}
+sd((df_kid %>% group_by(subj_id) %>% summarize(age=mean(age)))$age)
+
+
+mean_cor_monkeys <- df_monkey %>% filter(tpt==14) %>% group_by(func.name) %>% summarize(correct_monkey=mean(correct, na.rm=T))
+mean_cor_kids <- df_kid %>% filter(tpt==14) %>% group_by(func.name) %>% summarize(correct_kid=mean(correct, na.rm=T))
+mean_cor_adults <- df_adult %>% filter(tpt==14) %>% group_by(func.name) %>% summarize(correct_adult=mean(correct, na.rm=T))
+
+df <- merge(mean_cor_monkeys, mean_cor_kids)
+beta(lm(data=df, correct_monkey ~ correct_kid))
+
+df <- merge(mean_cor_adults, mean_cor_monkeys)
+beta(lm(data=df, correct_adult ~ correct_monkey))
+
+df <- merge(mean_cor_adults, mean_cor_kids)
+beta(lm(data=df, correct_adult ~ correct_kid))
+
+```
+```{r}
+
+cor_kids <- df_kid %>% group_by(func.name, subj_id) %>% summarize(correct=mean(correct, na.rm=T), age=mean(age))
+
+sd_kids <- cor_kids %>% group_by(func.name) %>% summarize(sd = sd(correct, na.rm=T))
+
+cor_kids <- cor_kids %>% group_by(subj_id) %>% summarize(correct = mean(correct), age=mean(age))
+beta(lm(data=cor_kids, correct ~ age))
+
+cor_monkeys <- df_monkey %>% group_by(func.name, subj_id) %>% summarize(correct=mean(correct, na.rm=T)) %>% pivot_wider(names_from=subj_id, values_from=correct)
+beta(lm(data=cor_monkeys, BP22~BP24))
+```
+
+#stimuli
+```{r}
+#summary_adult$func.name <- factor(summary_adult$func.name,levels=unique(summary_adult$func.name))
+# Create the plot with a ribbon and a line
+
+#"GPNC"="purple2", "Ridge"="orange1", "Linear"="darkslategray4", "Adults"="cornflowerblue", "LoT"="darkolivegreen3", "GPSL"="tomato"
+df <- df_adult%>% group_by(func.name, tpt) %>% top_n(n=1, wt=subj_id)
+df$func.name <- factor(df$func.name,levels=unique(df$func.name))
+df <- df[order(df$tpt),] 
+p <- ggplot() +
+  geom_point(data=df, aes(x=true_x, y=true_y, alpha=tpt)) +
+  geom_path(data=df, aes(x=true_x, y=true_y, alpha=tpt)) +
+    paper_theme +
+    theme(legend.title=element_blank(), legend.position="top", plot.margin = unit(c(0, 0, 15, 0), "mm"),
+          axis.text.x = element_text(), axis.text.y = element_blank(), strip.background=element_rect(fill="white", color="white"), scale_x_continuous(breaks = c(3, 9, 12))) +
+  guides(alpha="none") +
+  facet_wrap(~func.name, ncol=7, scales="free") + labs(y="", x="")
+fname <- "../figs/stimuli.png"
+
+#add_png_to_facet(p, summary_adult, "func.name",  1.35,.67,700/2,290/2, fname)
+ggsave(p, filename = fname, width=680/2, height=300/2, units = 'mm')
+#print(knitr::include_graphics(fname))
+```
+
+
+
+# correct over time
+```{r}
+
+p <- ggplot() +
+  geom_line(data=df_lot%>%filter(n>2 & n<15), aes(x=n, y=norm_correct), color="darkolivegreen3", linewidth=1) +
+  geom_line(data=summary_adult%>%filter(n>2& n<15), aes(x=n, y=mean_correct)) +
+  geom_ribbon(data=summary_adult%>%filter(n>2& n<15), aes(x=n, ymin = mean_correct - se_correct, ymax = mean_correct + se_correct), alpha = 0.2) +
+  #stat_summary(data=df_adult%>%filter(n>2& n<15), aes(x=n, y=correct), geom="line",width=0.8) + 
+  #stat_summary(data=df_adult%>%filter(n>2& n<15), aes(x=n, y=correct), geom="errorbar",width=0.2) +
+  facet_wrap(~func.name, ncol=7) + paper_theme + labs(y="accuracy", x="tpt") + scale_x_continuous(breaks = c(4, 8, 12))
+f_name <- "../figs/learning_curves/lot.png"
+ggsave(f_name, plot=p,width=16,height=7, dpi=500)
+
+p <- ggplot() +
+  geom_line(data=df_gpsl%>%filter(n>2 & n<15), aes(x=n, y=norm_correct), color="tomato", linewidth=1) +
+  geom_line(data=summary_adult%>%filter(n>2& n<15), aes(x=n, y=mean_correct)) +
+  geom_ribbon(data=summary_adult%>%filter(n>2& n<15), aes(x=n, ymin = mean_correct - se_correct, ymax = mean_correct + se_correct), alpha = 0.2) +
+  facet_wrap(~func.name, ncol=7) + paper_theme + labs(y="accuracy", x="tpt") + scale_x_continuous(breaks = c(4, 8, 12))
+f_name <- "../figs/learning_curves/gpsl.png"
+ggsave(f_name, plot=p,width=16,height=7, dpi=500)
+
+p <- ggplot() +
+  geom_line(data=df_gpsl%>%filter(n>2 & n<15), aes(x=n, y=norm_correct), color="tomato", linewidth=1) +
+  geom_line(data=df_gpnc%>%filter(n>2 & n<15), aes(x=n, y=norm_correct), color="purple2", linewidth=1) +
+  geom_line(data=summary_adult%>%filter(n>2& n<15), aes(x=n, y=mean_correct)) +
+  geom_ribbon(data=summary_adult%>%filter(n>2& n<15), aes(x=n, ymin = mean_correct - se_correct, ymax = mean_correct + se_correct), alpha = 0.2) +
+  facet_wrap(~func.name, ncol=7) + paper_theme + labs(y="accuracy", x="tpt") + scale_x_continuous(breaks = c(4, 8, 12))
+f_name <- "../figs/learning_curves/gpnc.png"
+ggsave(f_name, plot=p,width=16,height=7, dpi=500)
+
+p <- ggplot() +
+    geom_line(data=df_gpsl%>%filter(n>2 & n<15), aes(x=n, y=norm_correct), color="tomato", linewidth=1) +
+  geom_line(data=df_gpnc%>%filter(n>2 & n<15), aes(x=n, y=norm_correct), color="purple2", linewidth=1) +
+  geom_line(data=df_ridge%>%filter(n>2 & n<15), aes(x=n, y=norm_correct), color="orange1", linewidth=1) +
+  geom_line(data=summary_adult%>%filter(n>2& n<15), aes(x=n, y=mean_correct)) +
+  geom_ribbon(data=summary_adult%>%filter(n>2& n<15), aes(x=n, ymin = mean_correct - se_correct, ymax = mean_correct + se_correct), alpha = 0.2) +
+  facet_wrap(~func.name, ncol=7) + paper_theme + labs(y="accuracy", x="tpt") + scale_x_continuous(breaks = c(4, 8, 12))
+f_name <- "../figs/learning_curves/ridge.png"
+ggsave(f_name, plot=p,width=16,height=7, dpi=500)
+
+```
+
+```{r}
+summary_adult <- df_adult %>%
+  group_by(func.name, subj_id) %>%
+  summarise(mean_correct = mean(correct, na.rm=T), 
+            se_correct = sd(correct, na.rm=T) / sqrt(n()))
+#summary_adult <- summary_adult %>%filter(n>2& n<15) %>% group_by(func.name) %>% summarize(mean_correct = mean(mean_correct))
+p <- ggplot() +
+    stat_summary(data=summary_adult, aes(x=func.name, y=mean_correct), fill="lightgray", fun = "mean", na.rm = TRUE, geom = "col", size=1) +
+  stat_summary(data=summary_adult,  aes(x=func.name, y=mean_correct), na.rm = TRUE, geom = "errorbar", width=0, size=0.5) +
+  geom_point(data=df_lot%>%filter(n>2 & n<15)%>% group_by(func.name) %>% summarize(mean_correct = mean(norm_correct)), aes(x=func.name, y=mean_correct), color="darkolivegreen3") +
+  geom_point(data=df_gpsl%>%filter(n>2 & n<15)%>% group_by(func.name) %>% summarize(mean_correct = mean(norm_correct)), aes(x=func.name, y=mean_correct), color="tomato") +
+  #geom_point(data=df_gpnc%>%filter(n>2 & n<15)%>% group_by(func.name) %>% summarize(mean_correct = mean(norm_correct)), aes(x=func.name, y=mean_correct), color="purple2") +
+  #geom_point(data=df_ridge%>%filter(n>2 & n<15)%>% group_by(func.name) %>% summarize(mean_correct = mean(norm_correct)), aes(x=func.name, y=mean_correct), color="orange1") +
+  paper_theme + labs(y="accuracy", x="") + theme(axis.text.x=element_text(angle=90, hjust=1))
+f_name <- "../figs/learning/lot_and_gpsl.png"
+ggsave(f_name, plot=p,width=8,height=5, dpi=500)
+
+```
+
+```{r}
+#should do this with p_true
+ggplot() +
+  stat_summary(data=df_adult%>%filter(n>2& n<15), aes(x=n, y=abs_rel_err), geom="col",width=0.8) + 
+  stat_summary(data=df_adult%>%filter(n>2& n<15), aes(x=n, y=abs_rel_err), geom="errorbar",width=0.2) +
+  geom_line(data=df_gpnc%>%filter(n>2 & n<15), aes(x=n, y=norm_abs_rel_err), color="gold") +
+  facet_wrap(~func.name, scales="free")
+```
+# mean err by func
+```{r}
+ggplot() +
+  stat_summary(geom="point", data=df_gpsl%>%filter(n>2 & n<15), aes(x=func.name, y=norm_abs_rel_err), color="gold") +
+  stat_summary(geom="point", data=df_adult%>%filter(n>2& n<15), aes(x=func.name, y=abs_rel_err), color="blue") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+```
+# correlation in error across tpts
+```{r}
+df_model <- df_lot
+df_model <- df_model %>% group_by(func.name, n) %>%
+            summarize(model_norm_abs_rel_err = mean(norm_abs_rel_err))
+df_hum <- df_adult %>% group_by(func.name, n) %>%
+             summarize(hum_abs_rel_err = mean(abs_rel_err))
+df <- merge(df_hum, df_model) %>% filter(n>2 & n<15)
+beta(lm(data=df, model_norm_abs_rel_err ~ hum_abs_rel_err))
+ggplot(data=df, aes(x=model_norm_abs_rel_err, y=hum_abs_rel_err)) +
+  geom_point() +
+  geom_text(aes(label=func.name)) +
+  stat_smooth(method="lm", se=TRUE,alpha=0.1)
+```
+
+
+
+# Neurips data
+```{r, message=F}
+df_lot_old <- preprocess_model(read.csv('../../neurips_code/analyses/data/lot_all.csv'))
+df_gpsl_old <- preprocess_model(read.csv('../../neurips_code/analyses/data/gpsl_all.csv'))
+df_ridge_old <- preprocess_model(read.csv('../../neurips_code/analyses/data/ridge_1_all.csv'))
+df_gpnc_old <- preprocess_model(read.csv('../../neurips_code/analyses/data/gpnc_all.csv'))
+df_adult_old <- read.csv('../../neurips_code/analyses/data/trials_cleaned.csv')
+# add acceptance dist
+df_acc <- df_adult_old %>% group_by(func.name) %>% summarize(acceptance_dist = mean(acceptance_dist, na.rm=T))
+df_lot_old <- merge(df_lot_old, df_acc) %>% mutate(correct = (acceptance_dist>=abs_err)*1) %>% group_by(func.name, n) %>%
+        mutate(norm_correct = sum(correct * posterior, na.rm=T))
+df_gpsl_old <- merge(df_gpsl_old, df_acc) %>% mutate(correct = (acceptance_dist>=abs_err)*1) %>% group_by(func.name, n) %>%
+        mutate(norm_correct = sum(correct * posterior, na.rm=T))
+df_gpnc_old <- merge(df_gpnc_old, df_acc) %>% mutate(correct = (acceptance_dist>=abs_err)*1) %>% group_by(func.name, n) %>%
+        mutate(norm_correct = sum(correct * posterior, na.rm=T))
+df_ridge_old <- merge(df_ridge_old, df_acc) %>% mutate(correct = (acceptance_dist>=abs_err)*1) %>% group_by(func.name, n) %>%
+        mutate(norm_correct = sum(correct * posterior, na.rm=T))
+```
+
+
+```{r}
+add_png_to_facet <- function(ggplot_object, data, facet_var, x_loc,y_loc, width, height, out_file) {
+  # Get the ggplotGrob
+  gtable <- ggplotGrob(ggplot_object)
+  # Get the unique facet labels in the order they appear in the data
+  facet_labels <- levels(data[[facet_var]])#rev(unique(data[[facet_var]]))
+  # Extract panel positions from the layout
+  panel_positions <- subset(gtable$layout, grepl("panel", name))
+  # Order the panels by their left (l) and top (t) positions
+  ordered_panel_positions <- with(panel_positions, order(t, l))
+  # Ensure the facet labels order matches the plot
+  # For each ordered panel position, add the PNG
+  for (i in seq_along(ordered_panel_positions)) {
+    panel_index <- ordered_panel_positions[i]
+    facet_label <- facet_labels[i]
+    if (!is.na(facet_label)) {
+      img <- readPNG(paste0("../figs/func_ims/", facet_label, ".png"))
+      # Convert to raster and add it to the gtable
+      g <- rasterGrob(img, interpolate = TRUE, width = unit(0.34, "npc"), height = unit(0.34, "npc"))
+      g <- editGrob(g, vp = viewport(x = x_loc, y = y_loc, just = c("right", "top")))
+      gtable <- gtable_add_grob(gtable, g, t = panel_positions$t[panel_index], l = panel_positions$l[panel_index])
+    }
+  }
+  png(filename = out_file, width = width, height = height, units = 'mm', res = 400)
+  grid.draw(gtable)
+  dev.off()
+}
+```
+
+
+# correct over time
+```{r}
+df_adult_old <- df_adult_old %>% mutate(correct = ifelse(success == "True", 1, 0))
+summary_adult <- df_adult_old %>%
+  group_by(func.name, n) %>%
+  summarise(mean_correct = mean(correct), 
+            se_correct = sd(correct) / sqrt(n()))
+
+summary_adult$func.name <- factor(summary_adult$func.name,levels=unique(summary_adult$func.name))
+# Create the plot with a ribbon and a line
+
+#"GPNC"="purple2", "Ridge"="orange1", "Linear"="darkslategray4", "Adults"="cornflowerblue", "LoT"="darkolivegreen3", "GPSL"="tomato"
+p <- ggplot() +
+    geom_errorbar(data=summary_adult%>%filter(n>1& n<21), aes(x=n, ymin = mean_correct - se_correct, ymax = mean_correct + se_correct), color=adult_color, width=0.7) +
+  geom_point(data=summary_adult%>%filter(n>1& n<21), aes(x=n, y=mean_correct), color=adult_color) +
+    geom_line(data=df_lot_old%>%filter(n>1 & n<21), aes(x=n, y=norm_correct), color=lot_color, linewidth=0.8) +
+    geom_line(data=df_gpsl_old%>%filter(n>1 & n<21), aes(x=n, y=norm_correct), color=gpsl_color, linewidth=0.8) +
+    #geom_line(data=df_ridge_old%>%filter(n>1 & n<21), aes(x=n, y=norm_correct), color=ridge_color, linewidth=0.8) +
+    #geom_line(data=df_gpnc_old%>%filter(n>1 & n<21), aes(x=n, y=norm_correct), color=gpnc_color, linewidth=0.8) +
+    paper_theme +
+    theme(legend.title=element_blank(), legend.position="top", plot.margin = unit(c(0, 0, 0, 0), "mm"),
+          axis.text.x = element_text(size=14), axis.text.y = element_text(size=14), panel.spacing.y = unit(0.001, "lines"), strip.background=element_rect(fill="white", color="white")) + 
+  facet_wrap(~func.name, ncol=10) + labs(y="Accuracy", x="Timepoint") + scale_y_continuous(breaks = c(0, 0.5, 1)) + scale_x_continuous(breaks = c(5, 10, 15))
+fname <- "../figs/accuracy/learning_curves/old_adult_lot_gpsl.png"
+
+add_png_to_facet(p, summary_adult, "func.name",  1.32,.71,700/2,330/2, fname)
+print(knitr::include_graphics(fname))
+```
+
+
+```{r}
+p <- ggplot() +
+  geom_point(data=summary_adult%>%filter(n>2& n<15), aes(x=n, y=mean_correct)) +
+  geom_errorbar(data=summary_adult%>%filter(n>2& n<15), aes(x=n, ymin = mean_correct - se_correct, ymax = mean_correct + se_correct)) +
+    geom_line(data=df_ridge_old%>%filter(n>2 & n<15), aes(x=n, y=norm_correct), color="orange1", linewidth=1) +
+    geom_line(data=df_gpnc_old%>%filter(n>2 & n<15), aes(x=n, y=norm_correct), color="purple2", linewidth=1) +
+    #geom_line(data=df_gpnc%>%filter(n>2 & n<15), aes(x=n, y=norm_correct), color="purple2", linewidth=1) +
+    #geom_line(data=df_ridge%>%filter(n>2 & n<15), aes(x=n, y=norm_correct), color="orange1", linewidth=0.7) +
+    paper_theme +
+    theme(legend.title=element_blank(), legend.position="top", plot.margin = unit(c(0, 0, 15, 0), "mm"),
+          axis.text.x = element_text(size=14), axis.text.y = element_text(size=14), strip.background=element_rect(fill="white", color="white")) +
+  facet_wrap(~func.name, ncol=10) + labs(y="Accuracy", x="Timepoint") + scale_y_continuous(breaks = c(0, 0.5, 1)) + scale_x_continuous(breaks = c(4, 8, 12))
+fname <- "../figs/accuracy/learning_curves/old_adult_ridge_gpnc.png"
+
+
+add_png_to_facet(p, summary_adult, "func.name",  1.35,.67,700/2,330/2, fname)
+print(knitr::include_graphics(fname))
+```
+
+
+
+
