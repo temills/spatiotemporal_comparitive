@@ -22,23 +22,23 @@ parameters {
   real use_true_icpt;
   vector[n_func_types] beta_func_type;
   //real<lower=0> beta_guess_num;
-  //real<lower=0> beta_guess_num_func_type[n_func_types];
+  real<lower=0> beta_guess_num_func_type[n_func_types];
   real<lower=0> motor_sd; 
   simplex[3] p_rand_strategy;
   //real<lower=0, upper=1> max_p;
 } 
 
 model { //When beta guess num is a vector, it fails to initialize. divergent transitions...
-  //djksnd
+
   use_true_icpt ~ normal(0,3);
-  //beta_guess_num_func_type ~ normal(0,3); //for each guess_num
+  beta_guess_num_func_type ~ normal(0,3); //for each guess_num
   beta_func_type ~ normal(0,3);
   motor_sd ~ exponential(10);
   p_rand_strategy ~ dirichlet(rep_vector(1,3)); //prev, rand, lin
 
   for (i in 1:N) {
-    //real p_true = inv_logit(use_true_icpt + beta_func_type[func_type[i]] + beta_guess_num_func_type[func_type[i]]*guess_num_std[i]);
-    real p_true = inv_logit(use_true_icpt + beta_func_type[func_type[i]]);
+    real p_true = inv_logit(use_true_icpt + beta_func_type[func_type[i]] + beta_guess_num_func_type[func_type[i]]*guess_num_std[i]);
+    //real p_true = inv_logit(use_true_icpt + beta_func_type[func_type[i]]);
     vector[4] log_probs;
     log_probs[1] = log(p_true) + normal_lpdf(x_pred[i] | x_next[i], motor_sd) + normal_lpdf(y_pred[i] | y_next[i], motor_sd);
     //otherwise 

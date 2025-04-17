@@ -9,11 +9,13 @@ def compute_ll(df_participant_model, out_path, fit_rand=False, fit_lin=False):
     def compute_p_data(df):
         def group_apply(group):
             group['p_data_x'] = norm.pdf(group['pred_x'], loc=group['model_pred_x'], 
-                                         scale=np.sqrt(group['model_std_x']**2 + group['sd_motor']**2))
+                                         scale=np.sqrt(group['sd_motor']**2))
+                                         #scale=np.sqrt(group['model_std_x']**2 + group['sd_motor']**2))
             group['p_data_x'] = sm + (1 - sm) * np.sum(group['model_posterior'] * group['p_data_x'])
             
             group['p_data_y'] = norm.pdf(group['pred_y'], loc=group['model_pred_y'], 
-                                         scale=np.sqrt(group['model_std_y']**2 + group['sd_motor']**2))
+                                         scale=np.sqrt(group['sd_motor']**2))
+                                         #scale=np.sqrt(group['model_std_y']**2 + group['sd_motor']**2))
             group['p_data_y'] = sm + (1 - sm) * np.sum(group['model_posterior'] * group['p_data_y'])
             
             group = group.nlargest(1, 'model_particle')
@@ -116,12 +118,12 @@ def compute_ll(df_participant_model, out_path, fit_rand=False, fit_lin=False):
     df_result.to_csv(out_path, index=False)
 
 
-for model_name in ["lot", "lot_no_recursion", "gpnc", "gpsl", "ridge", "lin"]:
+for model_name in ["ss", "lot", "gpnc", "gpsl", "ridge", "lin"]: #"lot_no_recursion",
     print(model_name)
-    for participant_name in ["kid", "adult", "monkey"]:
+    for participant_name in ["kid_chs"]: #,"monkey", "kid", "adult"]:
         print(participant_name)
         df_participant_model = pd.read_csv("preprocessed_data/" + model_name + "_" + participant_name + ".csv")
-        out_path = "model_fits/LLs/" + model_name + "_" + participant_name + ".csv"
+        out_path = "model_fits/LLs2/" + model_name + "_" + participant_name + ".csv"
         compute_ll(df_participant_model, out_path, True, False)
 
 

@@ -90,7 +90,7 @@ preprocess_model <- function(df_model) {
   #if sample in cols, keep every 100,000 samples
   #then separate samples into particles
   if ("sample" %in% colnames(df_model)) {
-    df_model <- df_model %>% filter(sample%%10000==0) %>%
+    df_model <- df_model %>% filter(sample%%100000==0) %>%
     mutate(particle_sample = paste(particle, sample, sep = "_")) %>%
     mutate(particle_sample_id = as.integer(factor(particle_sample))) %>%
     rename(og_particle=particle) %>%
@@ -131,13 +131,120 @@ preprocess_model <- function(df_model) {
   
   return(df_model)
 }
+
+
+preprocess_model_ss <- function(df_model) {
+  df_model$id <- seq.int(1,nrow(df_model))
+  
+  
+  
+  prev_df <- df_model %>%
+             rename(func.name = seq_id, n = tpt) %>%
+             group_by(func.name, n) %>%
+             summarize(true_x = mean(true_x),
+                       true_y = mean(true_y),
+                       .groups="drop") %>%
+             arrange(n) %>%
+             mutate(prev_x = lag(true_x), prev_y = lag(true_y)) %>%
+             select(-c("true_x", "true_y"))
+  
+  #if sample in cols, keep every 10,000 samples
+  #then separate samples into particles
+  if ("sample" %in% colnames(df_model)) {
+    df_model <- df_model %>% filter((sample==1) | (sample%%20000==0))
+  }
+  
+  
+  df_model <- df_model %>% mutate(prob = exp(score))
+  df_grouped <- df_model %>%
+                group_by(seq_id, tpt, particle) %>%
+                summarise(prob = mean(prob), .groups = 'drop') %>%
+                group_by(seq_id, tpt) %>%
+                mutate(posterior = prob / sum(prob)) %>%
+                ungroup()
+  df_model <- df_model %>% left_join(df_grouped %>% select(seq_id, tpt, particle, posterior), by = c("seq_id", "tpt", "particle"))
+
+  
+  df_model <- df_model %>%
+        rename(func.name = seq_id, n = tpt) %>%
+        # expand particles into one pred for 
+        group_by(func.name, n) %>%
+        mutate(new_particle = paste0(particle, "_", row_number())) %>%
+        mutate(particle = as.integer(factor(new_particle))) %>%
+        
+        mutate(pred_x = means_x,
+               pred_y = means_y) %>%
+        group_by(func.name, n, particle) %>%
+        mutate(sd_x = ifelse(is_periodic, sd_periodic, sd_vec),
+               sd_y = ifelse(is_periodic, sd_periodic, sd_vec)) %>%
+        ungroup() %>%
+        rowwise() %>%
+        mutate(posterior = posterior * weights) %>%
+        mutate(std_x = sd_x) %>%
+        mutate(std_y = sd_y) %>%
+        mutate(err_x = pred_x - true_x) %>%
+        mutate(err_y = pred_y - true_y) %>%
+        group_by(func.name) %>%
+        mutate(range_x = max(true_x) - min(true_x)) %>%
+        mutate(range_y = max(true_y) - min(true_y)) %>%
+        mutate(mean_x = mean(true_x)) %>%
+        mutate(mean_y = mean(true_y)) %>%
+    
+        # this no longer works
+        merge(prev_df, by=c("func.name", "n")) %>%
+        #group_by(func.name, particle) %>%
+        #arrange(n) %>%
+        #mutate(prev_x = lag(true_x), prev_y = lag(true_y)) %>%
+        mutate(true_dist=((true_x-prev_x)**2. + (true_y-prev_y)**2.)**0.5) %>%
+        mutate(err_x=pred_x-true_x) %>%
+        mutate(err_y=pred_y-true_y) %>%
+        mutate(abs_err = ((err_x**2)+(err_y)**2) **0.5) %>%  
+        mutate(abs_rel_err = abs_err/(true_dist)) %>%
+        group_by(func.name, n) %>%
+        mutate(norm_abs_rel_err = sum(abs_rel_err * posterior, na.rm=T)) %>%
+        mutate(pred_x_lin = 0,
+               pred_y_lin = 0)
+  
+  return(df_model)
+}
+
 ```
+
+```{r}
+demo <- read.csv("../../human_experiments/dots_app_kids/data/demographics.csv") %>% mutate(subject_id = child__hashed_id)
+
+ages <- demo %>% mutate(exact_age = as.numeric(difftime(consent__time, child__birthday, units = "days")) / 365.25) %>% select(c(subject_id, exact_age))
+
+df_kid_chs <- read.csv("../../human_experiments/dots_app_kids/data/clean_data/data.csv") %>%
+      mutate(start_time = start_time - min(start_time),
+            start_time = start_time/(3600*1000*24)) %>%
+      merge(ages, by="subject_id") %>%
+      filter(seq_id != "example_line") %>%
+      filter(seq_id != "example_line_2") %>%
+      arrange(subject_id, session) %>%
+      group_by(subject_id) %>%
+      mutate(n_func = sapply(session, function(s) n_distinct(seq_id[session <= s]))) %>%
+      ungroup() %>%
+      mutate(passed_ic = ifelse(passed_ic=="", T,
+                                ifelse(passed_ic=="True", T,
+                                       ifelse(passed_ic=="False", F, NA)))) %>%
+      mutate(age = ifelse(exact_age<4, 3,
+                            ifelse(exact_age<5, 4,
+                                   ifelse(exact_age<6, 5,
+                                          ifelse(exact_age<7, 6,
+                                                 ifelse(exact_age<8, 7,
+                                                        NA))))))
+
+df_kid_chs <- preprocess_df_human(df_kid_chs) %>% filter(!(func.name %in% c("decreasing_y", "123", "radial_increasing"))) %>% filter(passed_ic)
+```
+
 
 # Load participant data
 ```{r}
 df_adult <- preprocess_df_human(read.csv("../data/participants/adults.csv"))
 df_kid <- preprocess_df_human(read.csv("../data/participants/kids.csv"))
 df_monkey <- preprocess_df_monkey(read.csv("../data/participants/monkeys_all.csv"))
+#df_kid_chs <- preprocess_df_human(read.csv("../../human_experiments/dots_app_kids/data/clean_data/data.csv"))
 ```
 # Load model paths
 ```{r}
@@ -152,6 +259,7 @@ prev_path <- '../data/models/prev.csv'
 
 ss_path <- '../../models/hier_dumb/output/ss_all.csv'
 ```
+
 
 
 # Likelihood based analyses
@@ -173,6 +281,10 @@ get_model_data <- function(df_model, s_id, t,  model_type) {
 add_new_columns_grouped <- function(df, df_model, func, group_cols, model_type, new_col_names) {
   # Number of times you want each row to be repeated
   n_particle <- length(unique(df_model$particle))
+  
+  # maybe this will just be fine? and we will have NaNs for some particles and we can remove those
+  # or we can tell it what n_particle should be for each row
+  
   # Create a new data frame by repeating each row
   df_expanded <- df %>% 
     slice(rep(1:n(), n_particle)) %>%
@@ -219,15 +331,21 @@ get_df_participant_model <- function(df_participant, df_model) {
 ```
 
 
+
+
 ```{r message=FALSE}
 write_preprocessed_data <- function() {
   path <- "preprocessed_data/"
-  model_paths = c(lot_path, lot_no_recursion_path, gpnc_path, gpsl_path, ridge_path, true_path, prev_path, lin_path)
-  models = c("lot", "lot_no_recursion", "gpnc", "gpsl", "ridge", "true", "prev", "lin")
-  participants = c('adult', "kid", "monkey")
+  model_paths = c(ss_path, lot_path, lot_no_recursion_path, gpnc_path, gpsl_path, ridge_path, lin_path)
+  models = c("ss", "lot",  "lot_no_recursion", "gpnc", "gpsl", "ridge", "lin")
+  participants = c('kid_chs')#, 'adult', "kid", "monkey")
   for (i in seq_along(models)) {
     model_name <- models[i]
-    df_model <- preprocess_model(read.csv(model_paths[i]))
+    if (model_name == "ss") {
+      df_model <- preprocess_model_ss(read.csv(model_paths[i]))
+    } else {
+      df_model <- preprocess_model(read.csv(model_paths[i]))
+    }
     for (j in seq_along(participants)) {
       if (participants[j] == 'adult') {
          df_participant <- df_adult
@@ -235,6 +353,8 @@ write_preprocessed_data <- function() {
          df_participant <- df_kid
       } else if (participants[j] == 'monkey') {
          df_participant <- df_monkey
+      } else if (participants[j] == 'kid_chs') {
+         df_participant <- df_kid_chs
       }
       print(model_name)
       print(participants[j])
@@ -248,17 +368,24 @@ write_preprocessed_data <- function() {
 write_preprocessed_data()
 ```
 
-
-
-
+# test 
 ```{r}
-read.csv(file)
+df_lot <- read.csv(lot_path)
+df_participant <- df_kid_chs
+df_model <- preprocess_model(df_lot)
+df_participant_model <- get_df_participant_model(df_participant, df_model)
+ggplot(data=df_participant_model%>%arrange(tpt)) +
+  geom_point(aes(x=true_x, y=true_y), color="darkgreen") +
+  geom_point(aes(x=pred_x, y=pred_y, color=tpt), alpha=0.5) +
+  facet_wrap(~func.name, scales="free")
 ```
+
+
 # ANALYSES
 ```{r}
 read_model_fit_data <- function(participant) {
-  path <- "model_fits/LLs/"
-  models = c("lot", "lot_no_recursion", "gpnc", "gpsl", "ridge", "lin")#,# "ss")#, "prev")#, "true")
+  path <- "model_fits/LLs2/"
+  models = c("lot", "ss", "gpnc", "gpsl", "ridge", "lin")#,, "prev")#, "true")
   df <- data.frame()
   for (i in seq_along(models)) {
     model_name <- models[i]
@@ -268,15 +395,13 @@ read_model_fit_data <- function(participant) {
   return(df)
 }
 
-
-df_adult <- read_model_fit_data("adult")
-df_kid <- read_model_fit_data("kid")
-df_monkey <- read_model_fit_data("monkey")
+df_kid_chs <- read_model_fit_data("kid_chs")
+# df_adult <- read_model_fit_data("adult")
+# df_kid <- read_model_fit_data("kid")
+# df_monkey <- read_model_fit_data("monkey")
 
 ```
 
-
-# Stats
 ```{r, message=F}
 get_LLs <- function(all_fits) {
 
@@ -340,6 +465,9 @@ df_aic_adult <- get_aic(df_LL_adult)
 print("Kids best fit:")
 df_LL_kid <- get_LLs(df_kid)
 df_aic_kid <- get_aic(df_LL_kid)
+print("Kids CHS best fit:")
+df_LL_kid_chs <- get_LLs(df_kid_chs)
+df_aic_kid_chs <- get_aic(df_LL_kid_chs)
 print("Monkeys best fit:")
 df_LL_monkey <- get_LLs(df_monkey)
 df_aic_monkey <- get_aic(df_LL_monkey)
@@ -348,7 +476,90 @@ df_aic_monkey1 <- get_aic(df_LL_monkey1)
 df_LL_monkey2 <- get_LLs(df_monkey%>%filter(subj_id=="BP24"))
 df_aic_monkey2 <- get_aic(df_LL_monkey2)
 ```
-# Figure out what counts as significant
+
+
+Compute prop. subjs ambigious for kids and models
+```{r, message=F}
+
+n_params <- 4
+
+df <- df_kid_chs %>%
+      group_by(subj_id, model, func.name) %>%
+      summarize(LL_func_mean = mean(LL, na.rm = T),
+                LL_func_sum = sum(LL, na.rm=T),
+                sd_motor = mean(sd_motor), sd_prev = mean(sd_prev), sd_lin = mean(sd_lin),
+                p_lapse = mean(p_lapse), p_prev = mean(p_prev), p_rand = mean(p_rand), p_lin = mean(p_lin), age=mean(age), n_func=mean(n_func)) %>%
+      ungroup() %>%
+      group_by(subj_id, model) %>%
+      summarize(LL_mean_func_mean = mean(LL_func_mean, na.rm=TRUE),
+                LL_mean_func_sum = mean(LL_func_sum, na.rm=TRUE),
+                LL_sum_func_mean = sum(LL_func_mean, na.rm=TRUE),
+                LL_sum_func_sum = sum(LL_func_sum, na.rm=TRUE),
+                sd_motor = mean(sd_motor), sd_prev = mean(sd_prev), sd_lin = mean(sd_lin),
+                p_lapse = mean(p_lapse), p_prev = mean(p_prev), p_rand = mean(p_rand), p_lin = mean(p_lin),  age=mean(age), n_func=mean(n_func)) %>%
+      mutate(AIC = (2*n_params) - (2*LL_sum_func_mean)) %>%
+      group_by(subj_id) %>%
+      mutate(delta_AIC = AIC - min(AIC))
+
+df_model_ambig <- df %>% group_by(subj_id) %>%
+                    filter(abs(delta_AIC) < 10) %>%
+                    summarize(count=n()) %>%
+                    filter(count>1)
+  
+n_ambig <- length(df_model_ambig$count)
+n_subjs <- length(unique(df$subj_id))
+print(n_ambig/n_subjs)
+
+
+df_non_ambig <- df %>%
+                group_by(subj_id) %>%
+                filter(abs(delta_AIC) < 10) %>%
+                mutate(count=n()) %>%
+                ungroup() %>%
+                filter(count==1)
+                
+table(df_non_ambig$model)
+```
+
+```{r}
+ggplot(data=df%>%filter(age==5), aes(x=model, y=LL_sum_func_mean)) +
+  geom_bar(aes(group=model, fill=model), stat="identity") +
+  facet_wrap(~subj_id~age)
+  
+
+```
+
+Interesting that kids have so many more ambiguous
+Look at likelihoods of kids under models, vs sim models under models
+```{r}
+ggplot(data=df, aes(x=reorder(model, -LL_mean_func_sum), y = LL_mean_func_sum)) +
+  #geom_boxplot(aes(fill=model)) +
+  geom_point(aes(group=subj_id), alpha=0.3) + 
+  geom_line(aes(group=subj_id), alpha=0.3) +
+  stat_summary(geom="point") +
+  stat_summary(geom="line") +
+  xlab("model") +
+  ylab("subject LLs") +
+  facet_wrap(~age)
+
+#ggsave("LL_boxplot_20.png")
+
+```
+
+
+
+
+
+```{r}
+
+
+ggplot(data=tmp_kid, aes(x=model, y=prob)) +
+  geom_bar(stat="identity", position="dodge") +
+  facet_wrap(~subj_id)
+
+```
+
+
 # Get kids params 
 ```{r}
 df_param <- df_kid %>%
@@ -360,10 +571,7 @@ df_param <- df_kid %>%
                       p_rand = mean(p_rand)) %>%
             ungroup()
           
-write.csv(df_param, 'fit_params_kids_by_model_by_subj.csv')
-
-```
-```{r}
+#write.csv(df_param, 'fit_params_kids_by_model_by_subj.csv')
 
 # get kids motor error etc
 # for each kid, mean LL for each model by func
@@ -417,7 +625,7 @@ df_params_summ <- df_params_by_subj %>%
                             p_rand_max = max(p_rand),
                             p_rand_mean = mean(p_rand))
 
-write.csv(df_params_summ, 'fit_params_kids.csv')
+#write.csv(df_params_summ, 'fit_params_kids.csv')
 ```
 
 ```{r}
@@ -425,9 +633,7 @@ write.csv(df_params_summ, 'fit_params_kids.csv')
 df <- rbind(df_LL_adult %>% mutate(agent="Adults"),
             df_LL_kid %>% mutate(agent="Children"),
             df_LL_monkey %>% mutate(agent="Monkeys"))
-```
 
-```{r}
 df <- df %>% mutate(model = ifelse(model=="gpsl", "Comp. GP", model),
                     model = ifelse(model=="gpnc", "GP", model),
                     model = ifelse(model=="lin", "Linear", model),
@@ -435,8 +641,7 @@ df <- df %>% mutate(model = ifelse(model=="gpsl", "Comp. GP", model),
                     model = ifelse(model=="lot_new", "LoT", model),
                      model = ifelse(model=="prev", "Prev", model)
                     )
-```
-```{r}
+
 # Specify the order of models
 df$model <- factor(df$model, levels = c("LoT",  "Comp. GP", "GP", "Polynomial",  "Linear"))#, "Prev"))
 ```
@@ -516,6 +721,7 @@ tmp <- rbind(tmp_adult, tmp_kid, tmp_monkey) %>%
 tmp$model <- factor(tmp$model, levels = c("LoT",  "Comp. GP", "GP", "Polynomial",  "Linear"))#, "Prev"))
 
 ```
+
 ```{r}
 # ind differences
 # power analysis

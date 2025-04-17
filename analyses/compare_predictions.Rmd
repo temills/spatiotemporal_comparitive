@@ -1,0 +1,976 @@
+---
+title: "model comparison"
+output: html_document
+---
+
+```{r, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.width=4, fig.height=3,fig.align = "center",cache=TRUE)
+library(ggplot2)
+library(reshape)
+library(grid)
+library(dplyr)
+library(gridExtra)
+library(lme4)
+library(reghelper)
+library(RColorBrewer)
+library(robustbase)
+library(tidylog)
+library(tidyr)
+library(hash)
+library(rstan)
+library(png)
+library(gtable)
+library(hash)
+library(purrr)
+library(stringr)
+#library(rjson)
+library(ggforce)
+
+paper_theme <- theme_light() + theme( axis.title.x = element_text(size=22),
+                                      axis.text.x=element_text(
+                                        size = 18), 
+                                      axis.title.y = element_text(size = 22, vjust = 1),
+                                      axis.text.y  = element_text(size = 18),
+                             strip.text=element_text(size=16),
+                                      axis.line.x = element_line(colour = "black"), 
+                                      axis.line.y = element_line(colour = "black"),
+                                      legend.title=element_text(size=20),
+                                      legend.text=element_text(size=16),
+                                      panel.grid.major=element_blank(),
+                #   panel.background = element_rect(color = NA), 
+                                      panel.grid.minor=element_blank())  
+out_folder <- "../figs/"
+
+
+preprocess_df_model <- function(df) {
+  logsumexp <- function(x) {
+    max_x <- max(x)
+    max_x + log(sum(exp(x - max_x)))
+  }
+  df <- df %>%
+        group_by(curr_tpt, prediction_tpt, seq_id) %>%
+        mutate(norm = logsumexp(score)) %>%
+        ungroup() %>%
+        mutate(posterior = exp(score - norm))  %>%
+        group_by(curr_tpt, prediction_tpt, seq_id) %>%
+        mutate(r = rank(desc(posterior))) %>%
+        ungroup()    
+}
+
+```
+
+###Load model data
+```{r}
+df_gpnc <- preprocess_df_model(read.csv('data/models/gpnc_extended.csv')) %>% mutate(model="gpnc")
+df_gpsl <- preprocess_df_model(read.csv('data/models/gpsl_extended.csv')) %>% mutate(model="gpsl")
+df_ridge <- preprocess_df_model(read.csv('data/models/ridge_extended.csv')) %>% mutate(model="ridge")
+df_lot <- preprocess_df_model(read.csv('data/models/lot_extended.csv')) %>% mutate(model="lot")
+df_lin <- preprocess_df_model(read.csv('data/models/lin_extended.csv')) %>% mutate(model="linear")
+df_stimuli <- read.csv('data/stimuli.csv')
+```
+
+```{r}
+adult_color = "#7c7fff"
+monkey_color = "#00695C" 
+kid_color = "#f335f7"
+
+lot_color = "#8BC34A"
+gpsl_color = "#ff5c5c"
+
+ridge_color = "#9C27B0"
+gpnc_color = "#fece30" 
+
+lin_color = "gray"
+
+
+preprocess_df_human <- function(df) {
+  df <- df[order(df$tpt),] %>%
+      rename(x_curr = prev_x, y_curr = prev_y, x_next = true_x, y_next = true_y, x_pred = response_x, y_pred = response_y, func.type = seq_id) %>%
+      group_by(subject_id, trial_idx, tpt) %>%
+      mutate(true_dist=((x_next-x_curr)**2. + (y_next-y_curr)**2.)**0.5) %>%
+      mutate(x_err=x_pred-x_next) %>%
+      mutate(y_err=y_pred-y_next) %>%
+      mutate(abs_err = ((x_err**2)+(y_err)**2) **0.5) %>%  
+      mutate(abs_rel_err = abs_err/(true_dist)) %>%
+      mutate(dist_from_prev = (((x_pred-x_curr)**2)+((y_pred-y_curr)**2)) **0.5) %>%
+      ungroup() %>%
+      filter(!(func.type=="hourglass_1" & subject_id=="bpmhxv5wmp"))
+  return(df)
+}
+df_adult <- preprocess_df_human(read.csv("data/participants/adults.csv"))
+df_kid <- preprocess_df_human(read.csv("data/participants/kids.csv"))
+
+preprocess_df_monkey <- function(df) {
+  df$attempt = 1
+  df$id <- seq_len(nrow(df))
+  df <- df[order(df$n),] %>%
+      rename(subject_id = monkey_name, func.name=func_id, tpt = n) %>%
+      mutate(func.name=ifelse(func.name=="example_line", "line", func.name)) %>%
+      #group_by(r_id, game_n, tpt) %>%
+      #mutate(true_dist=((true_x-prev_x)**2. + (true_y-prev_y)**2.)**0.5) %>%
+      #mutate(err_x=pred_x-true_x) %>%
+      #mutate(err_y=pred_y-true_y) %>%
+      #mutate(abs_err = ((err_x**2)+(err_y**2)) **0.5) %>%  
+      #mutate(abs_rel_err = abs_err/(true_dist)) %>%
+      #mutate(dist_from_prev = (((pred_x-true_x)**2)+((pred_y-true_y)**2)) **0.5) %>%
+      #ungroup() %>%
+      mutate(n=tpt)
+  return(df)
+}
+df_monkey <- preprocess_df_monkey(read.csv("data/participants/monkeys_all.csv"))
+```
+
+### Single model predictions for top particle
+```{r}
+generate_single_model_frames <- function(seq, df_model, model_name, df_human) {
+  df_model <- df_model %>%
+              filter(curr_tpt>2) %>%
+              group_by(seq_id, curr_tpt, model) %>%
+              filter(curr_tpt<16) %>%
+              filter(prediction_tpt < curr_tpt+4) %>%
+              filter(r<2)
+  
+  df_seq <- subset(df_model, (df_model$seq_id == seq))
+  df_human_seq <- subset(df_human, (df_human$func.type == seq))
+  x_min <- min(min(df_human_seq$x_next, na.rm=TRUE), min(df_human_seq$x_pred, na.rm=TRUE))
+  x_max <- max(max(df_human_seq$x_next, na.rm=TRUE), max(df_human_seq$x_pred, na.rm=TRUE))
+  y_min <- min(min(df_human_seq$y_next, na.rm=TRUE), min(df_human_seq$y_pred, na.rm=TRUE))
+  y_max <- max(max(df_human_seq$y_next, na.rm=TRUE), max(df_human_seq$y_pred, na.rm=TRUE))
+  x_diff = ((x_max-x_min)/10)
+  y_diff = ((y_max-y_min)/10)
+  buffer = max(x_diff, y_diff)
+  x_min = x_min - buffer
+  x_max = x_max + buffer
+  y_min = y_min - buffer
+  y_max = y_max + buffer
+  
+  for (t in (min(df_seq$curr_tpt)):max(df_seq$curr_tpt)) {
+    df_model_tpt <- df_model %>%
+              group_by(model) %>%
+              arrange(., curr_tpt) %>%
+              filter(seq_id==seq)  %>% 
+              filter(curr_tpt == t) %>%
+              arrange(prediction_tpt)
+    df_true <- df_stimuli %>% filter(seq_id==seq)
+    
+    df_human_tpt <- df_human %>%
+              arrange(., tpt) %>%
+              filter(func.type == seq)  %>% 
+              filter(tpt == t)
+    
+    for (n_extended in (-1:3)) {
+      
+      df_model_path <- df_model_tpt %>%
+                      filter(prediction_tpt >= curr_tpt-1) %>%
+                      filter(prediction_tpt <= curr_tpt+n_extended) %>%
+                      group_by(model) %>%
+                      mutate(pred_x = ifelse(prediction_tpt==curr_tpt-1, true_x, pred_x)) %>%
+                      mutate(pred_y = ifelse(prediction_tpt==curr_tpt-1, true_y, pred_y)) %>%
+                      top_n(n=3, wt=posterior)
+      
+      df_model_points <- df_model_tpt %>%
+                         filter(prediction_tpt >= curr_tpt) %>%
+                         filter(prediction_tpt <= curr_tpt+n_extended) %>%
+                         group_by(model) %>%
+                         top_n(n=3, wt=posterior)
+    
+      
+      p <- ggplot() +
+          # True pattern
+          geom_path(data=df_true%>%filter(tpt<t), aes(x=true_x, y=true_y), linetype="dotted") +
+          geom_point(data=df_true%>%filter(tpt<t), aes(x=true_x, y=true_y), size=6) +
+        
+          # Human predictions
+          geom_point(data=df_human_tpt, aes(x=x_pred, y=y_pred), color=adult_color, shape=4, size=8, stroke=2) +
+  
+          # Predicted patterns
+          #geom_point(data=df_model_points, aes(x=pred_x, y=pred_y), size=9, color=lot_color, alpha=1) +
+          #geom_path(data=df_model_path, aes(x=pred_x, y=pred_y, group=r), color=lot_color, linetype="solid", alpha=1, linewidth=1) +
+          geom_point(data=df_model_points, aes(x=pred_x, y=pred_y, group=r, color=model), size=9, alpha=1) +
+          geom_path(data=df_model_path, aes(x=pred_x, y=pred_y, group=r, color=model), linetype="solid", alpha=1, linewidth=1) +
+        
+          # Theme
+          #scale_color_gradient(low = "yellow", high = "purple") +
+          theme_void() +
+          theme(legend.title=element_blank(), panel.background = element_rect(fill = "white"))+
+          guides(alpha="none") +
+          coord_fixed(xlim=c(x_min, x_max), ylim=c(y_min, y_max))
+        #p
+      f_name <- paste(paste(paste(out_folder, as.character(t), sep="n"), as.character(n_extended+1), sep="_e"), ".png",sep="")
+      ggsave(f_name, plot=p,width=14,height=8, dpi=500)
+    }
+  }
+}
+
+
+model <- "lin_top1"
+df_model <- df_lin
+
+#df_model <- bind_rows(bind_rows(df_lot, df_gpnc), df_ridge)
+#model <- "all_top3"
+
+for (id in sort(unique(df_stimuli$seq_id))) {
+    unlink(paste("figs/extended_prediction/", model, "_top1/", id,  sep=""), recursive=T)
+    dir.create(paste("figs/extended_prediction/", model, "_top1/", sep=""))
+    out_folder <- paste("figs/extended_prediction/", model, "_top1/", id, "/",  sep="")
+    dir.create(paste("figs/extended_prediction/", model, "_top1/", id,  sep=""))
+    print(id)
+    generate_single_model_frames(id, df_model, model, df_adult)
+    print("") 
+}
+```
+### Multiple model predictions for top particle 
+```{r}
+generate_mult_model_frames <- function(seq, df_model, model_name, df_human) {
+  df_model <- df_model %>%
+              filter(curr_tpt>2) %>%
+              group_by(seq_id, curr_tpt, model) %>%
+              filter(curr_tpt<16) %>%
+              filter(prediction_tpt < curr_tpt+8) %>%
+              filter(r<2)
+  
+  df_seq <- subset(df_model, (df_model$seq_id == seq))
+  df_human_seq <- subset(df_human, (df_human$func.type == seq))
+  x_min <- min(min(df_human_seq$x_next, na.rm=TRUE), min(df_human_seq$x_pred, na.rm=TRUE))
+  x_max <- max(max(df_human_seq$x_next, na.rm=TRUE), max(df_human_seq$x_pred, na.rm=TRUE))
+  y_min <- min(min(df_human_seq$y_next, na.rm=TRUE), min(df_human_seq$y_pred, na.rm=TRUE))
+  y_max <- max(max(df_human_seq$y_next, na.rm=TRUE), max(df_human_seq$y_pred, na.rm=TRUE))
+  x_diff = ((x_max-x_min)/10)
+  y_diff = ((y_max-y_min)/10)
+  buffer = max(x_diff, y_diff)
+  x_min = x_min - buffer
+  x_max = x_max + buffer
+  y_min = y_min - buffer
+  y_max = y_max + buffer
+  
+  for (t in (min(df_seq$curr_tpt)):max(df_seq$curr_tpt)) {
+    df_model_tpt <- df_model %>%
+              group_by(model, particle) %>%
+              arrange(., curr_tpt) %>%
+              filter(seq_id==seq)  %>% 
+              filter(curr_tpt == t) %>%
+              arrange(prediction_tpt)
+    df_true <- df_stimuli %>% filter(seq_id==seq)
+    
+    df_human_tpt <- df_human %>%
+              arrange(., tpt) %>%
+              filter(func.type == seq)  %>% 
+              filter(tpt == t)
+    
+    for (n_extended in (-1:7)) {
+        df_model_path <- df_model_tpt %>%
+                  filter(prediction_tpt >= curr_tpt-1) %>%
+                  filter(prediction_tpt <= curr_tpt+n_extended) %>%
+                  group_by(model) %>%
+                  mutate(pred_x = ifelse(prediction_tpt==curr_tpt-1, true_x, pred_x)) %>%
+                  mutate(pred_y = ifelse(prediction_tpt==curr_tpt-1, true_y, pred_y))  %>%
+                  ungroup()
+  
+        df_model_points <- df_model_tpt %>%
+                         filter(prediction_tpt >= curr_tpt) %>%
+                         filter(prediction_tpt <= curr_tpt+n_extended) 
+    
+        p <- ggplot() +
+            # True pattern
+            geom_path(data=df_true%>%filter(tpt<t), aes(x=true_x, y=true_y), linetype="dotted") +
+            geom_point(data=df_true%>%filter(tpt<t), aes(x=true_x, y=true_y), size=6) +
+          
+            # Human predictions
+            geom_point(data=df_human_tpt, aes(x=x_pred, y=y_pred), color=adult_color, shape=4, size=8, stroke=2) +
+    
+            # Predicted patterns
+            geom_path(data=df_model_path, aes(x=pred_x, y=pred_y, group=model, color=model), linetype="solid", alpha=1, linewidth=1) +
+            geom_point(data=df_model_points, aes(x=pred_x, y=pred_y, group=model, color=model), size=9, alpha=1) +
+    
+            # Theme
+            #scale_color_gradient(low = "yellow", high = "purple") +
+            theme_void() +
+            theme(legend.title=element_blank(), panel.background = element_rect(fill = "white"))+
+            guides(alpha="none") +
+            coord_fixed(xlim=c(x_min, x_max), ylim=c(y_min, y_max))
+        #p
+        #print(p)
+        f_name <- paste(paste(paste(out_folder, as.character(t), sep="n"), as.character(n_extended+1), sep="_e"), ".png",sep="")
+        ggsave(f_name, plot=p,width=14,height=8, dpi=500)
+    }
+  }
+}
+
+
+#model <- "lin_top1"
+#df_model <- df_lin
+
+df_model <- bind_rows(bind_rows(df_lot, df_gpnc), df_lin)
+model <- "all_lin"
+
+for (id in sort(unique(df_stimuli$seq_id))) {
+    unlink(paste("figs/extended_prediction/", model, "_top1/", id,  sep=""), recursive=T)
+    dir.create(paste("figs/extended_prediction/", model, "_top1/", sep=""))
+    out_folder <- paste("figs/extended_prediction/", model, "_top1/", id, "/",  sep="")
+    dir.create(paste("figs/extended_prediction/", model, "_top1/", id,  sep=""))
+    print(id)
+    generate_mult_model_frames(id, df_model, model, df_adult)
+    print("") 
+}
+```
+
+
+```{r}
+custom_colors <- viridis::plasma(8, begin = 0.05, end = .99) 
+barplot(rep(1, length(custom_colors)), col = custom_colors, border = NA)
+
+library(RColorBrewer)
+custom_colors <- brewer.pal(9, "Set3") 
+scales::show_col(custom_colors)
+```
+
+
+```{r}
+seq = "alternating_diff_1"
+
+df_human <- rbind(df_kid%>%select(tpt, func.type, x_pred, y_pred, subject_id)%>%mutate(agent="Children"),
+                  rbind(df_monkey%>%select(tpt, func.type, x_pred, y_pred, subject_id)%>%mutate(agent="Monkeys"),
+                  df_adult%>%select(tpt, func.type, x_pred, y_pred, subject_id)%>%mutate(agent="Adults")))
+df_human <- df_human %>% 
+            bind_rows(df_human %>%
+                      filter(agent == "Children", tpt == 0) %>%  # Select rows where agent is "Children" and tpt is 0
+                      mutate(agent = "Monkeys"))
+
+df_human_seq <- subset(df_human, (df_human$func.type == seq))
+df_true <- df_stimuli %>% filter(seq_id==seq) %>% select(tpt, true_x, true_y)
+df_human_seq <- merge(df_human_seq, df_true, by="tpt") #%>% filter(agent=="Adults")
+
+#custom_colors <- viridis::plasma(4, begin = 0.2, end = 0.9)[1]
+
+df<- df_human_seq %>%
+  mutate(tpt_group = map(tpt, ~ (2:6)[.x <= 3:7])) %>%
+  unnest(tpt_group) 
+
+# Plot with facet_wrap
+ggplot(df) +
+  geom_path(data=df%>%filter(tpt<=tpt_group), aes(x=true_x, y=true_y), linetype="dotted", linewidth=0.5) +
+  geom_point(data=df%>%filter(tpt<=tpt_group), aes(x=true_x, y=true_y), size=2) +
+  geom_point(data=df%>%filter(tpt==tpt_group+1), aes(x=x_pred, y=y_pred, color=agent), shape=1, size=1.0, stroke=1., alpha=0.9) +
+  facet_wrap(~agent~tpt_group, nrow=length(unique(df$agent))) +  # Arrange in 2 rows, 3 cols
+  xlim(-0.8,5)+
+  ylim(-2,3)+
+  scale_color_manual(values = setNames(c(custom_colors[1], custom_colors[3], custom_colors[4]),
+                                       c("Adults", "Children", "Monkeys")),
+                   limits = c("Adults", "Children", "Monkeys")) +#,
+                   #labels = c("Human"="Human", "gpnc" = "GP", "lot" = "LoT", "linear" = "Linear")) +
+  theme_void() +
+  theme(
+    legend.title = element_blank(),
+    legend.position = "top",
+    legend.text = element_text(size = 12), 
+    plot.background = element_rect(fill = "white", color = "white"),
+    panel.spacing.x = unit(0.2, "lines"),
+    strip.text = element_blank(),  # Remove facet labels
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1)  # Add black border
+  ) +
+  guides(alpha="none",
+         shape = "none",
+         color = guide_legend(override.aes = list(size = 1.5, stroke=1.5)))
+
+ggsave("task_demo.png", width=9, height=3, dpi = 300)
+```
+
+
+
+```{r}
+df_model <- bind_rows(bind_rows(df_lot, df_gpnc), df_lin)
+model_name <- "all"
+df_human <- df_adult
+seq = "stairs_2"
+
+df_model <- df_model %>%
+              filter(curr_tpt>2) %>%
+              group_by(seq_id, curr_tpt, model) %>%
+              filter(curr_tpt<16) %>%
+              #filter(prediction_tpt < curr_tpt+10) %>%
+              filter(r==1)
+  
+  df_seq <- subset(df_model, (df_model$seq_id == seq))
+  df_human_seq <- subset(df_human, (df_human$func.type == seq))
+
+  t = 6
+  
+  df_model_tpt <- df_model %>%
+                  filter(seq_id==seq)  %>% 
+                  filter(curr_tpt == t) %>%
+                  group_by(model, particle)
+  df_true <- df_stimuli %>% filter(seq_id==seq)
+  
+  df_human_tpt <- df_human %>%
+            arrange(., tpt) %>%
+            filter(func.type == seq)  %>% 
+            filter(tpt == t)
+    
+  n_extended = 10
+      
+  df_model_path <- df_model_tpt %>%
+                  filter(prediction_tpt >= curr_tpt-1) %>%
+                  filter(prediction_tpt <= curr_tpt+n_extended) %>%
+                  group_by(model) %>%
+                  mutate(pred_x = ifelse(prediction_tpt==curr_tpt-1, true_x, pred_x)) %>%
+                  mutate(pred_y = ifelse(prediction_tpt==curr_tpt-1, true_y, pred_y))  %>%
+                  ungroup()
+  
+  df_model_points <- df_model_tpt %>%
+                     filter(prediction_tpt >= curr_tpt) %>%
+                     filter(prediction_tpt <= curr_tpt+n_extended) 
+    
+
+ggplot() +
+    # Predicted patterns
+  geom_path(data=df_model_path%>%filter(prediction_tpt<=curr_tpt), aes(x=pred_x, y=pred_y, group=model, color=model), 
+            linetype="solid", alpha=0.9, linewidth=1) +
+  geom_path(data=df_model_path, aes(x=pred_x, y=pred_y, group=model, color=model), 
+            linetype="solid", alpha=0.4, linewidth=1) +
+  geom_point(data=df_model_points%>%filter(prediction_tpt<=curr_tpt), aes(x=pred_x, y=pred_y, group=model, color=model), size=3.3, alpha=0.9) +
+  geom_point(data=df_model_points, aes(x=pred_x, y=pred_y, group=model, color=model), size=3, alpha=0.4) +
+  
+  # True pattern
+  geom_path(data=df_true %>% filter(tpt < t), aes(x=true_x, y=true_y), linetype="dotted", linewidth=1.3) +
+  geom_point(data=df_true %>% filter(tpt < t), aes(x=true_x, y=true_y), size=4) +
+  
+  # Human predictions
+  geom_point(data=df_human_tpt, aes(x=x_pred, y=y_pred, color="Human", shape="Human"), size=2, stroke=2, alpha=0.9) +
+  
+  scale_shape_manual(
+    values = c( "Human" = 1, "gpnc"=16, "lot"=16, "linear"=16), 
+    labels = c("Human" = "Human", "gpnc" = "GP", "lot" = "LoT", "linear" = "Linear"),
+    limits = c("Human", "gpnc", "lot", "linear") 
+  ) +
+scale_color_manual(values = setNames(c(custom_colors[1], custom_colors[6], custom_colors[7], custom_colors[8]), c("Human", "gpnc", "lot", "linear")),
+                   limits = c("Human", "gpnc", "lot", "linear"),
+                   labels = c("Human"="Human", "gpnc" = "GP", "lot" = "LoT", "linear" = "Linear")) +
+  theme_void() +
+  theme(legend.title=element_blank(), plot.background = element_rect(fill = "white", color = "white"), legend.position = c(0.05, 0.95),
+    legend.justification = c(0, 1),  panel.background = element_rect(fill = "white", color="white"), legend.text = element_text(size = 14), legend.key.size = unit(1.1, "cm") ) +
+  
+  guides(alpha="none", color = guide_legend(override.aes = list(shape = c(1, 16, 16, 16), size = c(3, 3, 3, 3))),
+    shape = "none") +
+  coord_cartesian(xlim = c(min(df_true$true_x) - 0.1, 9), ylim = c(min(df_true$true_y) - 0.3, 7.5))  # Keep the visible portion intact
+
+        #p
+ggsave("model_comp_example.png", dpi = 300)
+```
+
+
+```{r}
+# load 
+
+tmp <- read.csv("../models/linear/lin_all_extended.csv")
+f = "stairs"
+
+ggplot(tmp%>%filter(seq_id==f), aes(x=true_x, y=true_y)) +
+       geom_point(data=tmp%>%filter(seq_id==f)%>%filter(curr_tpt==3)%>%filter(particle==1)%>%filter(prediction_tpt<curr_tpt+4), aes(x=pred_x, y=pred_y, color=prediction_tpt), size=2) +
+       geom_point(size=1, color="green") 
+```
+
+
+```{r}
+# load 
+df_ridge1 <- read.csv('../models/ridge/output/degree_1/sine.csv')
+df_ridge2 <- read.csv('../models/ridge/output/extended/sine.csv') %>% filter(curr_tpt==pred_tpt)
+
+ggplot(df_ridge1, aes(x=true_x, y=true_y)) +
+       geom_point(data=df_ridge2, aes(x=true_x, y=true_y, color=curr_tpt), size=2.5) +
+       geom_point(size=1, color="green")
+
+tmp <- df_ridge %>% filter(seq_id=="line") %>% filter(prediction_tpt==curr_tpt)
+f = "stairs"
+tmp2 <-  read.csv('../models/ridge/output/ridge_1_extended.csv') %>% filter(curr_tpt==pred_tpt) %>% filter(seq_id==f)
+ggplot(tmp2, aes(x=true_x, y=true_y)) +
+       geom_point(data=df_stimuli %>% filter(seq_id==f), aes(x=true_x, y=true_y, color=tpt), size=2.5) +
+       geom_point(size=1, color="green") 
+```
+
+
+# Model predictions for all particles just points
+```{r}
+generate_single_model_frames <- function(seq, df_model, model_name, df_human) {
+  df_model <- df_model %>%
+              filter(curr_tpt>2) %>% group_by(seq_id, curr_tpt) %>%
+              filter(curr_tpt<20) %>%
+              filter(prediction_tpt < curr_tpt+4) %>%
+              filter(r<21)
+  
+  df_seq <- subset(df_model, (df_model$seq_id == seq))
+  
+  # x_min <- min(min(df_seq$true_x, na.rm=TRUE), min(df_seq$pred_x, na.rm=TRUE))
+  # x_max <- max(max(df_seq$true_x, na.rm=TRUE), max(df_seq$pred_x, na.rm=TRUE))
+  # y_min <- min(min(df_seq$true_y, na.rm=TRUE), min(df_seq$pred_y, na.rm=TRUE))
+  # y_max <- max(max(df_seq$true_y, na.rm=TRUE), max(df_seq$pred_y, na.rm=TRUE))
+  df_human_seq <- subset(df_human, (df_human$func.type == seq))
+  x_min <- min(min(df_human_seq$x_next, na.rm=TRUE), min(df_human_seq$pred_x, na.rm=TRUE))
+  x_max <- max(max(df_human_seq$x_next, na.rm=TRUE), max(df_human_seq$pred_x, na.rm=TRUE))
+  y_min <- min(min(df_human_seq$y_next, na.rm=TRUE), min(df_human_seq$pred_y, na.rm=TRUE))
+  y_max <- max(max(df_human_seq$y_next, na.rm=TRUE), max(df_human_seq$pred_y, na.rm=TRUE))
+  x_min = x_min - ((x_max-x_min)/20)
+  x_max = x_max + ((x_max-x_min)/20)
+  y_min = y_min - ((y_max-y_min)/20)
+  y_max = y_max + ((y_max-y_min)/20)
+  
+  for (t in (min(df_seq$curr_tpt)):max(df_seq$curr_tpt)) {
+    df_model_tpt <- df_model %>%
+              arrange(., curr_tpt) %>%
+              filter(seq_id==seq)  %>% 
+              filter(curr_tpt == t) %>%
+              arrange(prediction_tpt)
+    df_true <- df_stimuli %>% filter(seq_id==seq)
+    
+    df_human_tpt <- df_human %>%
+              arrange(., tpt) %>%
+              filter(func.type == seq)  %>% 
+              filter(tpt == t)
+    
+    for (n_extended in (-1:3)) {
+      
+      df_model_path <- df_model_tpt %>%
+                      filter(prediction_tpt >= curr_tpt-1) %>%
+                      filter(prediction_tpt <= curr_tpt+n_extended) %>%
+                      mutate(pred_x = ifelse(prediction_tpt==curr_tpt-1, true_x, pred_x)) %>%
+                      mutate(pred_y = ifelse(prediction_tpt==curr_tpt-1, true_y, pred_y)) %>%
+              top_n(n=1, wt=posterior)
+      
+      df_model_points <- df_model_tpt %>%
+                         filter(prediction_tpt >= curr_tpt) %>%
+                         filter(prediction_tpt <= curr_tpt+n_extended) #%>%
+              #top_n(n=1, wt=posterior)
+    
+      
+      p <- ggplot() +
+          # True pattern
+          geom_path(data=df_true%>%filter(tpt<t), aes(x=true_x, y=true_y), linetype="dotted") +
+          geom_point(data=df_true%>%filter(tpt<t), aes(x=true_x, y=true_y), size=6) +
+        
+          # Human predictions
+          geom_point(data=df_human_tpt, aes(x=x_pred, y=y_pred), color=adult_color, shape=4, size=8, stroke=2) +
+  
+          # Predicted patterns
+          geom_point(data=df_model_points, aes(x=pred_x, y=pred_y), size=9, color=lot_color, alpha=0.5) +
+          #geom_path(data=df_model_path, aes(x=pred_x, y=pred_y, group=r), color=lot_color, linetype="solid", alpha=1, linewidth=1) +
+        
+          # Theme
+          #scale_color_gradient(low = "yellow", high = "purple") +
+          theme_void() +
+          theme(legend.title=element_blank(), legend.text=element_blank(), panel.background = element_rect(fill = "white"))+
+          guides(color="none", alpha="none") +
+          coord_fixed(xlim=c(x_min, x_max), ylim=c(y_min, y_max))
+        #p
+      f_name <- paste(paste(paste(paste(out_folder, seq, sep="/"), as.character(t), sep="_n"), as.character(n_extended+1), sep="_e"), ".png",sep="")
+      ggsave(f_name, plot=p,width=14,height=8, dpi=500)
+    }
+  }
+}
+
+
+for (id in sort(unique(df_stimuli$seq_id))) {
+  if (id=="increasing_lines") {
+    out_folder <- paste("../figs/videos/extended_predictions/lot_frames_points_human", id,  sep="/")
+    unlink(out_folder, recursive=TRUE)
+    dir.create(out_folder)
+    print(id)
+    generate_single_model_frames(id, df_lot, "lot", df_adult)
+    print("") 
+  }
+}
+```
+
+# Model predictions for all particles with paths 
+```{r}
+generate_single_model_frames <- function(seq, df_model, model_name, df_human) {
+  df_model <- df_model %>%
+              filter(curr_tpt>2) %>% group_by(seq_id, curr_tpt) %>%
+              filter(curr_tpt<16) %>%
+              filter(prediction_tpt < curr_tpt+4) %>%
+              filter(r<21)
+  
+  df_seq <- subset(df_model, (df_model$seq_id == seq))
+  df_human_seq <- subset(df_human, (df_human$func.type == seq))
+  x_min <- min(min(df_human_seq$x_next, na.rm=TRUE), min(df_human_seq$pred_x, na.rm=TRUE))
+  x_max <- max(max(df_human_seq$x_next, na.rm=TRUE), max(df_human_seq$pred_x, na.rm=TRUE))
+  y_min <- min(min(df_human_seq$y_next, na.rm=TRUE), min(df_human_seq$pred_y, na.rm=TRUE))
+  y_max <- max(max(df_human_seq$y_next, na.rm=TRUE), max(df_human_seq$pred_y, na.rm=TRUE))
+  x_diff = ((x_max-x_min)/10)
+  y_diff = ((y_max-y_min)/10)
+  buffer = max(x_diff, y_diff)
+  x_min = x_min - buffer
+  x_max = x_max + buffer
+  y_min = y_min - buffer
+  y_max = y_max + buffer
+  
+  
+  for (t in (min(df_seq$curr_tpt)):max(df_seq$curr_tpt)) {
+    df_model_tpt <- df_model %>%
+              arrange(., curr_tpt) %>%
+              filter(seq_id==seq)  %>% 
+              filter(curr_tpt == t) %>%
+              arrange(prediction_tpt)
+    df_true <- df_stimuli %>% filter(seq_id==seq)
+    
+    df_human_tpt <- df_human %>%
+              arrange(., tpt) %>%
+              filter(func.type == seq)  %>% 
+              filter(tpt == t)
+    
+    
+    for (n_extended in (-1:3)) {
+      
+      df_model_path <- df_model_tpt %>%
+                      filter(prediction_tpt >= curr_tpt-1) %>%
+                      filter(prediction_tpt <= curr_tpt+n_extended) %>%
+                      mutate(pred_x = ifelse(prediction_tpt==curr_tpt-1, true_x, pred_x)) %>%
+                      mutate(pred_y = ifelse(prediction_tpt==curr_tpt-1, true_y, pred_y))
+      
+      df_model_points <- df_model_tpt %>%
+                         filter(prediction_tpt >= curr_tpt) %>%
+                         filter(prediction_tpt <= curr_tpt+n_extended)
+      
+      
+      df_model_path_top <- df_model_tpt %>%
+                      filter(prediction_tpt >= curr_tpt-1) %>%
+                      filter(prediction_tpt <= curr_tpt+3) %>%
+                      mutate(pred_x = ifelse(prediction_tpt==curr_tpt-1, true_x, pred_x)) %>%
+                      mutate(pred_y = ifelse(prediction_tpt==curr_tpt-1, true_y, pred_y)) %>%
+                      filter(r==1)
+      
+      df_model_points_top <- df_model_tpt %>%
+                         filter(prediction_tpt >= curr_tpt) %>%
+                         filter(prediction_tpt <= curr_tpt+3)  %>%
+                          filter(r==1)
+      
+      #df_model_path_top <- df_model_path %>%  top_n(n=1, wt=posterior)
+      #df_model_points_top <- df_model_points %>%  top_n(n=1, wt=posterior)
+    
+      
+      # -83, 460, 922, 1401 
+      
+      
+      
+      p <- ggplot() +
+          # True pattern
+          geom_path(data=df_true%>%filter(tpt<t), aes(x=true_x, y=true_y), linetype="dotted") +
+          geom_point(data=df_true%>%filter(tpt<t), aes(x=true_x, y=true_y), size=6) +
+        
+          # Human predictions
+          geom_point(data=df_human_tpt, aes(x=x_pred, y=y_pred), color=adult_color, shape=4, size=8, stroke=2) +
+  
+          # Predicted patterns
+          geom_point(data=df_model_points_top, aes(x=pred_x, y=pred_y), size=9, color=lot_color, alpha=1) +
+          geom_path(data=df_model_path_top, aes(x=pred_x, y=pred_y, group=r), color=lot_color, linetype="solid", alpha=1, linewidth=1) +
+        
+          # Predicted patterns
+          geom_point(data=df_model_points, aes(x=pred_x, y=pred_y), size=5, color=lot_color, alpha=0.6) +
+          geom_path(data=df_model_path, aes(x=pred_x, y=pred_y, group=r), color=lot_color, linetype="dashed", alpha=0.6, linewidth=1) +
+        
+        
+          # Theme
+          #scale_color_gradient(low = "yellow", high = "purple") +
+          theme_void() +
+          theme(legend.title=element_blank(), legend.text=element_blank(), panel.background = element_rect(fill = "white"))+
+          guides(color="none", alpha="none") +
+          coord_fixed(xlim=c(x_min, x_max), ylim=c(y_min, y_max))
+        #p
+      f_name <- paste(paste(paste(paste(out_folder, seq, sep="/"), as.character(t), sep="_n"), as.character(n_extended+1), sep="_e"), ".png",sep="")
+      ggsave(f_name, plot=p,width=14,height=8, dpi=500)
+    }
+  }
+}
+
+df_model <- df_lot
+model <- "lot"
+dir.create(paste("figs/extended_prediction/", model, "_all_particles/", sep=""))
+for (id in sort(unique(df_stimuli$seq_id))) {
+  out_folder <- paste("figs/extended_prediction/", model, "_all_particles/", id, sep="")
+  unlink(out_folder, recursive=TRUE)
+  dir.create(out_folder)
+  print(id)
+  generate_single_model_frames(id, df_model, model, df_adult)
+  print("") 
+}
+```
+
+```{r}
+lot <- read.csv('data/models/lot.csv')
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+#for a single model
+generate_single_model_frames <- function(seq, df_model, model_name) {
+  df_model <- df_model %>% filter(curr_tpt>2)
+  df_seq <- subset(df_model, (df_model$seq_id == seq))
+  dir.create(paste(out_folder, seq, sep="/"))
+  for (t in (min(df_seq$curr_tpt)):max(df_seq$curr_tpt)) {
+    df_model_tpt <- df_model %>%
+              arrange(., curr_tpt) %>%
+              filter(seq_id==seq)  %>% 
+              filter(curr_tpt == t) %>%
+              arrange(prediction_tpt)
+    df_true <- df_stimuli %>% filter(seq_id==seq)
+
+    p <- ggplot() +
+        # True pattern
+        geom_point(data=df_true, aes(x=true_x, y=true_y), size=2) +
+        #geom_path(data=df_true, aes(x=true_x, y=true_y), linetype="solid") +
+        geom_point(data=df_true%>%filter(tpt<t), aes(x=true_x, y=true_y), color="yellow") +
+
+        # Predicted patterns
+        geom_point(data=df_model_tpt, aes(x=pred_x, y=pred_y, alpha=prediction_tpt+4)) +
+        geom_path(data=df_model_tpt, aes(x=pred_x, y=pred_y, group=r), linetype="dotted") +
+        geom_errorbar(data=df_model_tpt, aes(x=pred_x, ymin=pred_y-sd_y, ymax=pred_y+sd_y), alpha=0.1) +
+        geom_errorbar(data=df_model_tpt, aes(y=pred_y, xmin=pred_x-sd_x, xmax=pred_x+sd_x), alpha=0.1) +
+        #annotate(data=df_model_tpt, geom = 'text', aes(label = round(posterior, 2)), x = Inf, y = -Inf, hjust = 0, vjust = 1) +
+        geom_text(data=df_model_tpt, aes(label = round(posterior, 2), x = Inf, y = -Inf), hjust = 0, vjust = 1) +
+
+        #geom_text(data=temp,aes(x=(min(df_lot_temp$true_x) + max(df_lot_temp$true_x))/2, y=min(min(df_lot_temp$true_y), min(pred_y))-1-(r), label=func, color=r)) +
+        
+        # Theme
+        #scale_color_gradient(low = "yellow", high = "purple") +
+        theme_void() +
+        theme(legend.title=element_blank(), legend.text=element_blank(), panel.background = element_rect(fill = "white"))+
+        guides(color="none", alpha="none") +
+        #coord_cartesian(xlim=c(x_min, x_max), ylim=c(y_min, y_max)) +
+        facet_wrap(~ r, ncol=5, scales = "free")
+      
+    f_name <- paste(paste(paste(paste(out_folder, seq, sep="/"), seq, sep="/"), as.character(t), sep="_n"),".png",sep="")
+    ggsave(f_name, plot=p,width=14,height=8, dpi=500)
+  }
+}
+out_folder <- "../figs/videos/extended_predictions/lot_frames"
+unlink(out_folder, recursive=TRUE)
+dir.create(out_folder)
+for (id in sort(unique(df_stimuli$seq_id))) {
+  print(id)
+  generate_single_model_frames(id, df_lot, "lot")
+  print("")
+}
+
+
+```
+
+```{r}
+out_folder <- "../figs/videos/extended_predictions/ridge_frames"
+unlink(out_folder, recursive=TRUE)
+dir.create(out_folder)
+for (id in sort(unique(df_stimuli$seq_id))) {
+  print(id)
+  generate_single_model_frames(id, df_ridge, "ridge")
+  print("")
+}
+
+out_folder <- "../figs/videos/extended_predictions/gpnc_frames"
+unlink(out_folder, recursive=TRUE)
+dir.create(out_folder)
+for (id in sort(unique(df_stimuli$seq_id))) {
+  print(id)
+  generate_single_model_frames(id, df_gpnc, "gpnc")
+  print("")
+}
+
+out_folder <- "../figs/videos/extended_predictions/gpsl_frames"
+unlink(out_folder, recursive=TRUE)
+dir.create(out_folder)
+for (id in sort(unique(df_stimuli$seq_id))) {
+  print(id)
+  generate_single_model_frames(id, df_gpsl, "gpsl")
+  print("")
+}
+```
+
+
+
+#visualize 1 tpt at a time
+```{r}
+
+seq = "spiral_outward"
+t = 6
+temp <- df_lin %>% 
+        arrange(., curr_tpt) %>%
+        filter(seq_id==seq)  %>% 
+        filter(curr_tpt == t) %>%
+        #filter(particle==1) %>%
+        arrange(prediction_tpt)
+          
+df_true <- df_stimuli %>% filter(seq_id==seq)
+
+ggplot() +
+  # True pattern
+  geom_point(data=df_true, aes(x=true_x, y=true_y), size=1) +
+  #geom_path(data=df_true, aes(x=true_x, y=true_y), linetype="solid") +
+  geom_point(data=df_true%>%filter(tpt<t), aes(x=true_x, y=true_y), color="yellow") +
+  
+  # Predicted patterns
+  geom_point(data=temp, aes(x=pred_x, y=pred_y, alpha=prediction_tpt+4, color=r)) +
+  geom_path(data=temp, aes(x=pred_x, y=pred_y, group=r, color=r), linetype="dashed") +
+  geom_errorbar(data=temp, aes(x=pred_x, ymin=pred_y-sd_y, ymax=pred_y+sd_y), alpha=0.1) +
+  geom_errorbar(data=temp, aes(y=pred_y, xmin=pred_x-sd_x, xmax=pred_x+sd_x), alpha=0.1) +
+  #geom_text(data=temp, aes(x=(min(df_lot_temp$true_x) + max(df_lot_temp$true_x))/2, y=min(min(df_lot_temp$true_y), min(pred_y))-1-(r), label=func, color=r)) +
+  
+  # Theme
+  #scale_color_gradient(low = "yellow", high = "purple") +
+  theme_void() + theme(legend.title=element_blank(), legend.text=element_blank(), panel.background = element_rect(fill = "white"))+
+  guides(color="none", alpha="none") +
+  facet_wrap(~ r, ncol=5, scales = "free")
+```
+
+```{r}
+adult_color = "#7c7fff"
+monkey_color = "#00695C" 
+kid_color = "#f335f7"
+
+lot_color = "#8BC34A"
+gpsl_color = "#ff5c5c"
+
+ridge_color = "#9C27B0"
+gpnc_color = "#fece30" 
+
+lin_color = "gray"
+
+
+preprocess_df_human <- function(df) {
+  df <- df[order(df$tpt),] %>%
+      rename(x_curr = prev_x, y_curr = prev_y, x_next = true_x, y_next = true_y, x_pred = response_x, y_pred = response_y, func.type = seq_id) %>%
+      group_by(subject_id, trial_idx, tpt) %>%
+      mutate(true_dist=((x_next-x_curr)**2. + (y_next-y_curr)**2.)**0.5) %>%
+      mutate(x_err=x_pred-x_next) %>%
+      mutate(y_err=y_pred-y_next) %>%
+      mutate(abs_err = ((x_err**2)+(y_err)**2) **0.5) %>%  
+      mutate(abs_rel_err = abs_err/(true_dist)) %>%
+      mutate(dist_from_prev = (((x_pred-x_curr)**2)+((y_pred-y_curr)**2)) **0.5) %>%
+      ungroup() %>%
+      filter(!(func.type=="hourglass_1" & subject_id=="bpmhxv5wmp"))
+  return(df)
+}
+df_adult <- preprocess_df_human(read.csv("data/participants/adults.csv"))
+```
+# Now, all other ones come in
+```{r}
+generate_single_model_frames <- function(seq, df_model, model_name, df_human) {
+  df_model <- df_model %>%
+              filter(curr_tpt>2) %>% group_by(seq_id, curr_tpt) %>%
+              filter(prediction_tpt < curr_tpt+4) %>%
+              filter(curr_tpt<10) %>%
+              filter(r<21)
+  
+  df_seq <- subset(df_model, (df_model$seq_id == seq))
+  dir.create(paste(out_folder, seq, sep="/"))
+  
+  x_min <- min(min(df_seq$true_x, na.rm=TRUE), min(df_seq$pred_x, na.rm=TRUE))
+  x_max <- max(max(df_seq$true_x, na.rm=TRUE), max(df_seq$pred_x, na.rm=TRUE))
+  y_min <- min(min(df_seq$true_y, na.rm=TRUE), min(df_seq$pred_y, na.rm=TRUE))
+  y_max <- max(max(df_seq$true_y, na.rm=TRUE), max(df_seq$pred_y, na.rm=TRUE))
+  
+  
+  for (t in (min(df_seq$curr_tpt)):max(df_seq$curr_tpt)) {
+    df_model_tpt <- df_model %>%
+              arrange(., curr_tpt) %>%
+              filter(seq_id==seq)  %>% 
+              filter(curr_tpt == t) %>%
+              arrange(prediction_tpt)
+    df_true <- df_stimuli %>% filter(seq_id==seq)
+    
+    df_human_tpt <- df_human %>%
+              arrange(., tpt) %>%
+              filter(func.type == seq)  %>% 
+              filter(tpt == t)
+    
+    for (n_extended in (-1:3)) {
+      
+      df_model_path <- df_model_tpt %>%
+                      filter(prediction_tpt >= curr_tpt-1) %>%
+                      filter(prediction_tpt <= curr_tpt+n_extended) %>%
+                      mutate(pred_x = ifelse(prediction_tpt==curr_tpt-1, true_x, pred_x)) %>%
+                      mutate(pred_y = ifelse(prediction_tpt==curr_tpt-1, true_y, pred_y))
+      
+      df_model_points <- df_model_tpt %>%
+                         filter(prediction_tpt >= curr_tpt) %>%
+                         filter(prediction_tpt <= curr_tpt+n_extended)
+    
+      
+      df_gpsl_points <- df_gpsl %>%
+                        arrange(., curr_tpt) %>%
+                        filter(seq_id==seq)  %>% 
+                        filter(curr_tpt == t) %>%
+                        arrange(prediction_tpt) %>%
+                        filter(prediction_tpt >= curr_tpt) %>%
+                        filter(prediction_tpt <= curr_tpt+n_extended)
+        
+      
+     df_model_path_top <- df_model_tpt %>%
+                      filter(prediction_tpt >= curr_tpt-1) %>%
+                      filter(prediction_tpt <= curr_tpt+3) %>%
+                      mutate(pred_x = ifelse(prediction_tpt==curr_tpt-1, true_x, pred_x)) %>%
+                      mutate(pred_y = ifelse(prediction_tpt==curr_tpt-1, true_y, pred_y)) %>%
+                      filter(r==1)
+      
+      df_model_points_top <- df_model_tpt %>%
+                         filter(prediction_tpt >= curr_tpt) %>%
+                         filter(prediction_tpt <= curr_tpt+3)  %>%
+                          filter(r==1)
+      
+      
+      p <- ggplot() +
+          # True pattern
+          geom_path(data=df_true%>%filter(tpt<t), aes(x=true_x, y=true_y), linetype="dotted") +
+          geom_point(data=df_true%>%filter(tpt<t), aes(x=true_x, y=true_y), size=6) +
+        
+          # Human predictions
+          geom_point(data=df_human_tpt, aes(x=x_pred, y=y_pred), color=adult_color, shape=4, size=8, stroke=2) +
+        
+          # Top
+          #geom_point(data=df_model_points_top, aes(x=pred_x, y=pred_y), size=9, color=lot_color, alpha=1) +
+          #geom_path(data=df_model_path_top, aes(x=pred_x, y=pred_y, group=r), color=lot_color, linetype="solid", alpha=1, linewidth=1) +
+        
+          # Predicted patterns
+          geom_point(data=df_model_points, aes(x=pred_x, y=pred_y), size=8, color=lot_color, alpha=0.6) +
+          #geom_path(data=df_model_path, aes(x=pred_x, y=pred_y, group=r), color=lot_color, linetype="dashed", alpha=0.6, linewidth=1) +
+        
+          
+          #now add gpsl
+          geom_point(data=df_gpsl_points, aes(x=pred_x, y=pred_y), size=8, color=gpsl_color, alpha=0.6) +
+        
+          # Theme
+          #scale_color_gradient(low = "yellow", high = "purple") +
+          theme_void() +
+          theme(legend.title=element_blank(), legend.text=element_blank(), panel.background = element_rect(fill = "white"))+
+          guides(color="none", alpha="none") +
+          coord_fixed(xlim=c(x_min, x_max), ylim=c(y_min, y_max))
+        #p
+      f_name <- paste(paste(paste(paste(paste(out_folder, seq, sep="/"), seq, sep="/"), as.character(t), sep="_n"), as.character(n_extended+1), sep="_e"), ".png",sep="")
+      ggsave(f_name, plot=p,width=14,height=8, dpi=500)
+    }
+  }
+}
+out_folder <- "../figs/videos/extended_predictions/lot_frames_points_human_gpsl"
+unlink(out_folder, recursive=TRUE)
+dir.create(out_folder)
+for (id in sort(unique(df_stimuli$seq_id))) {
+  if (id=="alternating_diff_1") {
+    print(id)
+    generate_single_model_frames(id, df_lot, "lot", df_adult)
+    print("") 
+  }
+}
+```
+```
+
+
+
+
+
+
+
+
+

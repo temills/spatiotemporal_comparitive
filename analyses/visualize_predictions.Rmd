@@ -99,6 +99,8 @@ add_perfect_subject <- function(df) {
 
 
 ```{r}
+#df_kid <- preprocess_df_human(read.csv("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/spatiotemporal_comparitive/human_experiments/dots_app_kids/data/clean_data/data.csv")) %>% select(-X.1)
+
 df_kid <- preprocess_df_human(read.csv("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/spatiotemporal_comparitive/analyses/data/participants/kids.csv")) %>% select(-X.1)
 df_adult <- preprocess_df_human(read.csv("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/spatiotemporal_comparitive/analyses/data/participants/adults.csv"))
 df_monkey <- preprocess_df_monkey(read.csv("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/spatiotemporal_comparitive/analyses/data/participants/monkeys_all.csv"))
@@ -246,7 +248,7 @@ for (id in sort(unique(df$func.type))) {
 f_plot_func_single <- function(f, df, name, col) {
   dir.create(paste(out_folder, f, sep="/"))
   #need range for setting scale of plot
-  df_seq <- subset(df_lot_rec, (df_lot_rec$func.type == f))
+  df_seq <- subset(df_ss, (df_ss$func.type == f))
   x_min <- min(min(df_seq$x_next, na.rm=TRUE), min(df_seq$x_pred, na.rm=TRUE))
   x_max <- max(max(df_seq$x_next, na.rm=TRUE), max(df_seq$x_pred, na.rm=TRUE))
   y_min <- min(min(df_seq$y_next, na.rm=TRUE), min(df_seq$y_pred, na.rm=TRUE))
@@ -279,8 +281,8 @@ f_plot_func_single <- function(f, df, name, col) {
   }
 }
 
-dfs = list(df_lot_rec)#, df_kid, df_lot, df_gpsl, df_gpnc, df_ridge, df_lin)
-names = c("Lot rec.")#, "Children", "LoT", "GPSL", "GPNC", "Ridge", "Linear")
+dfs = list(df_ss)#, df_kid, df_lot, df_gpsl, df_gpnc, df_ridge, df_lin)
+names = c("SS")#, "Children", "LoT", "GPSL", "GPNC", "Ridge", "Linear")
 colors = c(lot_color)#, kid_color,  lot_color, gpsl_color, "orange1", ridge_color, lin_color)
 
 for (i in seq_along(dfs)) {
@@ -293,7 +295,7 @@ for (i in seq_along(dfs)) {
   name <- names[i]
   
   df <- df[order(df$tpt),]
-  out_folder <- paste("figs/lot_rec_vids/", name, sep="")
+  out_folder <- paste("figs/", name, sep="")
   unlink(out_folder, recursive=TRUE)
   dir.create(out_folder)
 
@@ -304,6 +306,23 @@ for (i in seq_along(dfs)) {
   }
 }
 ```
+
+
+```{r}
+tmp <- df_ss %>% filter(func.type=="line")
+
+```
+```{r}
+tmp <- df_ss %>% group_by(func.type, tpt) %>% mutate(norm_p = p_periodic * posterior) %>% summarize(norm_p = sum(norm_p)) 
+ggplot(data=tmp) +
+  geom_line(aes(x=tpt, y=norm_p)) +
+  facet_wrap(~func.type)
+
+# should we compute LL based on all predictions?
+
+```
+
+
 ```{r}
 adult_color = "#7c7fff"
 monkey_color = "#00695C" 

@@ -81,12 +81,10 @@ paper_theme <- theme_light() + theme( axis.title.x = element_text(size=22),
                                       panel.grid.minor=element_blank()) 
 
 
-preprocess_df_human <- function(df) {
+scale_df <- function(df) {
+  # add linear predictions
   df <- df %>%
-        filter(!(is.na(trial_idx))) %>%
-        rename(x_curr = prev_x, y_curr = prev_y, x_next = true_x, y_next = true_y,
-               x_pred = response_x, y_pred = response_y, func.type = seq_id) %>%
-        group_by(subject_id, func.type) %>%
+        group_by(subject_id, r_id, func.type) %>%
         arrange(tpt) %>%
         mutate(x_prev = lag(x_curr), y_prev = lag(y_curr)) %>%
         mutate(dx=x_curr-x_prev, dy=y_curr-y_prev) %>%
@@ -100,8 +98,6 @@ preprocess_df_human <- function(df) {
         mutate(lin2_x_pred = x_curr + mean_dx, lin2_y_pred = y_curr + mean_dy) %>%
         ungroup() %>%
         mutate(r_id = subject_id)
-  
-  #cut off lin predictions at min/max
   df$lin1_x_pred <- pmin(pmax(df$lin1_x_pred, df$min_x), df$max_x)
   df$lin1_y_pred <- pmin(pmax(df$lin1_y_pred, df$min_y), df$max_y)
   df$lin2_x_pred <- pmin(pmax(df$lin2_x_pred, df$min_x), df$max_x)
@@ -125,80 +121,38 @@ preprocess_df_human <- function(df) {
                    min_x_tmp = (min_x-min_x)/scale_by,
                    max_x_tmp = (max_x-min_x)/scale_by,
                    min_y_tmp = (min_y-min_y)/scale_by) %>%
-            mutate(max_x=max_x_tmp, min_x=min_x_tmp, max_y=max_y_tmp, min_y=min_y_tmp) %>%
+             mutate(max_x=max_x_tmp, min_x=min_x_tmp, max_y=max_y_tmp, min_y=min_y_tmp) %>%
       mutate(guess_num = tpt - 2) %>%
       mutate(guess_num_std = (guess_num-mean(guess_num))/sd(guess_num))
   
   df <- merge(df, is_repeat_df, by = c("func.type", "tpt"), suffixes=c("", ".temp")) %>%
         subset(select = -c(X, X.temp, x_next.temp, y_next.temp))
   df <- df[order(df$tpt),]
-  
-  
   return(df)
+}
+
+
+preprocess_df_human <- function(df) {
+  df <- df %>%         
+        filter(!(is.na(trial_idx))) %>%
+        rename(x_curr = prev_x, y_curr = prev_y, x_next = true_x, y_next = true_y,
+               x_pred = response_x, y_pred = response_y, func.type = seq_id) %>%
+        mutate(r_id = subject_id) %>%
+        scale_df()
 }
 
 preprocess_df_monkey <- function(df) {
   df <- df[order(df$n),] %>%
       rename(tpt = n, subject_id = monkey_name) %>%
-      group_by(subject_id, r_id, tpt) %>%
-      ungroup() %>%
-      #add linear predictions
-      group_by(func.type) %>%
-      arrange(tpt) %>%
-      ungroup() %>%
-      group_by(subject_id, r_id, func.type) %>%
-      arrange(tpt) %>%
-      mutate(x_prev = lag(x_curr), y_prev = lag(y_curr)) %>%
-      mutate(dx=x_curr-x_prev, dy=y_curr-y_prev) %>%
-      mutate(pred_dx=dx, pred_dy=dy) %>%
-      mutate(lin1_x_pred=x_curr+pred_dx, lin1_y_pred=y_curr+pred_dy) %>%
-      mutate(prev_dx = lag(dx), prev_dy = lag(dy)) %>%
-      group_by(subject_id, func.type, tpt) %>%
-      mutate(mean_dx = mean(c(prev_dx, dx), na.rm=T), mean_dy = mean(c(prev_dy, dy), na.rm=T)) %>%
-      mutate(std_dx = ifelse(!is.na(prev_dx), sd(na.omit(c(prev_dx, dx))), 0), std_dy = ifelse(!is.na(prev_dx), sd(na.omit(c(prev_dy, dy))), 0)) %>%
-      mutate(lin2_x_pred = x_curr + mean_dx, lin2_y_pred = y_curr + mean_dy) %>%
-      ungroup()
-  
-  #cut off lin predictions at min/max
-  df$lin1_x_pred <- pmin(pmax(df$lin1_x_pred, df$min_x), df$max_x)
-  df$lin1_y_pred <- pmin(pmax(df$lin1_y_pred, df$min_y), df$max_y)
-  df$lin2_x_pred <- pmin(pmax(df$lin2_x_pred, df$min_x), df$max_x)
-  df$lin2_y_pred <- pmin(pmax(df$lin2_y_pred, df$min_y), df$max_y)
-  
-  df <-df %>%
-      mutate(scale_by = (max_x-min_x)) %>%
-      mutate(upper_bound_y = (max_y-min_y)/(max_x-min_x)) %>%
-      mutate(x_curr = (x_curr-min_x)/scale_by,
-             x_pred = (x_pred-min_x)/scale_by,
-             x_next = (x_next-min_x)/scale_by,
-             y_curr = (y_curr-min_y)/scale_by,
-             y_pred = (y_pred-min_y)/scale_by,
-             y_next = (y_next-min_y)/scale_by,
-             lin1_x_pred = (lin1_x_pred-min_x)/scale_by,
-             lin1_y_pred = (lin1_y_pred-min_y)/scale_by,
-             lin2_x_pred = (lin2_x_pred-min_x)/scale_by,
-             lin2_y_pred = (lin2_y_pred-min_y)/scale_by) %>%
-             mutate(max_y_tmp = (max_y-min_y)/scale_by,
-                   min_x_tmp = (min_x-min_x)/scale_by,
-                   max_x_tmp = (max_x-min_x)/scale_by,
-                   min_y_tmp = (min_y-min_y)/scale_by) %>%
-            mutate(max_x=max_x_tmp, min_x=min_x_tmp, max_y=max_y_tmp, min_y=min_y_tmp) %>%
-      mutate(guess_num = tpt - 2) %>%
-      mutate(guess_num_std = (guess_num-mean(guess_num))/sd(guess_num))
-  
-  
-  df <- merge(df, is_repeat_df, by = c("func.type", "tpt"), suffixes=c("", ".temp")) %>%
-        subset(select = -c(X, X.temp, x_next.temp, y_next.temp))
-  df <- df[order(df$tpt),]
-  return(df)
+      scale_df()
 }
 ```
 
 
-# Stan model helpers
+# Inference helpers
 ```{r}
 
-run_inference <- function(df, n_iter, n_chains, var_maps) {
+run_inference_subj <- function(df, n_iter, n_chains, var_maps) {
   stan_df <- df %>% filter(!is.na(x_pred) & (!is.na(y_pred)))
   stan_data <- list(
     N = length(stan_df$x_pred),
@@ -224,6 +178,25 @@ run_inference <- function(df, n_iter, n_chains, var_maps) {
 }
 
 
+run_inference_group <- function(df, group) {
+  i=0
+  for (subj in unique(df$subject_id)) {
+    df_subj <- df%>%filter(subject_id==subj)
+    func_to_num_map <- setNames(as.numeric(factor(unique(df_subj$func.type))), unique(df_subj$func.type))
+    subj_to_num_map <- setNames(as.numeric(factor(unique(df_subj$subject_id))), unique(df_subj$subject_id))
+    var_maps <- list("func_type"=func_to_num_map, "subject_id"=subj_to_num_map)
+    
+    # do this for each subj
+    fit <- run_inference_subj(df_subj, 2000, 4, var_maps)
+    summ <- data.frame(summary(fit))
+    saveRDS(fit, file = paste0("stan_fits/", group, "/", subj, ".rds"))
+    i=i+1
+  }
+}
+```
+
+# Load model fit and return posterior df
+```{r}
 refactor_posterior <- function(posterior_samples, var_maps) {
   refactored_post <- posterior_samples
   #refactored_post$subject_id <- names(var_maps$subject_id)[match(refactored_post$subj, var_maps$subject_id)]
@@ -244,32 +217,6 @@ refactor_posterior <- function(posterior_samples, var_maps) {
   return(refactored_post)
 }
 
-
-```
-
-
-
-```{r}
-
-fit_subjs <- function(df, group) {
-  i=0
-  for (subj in unique(df$subject_id)) {
-    df_subj <- df%>%filter(subject_id==subj)
-    func_to_num_map <- setNames(as.numeric(factor(unique(df_subj$func.type))), unique(df_subj$func.type))
-    subj_to_num_map <- setNames(as.numeric(factor(unique(df_subj$subject_id))), unique(df_subj$subject_id))
-    var_maps <- list("func_type"=func_to_num_map, "subject_id"=subj_to_num_map)
-    
-    # do this for each subj
-    fit <- run_inference(df_subj, 2000, 4, var_maps)
-    summ <- data.frame(summary(fit))
-    saveRDS(fit, file = paste0("stan_fits/", group, "/", subj, ".rds"))
-    i=i+1
-  }
-}
-```
-
-
-```{r}
 get_subj_df <- function(participant_df, group, subj) {
   df_subj <- participant_df%>%filter(subject_id==subj)
   
@@ -282,7 +229,6 @@ get_subj_df <- function(participant_df, group, subj) {
   posterior_samples$subj = subj
   post_subj <- refactor_posterior(posterior_samples, var_maps)
   
-
   df_subj <- merge(df_subj, post_subj, "func.type") %>%
                mutate(LL_true = log(dnorm(x_pred, mean=x_next, sd=motor_sd)) +
                                 log(dnorm(y_pred, mean=y_next, sd=motor_sd)), 
@@ -312,10 +258,8 @@ get_subj_df <- function(participant_df, group, subj) {
 }
 ```
 
+# Make videos from loaded model fits for each subject
 ```{r, echo=F}
-# load fits and make vids for each subj
-# then vids for all subjects
-
 generate_videos <- function(df, group) {
   i = 0
   for (subj in unique(df$subject_id)) {
@@ -411,27 +355,20 @@ make_subj_video <- function(df_subj, file) {
 ```
 
 
-
-```{r}
-#fit_subjs(df_monkey, "monkeys")
-#generate_videos(df_monkey, "monkeys")
-```
-
-
-
 ```{r}
 get_mean_df <- function(df, group) {
   i=0
   for (subj in unique(df$subject_id)) {
-    #now, for each prediction, can we get prob under each model?
+    print(subj)
+    #for each prediction, mean prob under each model
     df_subj <- get_subj_df(df, group, subj)  %>%
                filter(guess_num>0) %>%
-               group_by(func.type, tpt, subj, r_id) %>%
+               group_by(func.type, tpt, r_id) %>%
                summarize(x_pred=mean(x_pred),
                          y_pred=mean(y_pred),
                          x_next=mean(x_next),
                          y_next=mean(y_next),
-                          motor_sd=mean(motor_sd),
+                         motor_sd=mean(motor_sd),
                          prob_true=mean(prob_true),
                          prob_rand=mean(prob_rand),
                          prob_lin=mean(prob_lin),
@@ -447,6 +384,7 @@ get_mean_df <- function(df, group) {
   }
 
   df_all$group = group
+  df_all <- df_all %>% mutate(guess_num=tpt-2)
   return(df_all)
 }
 
@@ -457,22 +395,59 @@ get_mean_df <- function(df, group) {
 
 # Load participant data
 ```{r, message=F}
+demo <- read.csv("../../human_experiments/dots_app_kids/data/demographics.csv") %>% mutate(subject_id = child__hashed_id)
+ages <- demo %>% mutate(exact_age = as.numeric(difftime(consent__time, child__birthday, units = "days")) / 365.25) %>% select(c(subject_id, exact_age))
+
+df_kid_chs <- read.csv("../data/participants/kids_chs.csv")  %>%
+              mutate(start_time = start_time - min(start_time),
+                    start_time = start_time/(3600*1000*24)) %>%
+              merge(ages, by="subject_id") %>%
+              filter(seq_id != "example_line") %>%
+              filter(seq_id != "example_line_2") %>%
+              arrange(subject_id, session) %>%
+              group_by(subject_id) %>%
+              mutate(n_func = sapply(session, function(s) n_distinct(seq_id[session <= s]))) %>%
+              ungroup() %>%
+              mutate(passed_ic = ifelse(passed_ic=="", T,
+                                        ifelse(passed_ic=="True", T,
+                                               ifelse(passed_ic=="False", F, NA)))) %>%
+              mutate(age = ifelse(exact_age<4, 3,
+                                    ifelse(exact_age<5, 4,
+                                           ifelse(exact_age<6, 5,
+                                                  ifelse(exact_age<7, 6,
+                                                         ifelse(exact_age<8, 7,
+                                                                NA)))))) %>%
+            filter(passed_ic) %>%
+            filter(n_func>3) %>%
+            preprocess_df_human()
+```
+
+
+```{r, message=F}                                                    
 df_kid <- preprocess_df_human(read.csv("../data/participants/kids.csv"))
 df_adult <-preprocess_df_human(read.csv("../data/participants/adults.csv"))
 df_monkey <-  preprocess_df_monkey(read.csv("../data/participants/monkeys_all.csv"))
 ```
 
-```{r, echo=F}
-#df_mean_kid <- get_mean_df(df_kid, "kids")
-#df_mean_adult <- get_mean_df(df_adult, "adults")
-#df_mean_monkey <- get_mean_df(df_monkey, "monkeys")  %>% mutate(r_id = as.character(r_id))
 
-df_mean_kid <- read.csv(df_mean_kid, "kid.csv")
-df_mean_adult <- read.csv(df_mean_adult, "adult.csv")
-df_mean_monkey <- read.csv(df_mean_monkey, "monkey.csv") %>% mutate(r_id = as.character(r_id))
-df_mean_monkey <- df_mean_monkey %>% mutate(guess_num=tpt-2)
-df_mean_adult <- df_mean_adult %>% mutate(guess_num=tpt-2)
-df_mean_kid <- df_mean_kid %>% mutate(guess_num=tpt-2)
+# Run inference
+```{r}
+#run_inference_group(df_kid_chs, "kids_chs")
+#generate_videos(df_monkey, "monkeys")
+```
+
+
+```{r, echo=F}
+df_mean_kid_chs <- get_mean_df(df_kid_chs, "kids_chs")
+```
+```{r}
+df_mean_kid <- get_mean_df(df_kid, "kids")
+df_mean_adult <- get_mean_df(df_adult, "adults")
+df_mean_monkey <- get_mean_df(df_monkey, "monkeys")  %>% mutate(r_id = as.character(r_id))
+
+# df_mean_kid <- read.csv(df_mean_kid, "kid.csv")
+# df_mean_adult <- read.csv(df_mean_adult, "adult.csv")
+# df_mean_monkey <- read.csv(df_mean_monkey, "monkey.csv") %>% mutate(r_id = as.character(r_id))
 
 ```
 
