@@ -24,7 +24,7 @@ parameters {
   //real<lower=0> beta_guess_num;
   real<lower=0> beta_guess_num_func_type[n_func_types];
   real<lower=0> motor_sd; 
-  simplex[3] p_rand_strategy;
+  simplex[2] p_rand_strategy;
   //real<lower=0, upper=1> max_p;
 } 
 
@@ -34,17 +34,17 @@ model { //When beta guess num is a vector, it fails to initialize. divergent tra
   beta_guess_num_func_type ~ normal(0,3); //for each guess_num
   beta_func_type ~ normal(0,3);
   motor_sd ~ exponential(10);
-  p_rand_strategy ~ dirichlet(rep_vector(1,3)); //prev, rand, lin
+  p_rand_strategy ~ dirichlet(rep_vector(1,2)); //prev, rand, lin
 
   for (i in 1:N) {
     real p_true = inv_logit(use_true_icpt + beta_func_type[func_type[i]] + beta_guess_num_func_type[func_type[i]]*guess_num_std[i]);
     //real p_true = inv_logit(use_true_icpt + beta_func_type[func_type[i]]);
-    vector[4] log_probs;
+    vector[3] log_probs;
     log_probs[1] = log(p_true) + normal_lpdf(x_pred[i] | x_next[i], motor_sd) + normal_lpdf(y_pred[i] | y_next[i], motor_sd);
     //otherwise 
     log_probs[2] = log((1-p_true) * p_rand_strategy[1]) + normal_lpdf(x_pred[i] | x_curr[i], motor_sd) + normal_lpdf(y_pred[i] | y_curr[i], motor_sd);
     log_probs[3] = log((1-p_true) * p_rand_strategy[2]) + uniform_lpdf(x_pred[i] | 0, 1) + uniform_lpdf(y_pred[i] | 0, upper_bound_y[i]);
-    log_probs[4] = log((1-p_true) * p_rand_strategy[3]) + normal_lpdf(x_pred[i] | lin_x_pred[i], motor_sd) + normal_lpdf(y_pred[i] | lin_y_pred[i], motor_sd);
+    //log_probs[4] = log((1-p_true) * p_rand_strategy[3]) + normal_lpdf(x_pred[i] | lin_x_pred[i], motor_sd) + normal_lpdf(y_pred[i] | lin_y_pred[i], motor_sd);
     target += log_sum_exp(log_probs);
   }
 }

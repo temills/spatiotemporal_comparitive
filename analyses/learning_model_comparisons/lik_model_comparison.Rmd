@@ -257,7 +257,7 @@ lin_path <- '../data/models/linear.csv'
 true_path <- '../data/models/true.csv'
 prev_path <- '../data/models/prev.csv'
 
-ss_path <- '../../models/hier_dumb/output/ss_all.csv'
+ss_path <- '../data/models/lin_or_prev.csv'
 ```
 
 
@@ -337,7 +337,7 @@ get_df_participant_model <- function(df_participant, df_model) {
 write_preprocessed_data <- function() {
   path <- "preprocessed_data/"
   model_paths = c(ss_path, lot_path, lot_no_recursion_path, gpnc_path, gpsl_path, ridge_path, lin_path)
-  models = c("ss", "lot",  "lot_no_recursion", "gpnc", "gpsl", "ridge", "lin")
+  models = c("ss", "lot", "gpnc", "gpsl", "ridge", "lin", "lot_no_recursion")
   participants = c('kid_chs')#, 'adult', "kid", "monkey")
   for (i in seq_along(models)) {
     model_name <- models[i]
@@ -384,7 +384,7 @@ ggplot(data=df_participant_model%>%arrange(tpt)) +
 # ANALYSES
 ```{r}
 read_model_fit_data <- function(participant) {
-  path <- "model_fits/LLs2/"
+  path <- "model_fits/LLs/"
   models = c("lot", "ss", "gpnc", "gpsl", "ridge", "lin")#,, "prev")#, "true")
   df <- data.frame()
   for (i in seq_along(models)) {
