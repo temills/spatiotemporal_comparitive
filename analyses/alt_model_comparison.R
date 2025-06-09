@@ -112,7 +112,6 @@ add_perfect_subject <- function(df) {
 
 
 
-
 df_kid <- preprocess_df_human(read.csv("data/participants/kids.csv")) %>% select(-X.1)
 df_adult <- preprocess_df_human(read.csv("data/participants/adults.csv"))
 df_monkey <- preprocess_df_monkey(read.csv("data/participants/monkeys_all.csv"))

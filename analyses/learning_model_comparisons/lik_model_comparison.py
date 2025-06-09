@@ -9,12 +9,10 @@ def compute_ll(df_participant_model, out_path, fit_rand=False, fit_lin=False):
     def compute_p_data(df):
         def group_apply(group):
             group['p_data_x'] = norm.pdf(group['pred_x'], loc=group['model_pred_x'], 
-                                         #scale=np.sqrt(group['sd_motor']**2))
                                          scale=np.sqrt(group['model_std_x']**2 + group['sd_motor']**2))
             group['p_data_x'] = sm + (1 - sm) * np.sum(group['model_posterior'] * group['p_data_x'])
             
             group['p_data_y'] = norm.pdf(group['pred_y'], loc=group['model_pred_y'], 
-                                         #scale=np.sqrt(group['sd_motor']**2))
                                          scale=np.sqrt(group['model_std_y']**2 + group['sd_motor']**2))
             group['p_data_y'] = sm + (1 - sm) * np.sum(group['model_posterior'] * group['p_data_y'])
             

@@ -99,14 +99,9 @@ add_perfect_subject <- function(df) {
 
 
 ```{r}
-#df_kid <- preprocess_df_human(read.csv("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/spatiotemporal_comparitive/human_experiments/dots_app_kids/data/clean_data/data.csv")) %>% select(-X.1)
-
-df_kid <- preprocess_df_human(read.csv("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/spatiotemporal_comparitive/analyses/data/participants/kids.csv")) %>% select(-X.1)
-df_adult <- preprocess_df_human(read.csv("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/spatiotemporal_comparitive/analyses/data/participants/adults.csv"))
-df_monkey <- preprocess_df_monkey(read.csv("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/spatiotemporal_comparitive/analyses/data/participants/monkeys_all.csv"))
-
-#df_kid_ind <- preprocess_df_human(read.csv("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/spatiotemporal_comparitive/human_experiments/dots_app_kids/ind_dif_data/clean_data/data.csv"))
-#df_kid <- rbind(df_kid, df_kid_ind)
+df_kid <- preprocess_df_human(read.csv("data/participants/kids.csv")) %>% select(-X.1)
+df_adult <- preprocess_df_human(read.csv("data/participants/adults.csv"))
+df_monkey <- preprocess_df_monkey(read.csv("data/participants/monkeys_all.csv"))
 ```
 
 
@@ -132,17 +127,15 @@ df_lot_rec <- preprocess_df_model(read.csv('../models/LoT/rec_stim_output_y_2/lo
 ```
 
 ```{r}
-df_lot <- preprocess_df_model(read.csv('/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/spatiotemporal_comparitive/analyses/data/models/lot.csv'))
-df_ss <- preprocess_df_model(read.csv('/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/spatiotemporal_comparitive/models/hier_dumb/output/ss_all.csv'))
-df_lot_no_recursion <- preprocess_df_model(read.csv('/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/spatiotemporal_comparitive/analyses/data/models/lot_no_recursion.csv'))
-
+df_lot <- preprocess_df_model(read.csv('data/models/lot.csv'))
+df_ss <- preprocess_df_model(read.csv('data/models/lin_prev.csv'))
+df_lot_no_recursion <- preprocess_df_model(read.csv('data/models/lot_no_recursion.csv'))
 ```
-
 
 
 ```{r, echo=F, message=F}
 
-out_folder <- "/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/spatiotemporal_comparitive/analyses/figs/videos/predictions/kids/recursion"
+out_folder <- "../figs/videos/predictions/kids/recursion"
 
 part <- "Children"
 mod1 <- "LoT no recursion"

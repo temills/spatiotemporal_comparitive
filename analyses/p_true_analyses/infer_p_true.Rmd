@@ -9,18 +9,13 @@ library(ggplot2)
 library(reshape)
 library(grid)
 library(dplyr)
-library(gridExtra)
-library(lme4)
-library(reghelper)
 library(robustbase)
 library(tidylog)
 library(hash)
 library(rstan)
-library(png)
 library(gtable)
 library(tidyr)
 library(matrixStats)
-library(ggimage)
 library(forcats)
 
 inv_logit <- function(x) { exp(x)/(1+exp(x))}
@@ -41,7 +36,7 @@ add_png_to_facet <- function(ggplot_object, data, facet_var, x_loc,y_loc, width,
     panel_index <- ordered_panel_positions[i]
     facet_label <- facet_labels[i]
     if (!is.na(facet_label)) {
-      img <- readPNG(paste0("../figs/func_ims/", facet_label, ".png"))
+      img <- readPNG(paste0("../../figs/func_ims/", facet_label, ".png"))
       # Convert to raster and add it to the gtable
       g <- rasterGrob(img, interpolate = TRUE, width = unit(0.24, "npc"), height = unit(0.3, "npc"))
       g <- editGrob(g, vp = viewport(x = x_loc, y = y_loc, just = c("right", "top")))
@@ -57,7 +52,7 @@ add_png_to_plot <- function(ggplot_object, data, y_loc, width, height, out_file)
   labels = ggplot_build(ggplot_object)$layout$panel_params[[1]]$x$get_labels()
   for (i in seq_along(labels)) {
     facet_label <- labels[i]
-    img <- readPNG(paste0("../figs/func_ims/", facet_label, ".png"))
+    img <- readPNG(paste0("../../figs/func_ims/", facet_label, ".png"))
     g <- rasterGrob(img, interpolate = TRUE, width = unit(0.5, "npc"), height = unit(0.8, "npc"))
     ggplot_object <- ggplot_object + annotation_custom(g, xmin = i-.85, xmax = i+.85, ymin = y_loc-0.28, ymax = y_loc)
   }
@@ -106,7 +101,8 @@ scale_df <- function(df) {
   # scale
   df <-df %>%
       mutate(scale_by = (max_x-min_x)) %>%
-      mutate(upper_bound_y = (max_y-min_y)/(max_x-min_x)) %>%
+      mutate(upper_bound_y = (max_y-min_y)/(max_x-min_x),
+             upper_bound_x = 1) %>%
       mutate(x_curr = (x_curr-min_x)/scale_by,
              x_pred = (x_pred-min_x)/scale_by,
              x_next = (x_next-min_x)/scale_by,
@@ -163,6 +159,7 @@ run_inference_subj <- function(df, n_iter, n_chains, var_maps) {
     x_curr = stan_df$x_curr,
     y_curr = stan_df$y_curr,
     upper_bound_y = stan_df$upper_bound_y,
+    upper_bound_x = stan_df$upper_bound_x,
     lin_x_pred = stan_df$lin1_x_pred,
     lin_y_pred = stan_df$lin1_y_pred,
     next_is_repeat = stan_df$next_is_repeat,
@@ -280,7 +277,7 @@ generate_videos <- function(df, group) {
 }
 
 make_subj_video <- function(df_subj, file) {
-  out_folder <- paste0("../figs/videos/p_true/", file)
+  out_folder <- paste0("../../figs/videos/p_true/", file)
   df <- df_subj %>%
         group_by(func.type, tpt, subj, r_id) %>%
         summarize(x_pred=mean(x_pred),
@@ -396,40 +393,11 @@ get_mean_df <- function(df, group) {
 
 # Load participant data
 ```{r, message=F}
-demo <- read.csv("../../human_experiments/dots_app_kids/data/demographics.csv") %>% mutate(subject_id = child__hashed_id)
-ages <- demo %>% mutate(exact_age = as.numeric(difftime(consent__time, child__birthday, units = "days")) / 365.25) %>% select(c(subject_id, exact_age))
-
-df_kid_chs <- read.csv("../data/participants/kids_chs.csv")  %>%
-              mutate(start_time = start_time - min(start_time),
-                    start_time = start_time/(3600*1000*24)) %>%
-              merge(ages, by="subject_id") %>%
-              filter(seq_id != "example_line") %>%
-              filter(seq_id != "example_line_2") %>%
-              arrange(subject_id, session) %>%
-              group_by(subject_id) %>%
-              mutate(n_func = sapply(session, function(s) n_distinct(seq_id[session <= s]))) %>%
-              ungroup() %>%
-              mutate(passed_ic = ifelse(passed_ic=="", T,
-                                        ifelse(passed_ic=="True", T,
-                                               ifelse(passed_ic=="False", F, NA)))) %>%
-              mutate(age = ifelse(exact_age<4, 3,
-                                    ifelse(exact_age<5, 4,
-                                           ifelse(exact_age<6, 5,
-                                                  ifelse(exact_age<7, 6,
-                                                         ifelse(exact_age<8, 7,
-                                                                NA)))))) %>%
-            filter(passed_ic) %>%
-            filter(n_func>3) %>%
-            preprocess_df_human()
-```
-
-
-```{r, message=F}                                                    
+df_kid_chs <- preprocess_df_human(read.csv("../data/participants/kids_chs.csv"))                                             
 df_kid <- preprocess_df_human(read.csv("../data/participants/kids.csv"))
 df_adult <-preprocess_df_human(read.csv("../data/participants/adults.csv"))
 df_monkey <-  preprocess_df_monkey(read.csv("../data/participants/monkeys_all.csv"))
 ```
-
 
 # Run inference
 ```{r}
@@ -446,13 +414,10 @@ df_mean_monkey <- get_mean_df(df_monkey, "monkeys")  %>% mutate(r_id = as.charac
 ```{r}
 df_mean_kid_chs_lin <- get_mean_df(df_kid_chs%>%filter(age==3), "kids_chs")
 write.csv(df_mean_kid_chs_lin, "mean_kid_chs_lin_3.csv")
-```
 
-```{r}
 write.csv(df_mean_kid_chs, "mean_kid_chs.csv")
 write.csv(df_mean_adult, "mean_adult.csv")
 write.csv(df_mean_monkey, "mean_monkey.csv")
-
 
 #df_mean_kid <- get_mean_df(df_kid, "kids")
 #df_mean_adult <- get_mean_df(df_adult, "adults")
@@ -487,6 +452,8 @@ df_all <- bind_rows(df_mean_kid_chs_lin, df_mean_monkey_lin)
 
 df_all <- df_all %>% mutate(agent = ifelse(group=="monkeys", subj, group)) %>% mutate(guess_num=tpt-2)
 ```
+
+
 
 ```{r}
 df_all$agent <- factor(df_all$agent, 
@@ -552,21 +519,13 @@ df_mean_kid_chs <- read.csv("mean_kid_chs.csv") #%>% filter(exact_age)
 
 # P true by func.type, tpt
 ```{r, cache=T}
-demo <- read.csv("../../human_experiments/dots_app_kids/data/demographics.csv") %>% mutate(subject_id = child__hashed_id)
-ages <- demo %>% mutate(exact_age = as.numeric(difftime(consent__time, child__birthday, units = "days")) / 365.25) %>% select(c(subject_id, exact_age)) %>% mutate(subj=subject_id) %>% 
-  mutate(age = ifelse(exact_age<4, 3,
-                            ifelse(exact_age<5, 4,
-                                   ifelse(exact_age<6, 5,
-                                          ifelse(exact_age<7, 6,
-                                                 ifelse(exact_age<8, 7,
-                                                        NA))))))
+ages <- df_kid_chs %>% select(c(subject_id, age)) %>% rename(subj=subject_id)
 
 df_mean_kid_chs <- df_mean_kid_chs %>% mutate(subj=r_id) %>% mutate(group="kids") %>%
                   filter(func.type %in% unique(df_mean_adult$func.type)) %>%
                   merge(ages, by="subj")
 
-df_all <- df_mean_kid_chs %>% filter(!(func.type %in% c('radial_increasing'))) %>% filter(exact_age<8)
-
+df_all <- df_mean_kid_chs %>% filter(exact_age<8)
 
 #df_all <- bind_rows(df_mean_kid_chs)#df_mean_kid, df_mean_monkey, df_mean_adult)
 df_all <- df_all %>% mutate(guess_num=tpt-2)
@@ -594,8 +553,8 @@ p.1 <- ggplot(data = df_all, aes(x = guess_num, y = prob_true, color = age)) +
     na.rm = TRUE,
     geom = "ribbon",
     aes(ymin = ..ymin.., ymax = ..ymax.., fill = age), 
-    color = NA, # No border
-    alpha = 0.0 # Transparency
+    color = NA, 
+    alpha = 0.0 
   ) +
   coord_cartesian(xlim = c(1, 13), ylim = c(-0.4, 1.3)) +
   #scale_color_manual(values = c("#329828",  "orchid", "dodgerblue", "blue")) +
@@ -619,8 +578,6 @@ add_png_to_facet(p.1, df_all, "func.type",1.35,.67,700/2,230/2, fname)
 print(knitr::include_graphics(fname))
 
 ```
-
-
 
 # P true by func.type, tpt
 ```{r, cache=T}
@@ -654,15 +611,7 @@ fname <-  '../../figs/p_true/p_true_curves_no_error.png'
 p.1 <- ggplot(data = df_all, aes(x = guess_num, y = prob_true, color = agent)) +
   stat_summary(fun = "mean", na.rm = TRUE, geom = "point", size = 1) +
   stat_summary(fun = "mean", na.rm = TRUE, geom = "line", alpha = 0.5) +
-  # stat_summary(
-  #   fun.data = "mean_sdl",
-  #   fun.args = list(mult = 1),
-  #   na.rm = TRUE,
-  #   geom = "ribbon",
-  #   aes(ymin = ..ymin.., ymax = ..ymax.., fill = agent), 
-  #   color = NA, # No border
-  #   alpha = 0.0 # Transparency
-  # ) +
+
   coord_cartesian(xlim = c(1, 13), ylim = c(-0.4, 1.3)) +
   scale_color_manual(values = c("#329828",  "orchid", "dodgerblue", "blue")) +
   #scale_fill_manual(values = c("#329828",  "orchid", "dodgerblue", "blue")) +
@@ -736,7 +685,7 @@ plot_scatter <- function(dfx, dfy, name_x, name_y) {
   plot_df2 <- dfx %>% select(prob_true, guess_num, func.type) %>% group_by(func.type) %>% summarize(mean_p_true_dfx = mean(prob_true, rm.na=T))
   plot_df <- merge(plot_df1, plot_df2, by="func.type")
   plot_df <- plot_df %>%
-              mutate(image_path = sprintf("/Users/traceymills/Dropbox (MIT)/cocosci_projects/dots/spatiotemporal_comparitive/analyses/figs/func_ims/%s.png", func.type))
+              mutate(image_path = sprintf("../../figs/func_ims/%s.png", func.type))
   ggplot(data=plot_df%>%arrange(mean_p_true_dfx), aes(x=mean_p_true_dfx, y=mean_p_true_dfy)) +
     geom_abline(slope = 1, intercept = 0, color = "gray", linetype = "dashed") +
     #stat_smooth(color="orange", method="lm",se=TRUE, linewidth=0.8, alpha=0.2) +
