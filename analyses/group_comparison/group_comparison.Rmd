@@ -1,0 +1,149 @@
+---
+title: "Group comparison"
+output: html_document
+---
+
+```{r, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.width=4, fig.height=3,fig.align = "center",cache=TRUE)
+library(ggplot2)
+library(reshape)
+library(grid)
+library(dplyr)
+library(gridExtra)
+library(lme4)
+library(reghelper)
+library(RColorBrewer)
+library(robustbase)
+library(tidylog)
+library(tidyr)
+library(hash)
+library(rstan)
+library(png)
+library(gtable)
+library(ggimage)
+library(hash)
+library(purrr)
+library(stringr)
+library(ggforce)
+
+paper_theme <- theme_light() + theme( axis.title.x = element_text(size=22),
+                                      axis.text.x=element_text(
+                                        size = 18), 
+                                      axis.title.y = element_text(size = 22, vjust = 1),
+                                      axis.text.y  = element_text(size = 18),
+                             strip.text=element_text(size=16),
+                                      axis.line.x = element_line(colour = "black"), 
+                                      axis.line.y = element_line(colour = "black"),
+                                      legend.title=element_text(size=20),
+                                      legend.text=element_text(size=16),
+                                      panel.grid.major=element_blank(),
+                                      panel.grid.minor=element_blank())  
+
+
+```
+
+```{r}
+# sanity check preprocessing
+
+kid <- read.csv('scaled_kid.csv')
+adult <- read.csv('scaled_adult.csv')
+monkey <- read.csv('scaled_monkey.csv')
+
+ggplot(data=kid, aes(x=prev_x, y=prev_y)) +
+  geom_point() +
+  geom_point(data=adult, aes(x=pred_x, y=pred_y), color="red", shape="*") +
+  #geom_point(data=monkey, aes(x=pred_x, y=pred_y), color="red", shape="*") +
+  #geom_point(data=kid, aes(x=pred_x, y=pred_y), color="red", shape="*") +
+  geom_point(data=monkey, color="green", size=0.5) +
+  facet_wrap(~func.name)
+
+```
+
+# Load data
+```{r, message=F}
+p_adult_df <- read.csv("p_adult.csv") 
+
+p_monkey_df <- read.csv("p_monkey.csv") 
+              
+
+```
+
+# Check fit params
+```{r}
+param_df <- p_monkey_df %>%
+            group_by(subj_id) %>%
+            summarize(p_lapse=mean(p_lapse),
+                      sd_motor=mean(sd_motor),
+                      sd_prev=mean(sd_prev),
+                      p_prev=mean(p_prev))
+  
+ggplot(data=param_df) +
+  geom_histogram(aes(x=sd_prev))
+```
+
+# Merge dfs
+```{r}
+
+df <- p_adult_df %>%
+      rename("log_lik_adults"="LL") %>%
+      merge(by=c("func.name", "tpt", "subj_id"),
+            (p_monkey_df %>%
+               select(c("func.name", "tpt", "subj_id", "LL")) %>%
+               rename("log_lik_monkeys"="LL"))) %>%
+      pivot_longer(cols=c(log_lik_adults, log_lik_monkeys), names_to="comparison_group", values_to="log_lik")
+
+summ_df <- df %>%
+           group_by(func.name, subj_id, comparison_group) %>%
+           summarize(log_lik = sum(log_lik), age=mean(age), .groups="drop") %>% # sum across tpts within funcs
+           group_by(subj_id, comparison_group) %>%
+           summarize(log_lik = mean(log_lik), age=mean(age), .groups="drop") # mean across funcs
+  
+```
+
+# Histograms by age/group
+```{r}
+ggplot(data=df) +
+  geom_histogram(aes(x=log_lik, group=comparison_group, fill=comparison_group)) +
+  facet_wrap(~comparison_group+age, nrow=2) +
+  ylab("N. predictions") +
+  xlab("LL of prediction")
+
+# sum LL
+ggplot(data=summ_df) +
+  geom_histogram(aes(x=log_lik, group=comparison_group, fill=comparison_group)) +
+  facet_wrap(~comparison_group+age, nrow=2) +
+  ylab("N. subjects") +
+  xlab("Subject's mean function LL")
+```
+
+
+
+
+# By individual subj
+```{r, fig.width=8, fig.height=3}
+comp_df <- p_adult_df %>%
+           rename("log_lik_adults"="LL", "p_lapse_adults"="p_lapse", "sd_motor_adults"="sd_motor") %>%
+           merge(by=c("func.name", "tpt", "subj_id"),
+           (p_monkey_df %>%
+           select(c("func.name", "tpt", "subj_id", "LL", "p_lapse", "sd_motor")) %>%
+           rename("log_lik_monkeys"="LL", "p_lapse_monkeys"="p_lapse", "sd_motor_monkeys"="sd_motor"))) %>%
+           group_by(func.name, subj_id) %>%
+           summarize(log_lik_adults = sum(log_lik_adults), log_lik_monkeys = sum(log_lik_monkeys),
+                     age=mean(age), p_lapse_adults=mean(p_lapse_adults), p_lapse_monkeys=mean(p_lapse_monkeys),
+                     sd_motor_monkeys=mean(sd_motor_monkeys), sd_motor_adults=mean(sd_motor_adults), .groups="drop") %>%
+           group_by(subj_id) %>%
+           summarize(log_lik_adults = mean(log_lik_adults), log_lik_monkeys = mean(log_lik_monkeys),
+                     age=mean(age),  p_lapse_adults=mean(p_lapse_adults), p_lapse_monkeys=mean(p_lapse_monkeys),
+                     sd_motor_monkeys=mean(sd_motor_monkeys), sd_motor_adults=mean(sd_motor_adults), .groups="drop") %>%
+           mutate(log_lik_diff = log_lik_adults-log_lik_monkeys)
+  
+
+ggplot(data=comp_df) +
+  geom_histogram(aes(x=log_lik_adults-log_lik_monkeys, fill=as.factor(age))) +
+  geom_vline(aes(xintercept=0), linetype="dashed") +
+  facet_wrap(~age, nrow=1) 
+```
+
+
+
+

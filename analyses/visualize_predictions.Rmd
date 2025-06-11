@@ -25,13 +25,6 @@ preprocess_df_model <- function(df) {
     max_x <- max(x)
     max_x + log(sum(exp(x - max_x)))
   }
-  if ("sample" %in% colnames(df)) {
-    df <- df %>% filter(sample%%100000==0) %>%
-          mutate(particle_sample = paste(particle, sample, sep = "_")) %>%
-          mutate(particle_sample_id = as.integer(factor(particle_sample))) %>%
-          rename(og_particle=particle) %>%
-          rename(particle=particle_sample_id)
-  }
   df<-df[order(df$tpt),]
   df <- df %>%
       group_by(tpt, seq_id) %>%
@@ -47,9 +40,6 @@ preprocess_df_model <- function(df) {
       mutate(err_y=pred_y-true_y) %>%
       mutate(abs_err = ((err_x**2)+(err_y)**2) **0.5) %>%  
       mutate(abs_rel_err = abs_err/(true_dist)) %>%
-      #group_by(seq_id, tpt) %>%
-      #mutate(norm_abs_rel_err = sum(abs_rel_err * posterior, na.rm=T)) %>%
-      #ungroup() %>%
       rename(x_curr = prev_x, y_curr = prev_y, x_next = true_x, y_next = true_y, x_pred = pred_x, y_pred = pred_y, func.type = seq_id)
   return(df)
 }
@@ -310,8 +300,6 @@ tmp <- df_ss %>% group_by(func.type, tpt) %>% mutate(norm_p = p_periodic * poste
 ggplot(data=tmp) +
   geom_line(aes(x=tpt, y=norm_p)) +
   facet_wrap(~func.type)
-
-# should we compute LL based on all predictions?
 
 ```
 

@@ -24,7 +24,6 @@ library(ggimage)
 library(hash)
 library(purrr)
 library(stringr)
-#library(rjson)
 library(ggforce)
 
 paper_theme <- theme_light() + theme( axis.title.x = element_text(size=22),

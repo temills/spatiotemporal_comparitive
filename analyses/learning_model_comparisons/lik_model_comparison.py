@@ -3,45 +3,48 @@ import numpy as np
 from scipy.stats import norm, uniform
 from scipy.optimize import minimize
 
-def compute_ll(df_participant_model, out_path, fit_rand=False, fit_lin=False):
-    sm = 1e-10 
 
-    def compute_p_data(df):
-        def group_apply(group):
-            group['p_data_x'] = norm.pdf(group['pred_x'], loc=group['model_pred_x'], 
-                                         scale=np.sqrt(group['model_std_x']**2 + group['sd_motor']**2))
-            group['p_data_x'] = sm + (1 - sm) * np.sum(group['model_posterior'] * group['p_data_x'])
-            
-            group['p_data_y'] = norm.pdf(group['pred_y'], loc=group['model_pred_y'], 
-                                         scale=np.sqrt(group['model_std_y']**2 + group['sd_motor']**2))
-            group['p_data_y'] = sm + (1 - sm) * np.sum(group['model_posterior'] * group['p_data_y'])
-            
-            group = group.nlargest(1, 'model_particle')
-            group['p_data_x'] = ((1 - group['p_lapse']) * group['p_data_x'] +
-                                 group['p_prev'] * norm.pdf(group['pred_x'], 
-                                                            loc=group['prev_x'], 
-                                                            scale=group['sd_prev']) +
-                                group['p_lin'] * norm.pdf(group['pred_x'], 
-                                                            loc=group['pred_x_lin'], 
-                                                            scale=group['sd_lin']) +
-                                 group['p_rand'] * uniform.pdf(group['pred_x'], 
-                                                               loc=group['min_x'], 
-                                                               scale=group['max_x'] - group['min_x']))
-            
-            group['p_data_y'] = ((1 - group['p_lapse']) * group['p_data_y'] +
-                                 group['p_prev'] * norm.pdf(group['pred_y'], 
-                                                            loc=group['prev_y'], 
-                                                            scale=group['sd_prev']) +
-                                 group['p_lin'] * norm.pdf(group['pred_y'], 
-                                                            loc=group['pred_y_lin'], 
-                                                            scale=group['sd_lin']) +
-                                 group['p_rand'] * uniform.pdf(group['pred_y'], 
-                                                               loc=group['min_y'], 
-                                                               scale=group['max_y'] - group['min_y']))
-            return group
+sm = 1e-10 
+
+def compute_p_data(df): 
+    def group_apply(group):
+        group['p_data_x'] = norm.pdf(group['pred_x'], loc=group['model_pred_x'], 
+                                        scale=np.sqrt(group['model_std_x']**2 + group['sd_motor']**2))
+        group['p_data_x'] = sm + (1 - sm) * np.sum(group['model_posterior'] * group['p_data_x'])
         
-        return df.groupby(['subj_id', 'func.name', 'n', 'r_id']).apply(group_apply)
+        group['p_data_y'] = norm.pdf(group['pred_y'], loc=group['model_pred_y'], 
+                                        scale=np.sqrt(group['model_std_y']**2 + group['sd_motor']**2))
+        group['p_data_y'] = sm + (1 - sm) * np.sum(group['model_posterior'] * group['p_data_y'])
+        
+        group = group.nlargest(1, 'model_particle')
+        group['p_data_x'] = ((1 - group['p_lapse']) * group['p_data_x'] +
+                                group['p_prev'] * norm.pdf(group['pred_x'], 
+                                                        loc=group['prev_x'], 
+                                                        scale=group['sd_prev']) +
+                            group['p_lin'] * norm.pdf(group['pred_x'], 
+                                                        loc=group['pred_x_lin'], 
+                                                        scale=group['sd_lin']) +
+                                group['p_rand'] * uniform.pdf(group['pred_x'], 
+                                                            loc=group['min_x'], 
+                                                            scale=group['max_x'] - group['min_x']))
+        
+        group['p_data_y'] = ((1 - group['p_lapse']) * group['p_data_y'] +
+                                group['p_prev'] * norm.pdf(group['pred_y'], 
+                                                        loc=group['prev_y'], 
+                                                        scale=group['sd_prev']) +
+                                group['p_lin'] * norm.pdf(group['pred_y'], 
+                                                        loc=group['pred_y_lin'], 
+                                                        scale=group['sd_lin']) +
+                                group['p_rand'] * uniform.pdf(group['pred_y'], 
+                                                            loc=group['min_y'], 
+                                                            scale=group['max_y'] - group['min_y']))
+        return group
+    
+    return df.groupby(['subj_id', 'func.name', 'n', 'r_id']).apply(group_apply)
 
+
+def compute_ll(df_participant_model, out_path, fit_rand=False, fit_lin=False):
+    # Function to minimize
     def fn(pars):
         if not fit_rand:
             pars = np.append(pars, 0)
@@ -58,7 +61,6 @@ def compute_ll(df_participant_model, out_path, fit_rand=False, fit_lin=False):
         df_result = df_result[df_result['n'] > 2]
         df_result = compute_p_data(df_result)
         
-        
         if np.any(df_result['p_data_x'] <= 0) or np.any(df_result['p_data_y'] <= 0):
             print("Warning: Zero or negative values in p_data_x or p_data_y!")
             print(df_result[df_result['p_data_x'] <= 0])
@@ -67,6 +69,8 @@ def compute_ll(df_participant_model, out_path, fit_rand=False, fit_lin=False):
         df_result['LL'] = np.log(df_result['p_data_x']) + np.log(df_result['p_data_y'])
         return -np.nansum(df_result['LL'])
 
+
+    # Iterate thru subjects, minimize fn
     subj_param_dict = {}
     for subj in df_participant_model['subj_id'].unique():
         init_pars = [0.2, 0.08, 0.08]
@@ -99,6 +103,7 @@ def compute_ll(df_participant_model, out_path, fit_rand=False, fit_lin=False):
              
         subj_param_dict[subj] = pars
 
+    # Store results
     def apply_params(row):
         pars = subj_param_dict[row['subj_id']]
         return pd.Series({'p_lapse': pars[0], 'sd_motor': pars[1], 'sd_prev': pars[2], 'p_rand0': pars[3], 'p_lin0': pars[4], 'sd_lin': pars[5]})
@@ -116,12 +121,22 @@ def compute_ll(df_participant_model, out_path, fit_rand=False, fit_lin=False):
     df_result.to_csv(out_path, index=False)
 
 
-for model_name in ["ridge", "lin", "lot_no_recursion"]:#["ss", "lot", "gpnc", "gpsl", "ridge", "lin", "lot_no_recursion"]:
-    print(model_name)
-    for participant_name in ["kid_chs"]: #,"monkey", "kid", "adult"]:
-        print(participant_name)
-        df_participant_model = pd.read_csv("preprocessed_data/" + model_name + "_" + participant_name + ".csv")
-        out_path = "model_fits/LLs/" + model_name + "_" + participant_name + ".csv"
-        compute_ll(df_participant_model, out_path, True, False)
+def run_loo_crossval():
+    # for each subject, for each func, fit params for all models for train set. See which model maximizes likelihood
+    # then, using the same params, does that same model fit the test function the best?
+    
+
+
+
+if __name__=="__main__":
+    for model_name in ["ridge", "lin", "lot_no_recursion"]:#["ss", "lot", "gpnc", "gpsl", "ridge", "lin", "lot_no_recursion"]:
+        print(model_name)
+        for participant_name in ["kid_chs"]: #,"monkey", "kid", "adult"]:
+            print(participant_name)
+            df_participant_model = pd.read_csv("preprocessed_data/" + model_name + "_" + participant_name + ".csv")
+            out_path = "model_fits/LLs/" + model_name + "_" + participant_name + ".csv"
+            compute_ll(df_participant_model, out_path, True, False)
+
+
 
 
