@@ -26,19 +26,22 @@ library(purrr)
 library(stringr)
 library(ggforce)
 
-paper_theme <- theme_light() + theme( axis.title.x = element_text(size=22),
-                                      axis.text.x=element_text(
-                                        size = 18), 
-                                      axis.title.y = element_text(size = 22, vjust = 1),
-                                      axis.text.y  = element_text(size = 18),
-                             strip.text=element_text(size=16),
-                                      axis.line.x = element_line(colour = "black"), 
-                                      axis.line.y = element_line(colour = "black"),
-                                      legend.title=element_text(size=20),
-                                      legend.text=element_text(size=16),
-                                      panel.grid.major=element_blank(),
-                #   panel.background = element_rect(color = NA), 
-                                      panel.grid.minor=element_blank())  
+paper_theme <- theme_light() + theme(
+  axis.text.x=element_text(colour="#292929",
+                           size = 14), 
+axis.title.x = element_text(size=18, family="Georgia"),
+  axis.title.y = element_text(size = 18, vjust = 1,  family="Georgia"),
+  axis.text.y  = element_text(size = 14, colour="#292929", family="Georgia"),
+  strip.text=element_text(size=16,color="black", family="Georgia"),
+strip.background = element_rect(colour = "grey50", fill = "white"),
+panel.background = element_rect(fill = "white", colour = "grey50"),
+  axis.ticks.x=element_blank(),axis.ticks.y=element_blank(),
+  axis.line.x = element_line(colour = "black"), 
+  axis.line.y = element_line(colour = "black"),
+  legend.title=element_text(size=18, family="Georgia"),
+  legend.text=element_text(size=15, family="Georgia"),
+  panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
 
 
 get_ll <- function(df) {
@@ -160,13 +163,14 @@ add_new_columns_grouped <- function(df, df_model, func, group_cols, model_type, 
 
 ```{r}
 df_adult <- preprocess_df_human(read.csv("data/participants/adults.csv"))
-df_kid <- preprocess_df_human(read.csv("data/participants/kids.csv"))
+df_kid <- preprocess_df_human(read.csv("data/participants/kids_chs.csv"))
 df_monkey_1 <- preprocess_df_monkey(read.csv("data/participants/monkeys_1.csv"))
 df_monkey_2 <- preprocess_df_monkey(read.csv("data/participants/monkeys_2.csv"))
 df_monkey_all <- preprocess_df_monkey(read.csv("data/participants/monkeys_all.csv"))
 df_stimuli <- read.csv("data/stimuli.csv")
 
 ```
+
 ```{r}
 
 summary_adult <- df_adult %>%
@@ -192,34 +196,160 @@ summary_kid <- df_kid %>%
          true_y = ifelse(yrng > 0, (true_y - min(true_y))/yrng, 0.5)) 
 
 
-summary_merged <- inner_join(summary_adult, summary_kid, 
+summary_kid_by_age <- df_kid %>%
+  mutate(age_year = floor(age)) %>%
+  group_by(func.name, n, age_year) %>%
+  summarise(correct = mean(correct, na.rm=TRUE),
+            true_x = mean(true_x), 
+            true_y = mean(true_y),
+            se_correct = sd(correct) / sqrt(n())) %>%
+  mutate(
+    xrng = max(true_x) - min(true_x),
+    yrng = max(true_y) - min(true_y)
+  ) %>%
+  mutate(
+    true_x = ifelse(xrng > 0, (true_x - min(true_x))/xrng, 0.5),
+    true_y = ifelse(yrng > 0, (true_y - min(true_y))/yrng, 0.5)
+  ) %>%
+  group_by(func.name, age_year) %>%
+  mutate(mean_correct_by_age = mean(correct, na.rm=TRUE)) %>%
+  ungroup()
+
+summary_monkey <- df_monkey_all %>%
+  group_by(func.name, n) %>%
+  summarise(correct_monkey = mean(correct), 
+            true_x=mean(true_x), true_y=mean(true_y),
+            se_correct = sd(correct) / sqrt(n()))  %>%
+  mutate(
+          xrng = max(true_x) - min(true_x),
+         yrng = max(true_y) - min(true_y)) %>%
+  mutate(true_x = ifelse(xrng > 0, (true_x - min(true_x))/xrng, 0.5),
+         true_y = ifelse(yrng > 0, (true_y - min(true_y))/yrng, 0.5)) 
+
+summary_merged <- left_join(summary_adult, summary_kid, 
                             by = c("func.name", "n", "true_x", "true_y"),
-                            suffix = c("_adult", "_kid"))
-
-summary_merged <- summary_merged %>%
-                    ungroup() %>%
-                    group_by(func.name) %>%
-
-                    mutate(mean_correct_adult = mean(correct_adult, na.rm=TRUE)) %>%
-                    mutate(mean_correct_kid = mean(correct_kid, na.rm=TRUE)) 
-
+                            suffix = c("_adult", "_kid")) %>%
+                 left_join(summary_monkey, 
+                            by = c("func.name", "n", "true_x", "true_y")) %>%
+                 left_join(summary_kid_by_age %>% 
+                            group_by(func.name, age_year) %>%
+                            summarise(mean_correct_by_age = mean(correct, na.rm=TRUE)) %>%
+                            pivot_wider(names_from = age_year,
+                                      values_from = mean_correct_by_age,
+                                      names_prefix = "mean_correct_") %>%
+                            ungroup(),
+                          by = "func.name") %>%
+                 ungroup() %>%
+                 group_by(func.name) %>%
+                 mutate(mean_correct_adult = mean(correct_adult, na.rm=TRUE),
+                       mean_correct_kid = mean(correct_kid, na.rm=TRUE),
+                       mean_correct_monkey = mean(correct_monkey, na.rm=TRUE))
 ```
 
-```{r, fig.width=6, fig.height=5}
+```{r, fig.width=5, fig.height=4}
 
 scale_fn <- 0.08
 aspect_ratio <- 5/4
 
+r_adult_kid <- cor(summary_merged$mean_correct_adult, summary_merged$mean_correct_kid, use="complete.obs")
+r_adult_monkey <- cor(summary_merged$mean_correct_adult, summary_merged$mean_correct_monkey, use="complete.obs")
+r_kid_monkey <- cor(summary_merged$mean_correct_kid, summary_merged$mean_correct_monkey, use="complete.obs")
+
 ggplot(data=summary_merged) + 
           geom_abline() +
-         # geom_point(aes(x=mean_correct_adult + 0.5*scale_fn, y=mean_correct_kid + 0.5*scale_fn *aspect_ratio, group=func.name), size=20, shape=1, alpha=0.01) +
-
-          geom_path(aes(x=mean_correct_adult + true_x*scale_fn, y=mean_correct_kid + true_y*scale_fn*aspect_ratio, group=func.name, color=func.name), alpha=0.5, size=1) +
+          geom_path(aes(x=mean_correct_adult + true_x*scale_fn, y=mean_correct_kid + true_y*scale_fn*aspect_ratio, group=func.name, color=func.name), alpha=0.9, size=0.5) +
           geom_point(aes(x=mean_correct_adult + true_x*scale_fn, y=mean_correct_kid + true_y*scale_fn*aspect_ratio, group=func.name), alpha=0.8, size=0.25) +
-
+          annotate("text", x=0.1, y=0.9, label=sprintf("R = %.2f", r_adult_kid), size=6, family="Georgia") +
           labs(x="Adult Accuracy", y="Children Accuracy") +
-          coord_cartesian(xlim=c(0,1), ylim=c(0,1)) +
+          coord_cartesian(xlim=c(-0.02, 1.02), ylim=c(-0.02, 1.02)) +
           guides(color="none") +
           paper_theme 
 
+
+
+ggplot(data=summary_merged) + 
+          geom_abline() +
+          geom_path(aes(x=mean_correct_adult + true_x*scale_fn, y=mean_correct_monkey + true_y*scale_fn*aspect_ratio, group=func.name, color=func.name), alpha=0.9, size=0.5) +
+          geom_point(aes(x=mean_correct_adult + true_x*scale_fn, y=mean_correct_monkey + true_y*scale_fn*aspect_ratio, group=func.name), alpha=0.8, size=0.25) +
+          annotate("text", x=0.1, y=0.9, label=sprintf("R = %.2f", r_adult_monkey), size=6, family="Georgia") +
+          labs(x="Adult Accuracy", y="Monkey Accuracy") +
+          coord_cartesian(xlim=c(-0.02, 1.02), ylim=c(-0.02, 1.02)) +
+          guides(color="none") +
+          paper_theme 
+
+
+
+ggplot(data=summary_merged) + 
+          geom_abline() +
+          geom_path(aes(x=mean_correct_kid + true_x*scale_fn, y=mean_correct_monkey + true_y*scale_fn*aspect_ratio, group=func.name, color=func.name), alpha=0.9, size=0.5) +
+          geom_point(aes(x=mean_correct_kid + true_x*scale_fn, y=mean_correct_monkey + true_y*scale_fn*aspect_ratio, group=func.name), alpha=0.8, size=0.25) +
+          annotate("text", x=0.1, y=0.9, label=sprintf("R = %.2f", r_kid_monkey), size=6, family="Georgia") +
+          labs(x="Children Accuracy", y="Monkey Accuracy") +
+          coord_cartesian(xlim=c(-0.02, 1.02), ylim=c(-0.02, 1.02)) +
+          guides(color="none") +
+          paper_theme 
+
+
+
+
+```
+
+```{r, fig.width=16, fig.height=3.5}
+# Reshape the data to long format for age-specific plotting
+age_comparison <- summary_merged %>%
+  select(func.name, true_x, true_y, mean_correct_monkey, mean_correct_adult, starts_with("mean_correct_")) %>%
+  pivot_longer(cols = starts_with("mean_correct_") & !matches("monkey|kid|adult"),
+               names_to = "age_year",
+               values_to = "age_accuracy",
+               names_prefix = "mean_correct_") %>%
+  filter(age_year %in% as.character(3:7))  
+
+age_correlations <- age_comparison %>%
+  group_by(age_year) %>%
+  summarise(r_monkey = cor(age_accuracy, mean_correct_monkey, use="complete.obs"))
+
+age_adult_correlations <- age_comparison %>%
+  group_by(age_year) %>%
+  summarise(r_adult = cor(age_accuracy, mean_correct_adult, use="complete.obs"))
+
+ggplot(data=age_comparison) + 
+  geom_abline() +
+  geom_path(aes(x=age_accuracy + true_x*scale_fn, 
+                y=mean_correct_monkey + true_y*scale_fn*aspect_ratio, 
+                group=func.name, color=func.name), 
+           alpha=0.9, size=0.5) +
+  geom_point(aes(x=age_accuracy + true_x*scale_fn, 
+                 y=mean_correct_monkey + true_y*scale_fn*aspect_ratio, 
+                 group=func.name), 
+             alpha=0.8, size=0.25) +
+  facet_wrap(~age_year, nrow=1, labeller = labeller(age_year = function(x) paste(x, "years old"))) +
+  geom_text(data=age_correlations, aes(x=0.1, y=0.9, label=sprintf("R = %.2f", r_monkey)), 
+            size=4, family="Georgia") +
+  labs(x="Children Accuracy", y="Monkey Accuracy") +
+  coord_cartesian(xlim=c(-0.02, 1.02), ylim=c(-0.02, 1.02)) +
+  scale_x_continuous(breaks=c(0,0.5,1)) +
+  scale_y_continuous(breaks=c(0,0.5,1)) +
+  guides(color="none") +
+  paper_theme 
+
+
+ggplot(data=age_comparison) + 
+  geom_abline() +
+  geom_path(aes(x=age_accuracy + true_x*scale_fn, 
+                y=mean_correct_adult + true_y*scale_fn*aspect_ratio, 
+                group=func.name, color=func.name), 
+           alpha=0.9, size=0.5) +
+  geom_point(aes(x=age_accuracy + true_x*scale_fn, 
+                 y=mean_correct_adult + true_y*scale_fn*aspect_ratio, 
+                 group=func.name), 
+             alpha=0.8, size=0.25) +
+  facet_wrap(~age_year, nrow=1, labeller = labeller(age_year = function(x) paste(x, "years old"))) +
+  geom_text(data=age_adult_correlations, aes(x=0.9, y=0.1, label=sprintf("R = %.2f", r_adult)), 
+            size=4, family="Georgia") +
+  labs(x="Children Accuracy", y="Adult Accuracy") +
+  coord_cartesian(xlim=c(-0.02, 1.02), ylim=c(-0.02, 1.02)) +
+  scale_x_continuous(breaks=c(0,0.5,1)) +
+  scale_y_continuous(breaks=c(0,0.5,1)) +
+  guides(color="none") +
+  paper_theme
 ```
