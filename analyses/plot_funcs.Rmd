@@ -161,13 +161,24 @@ add_new_columns_grouped <- function(df, df_model, func, group_cols, model_type, 
 
 ```{r}
 df_adult <- preprocess_df_human(read.csv("data/participants/adults.csv"))
-df_kid <- preprocess_df_human(read.csv("data/participants/kids.csv"))
+df_kid <- preprocess_df_human(read.csv("data/participants/kids_chs.csv"))
 df_monkey_1 <- preprocess_df_monkey(read.csv("data/participants/monkeys_1.csv"))
 df_monkey_2 <- preprocess_df_monkey(read.csv("data/participants/monkeys_2.csv"))
 df_monkey_all <- preprocess_df_monkey(read.csv("data/participants/monkeys_all.csv"))
 df_stimuli <- read.csv("data/stimuli.csv")
 
+df_kid <- df_kid %>%
+  mutate(age_group = case_when(
+    age < 4 ~ "3yo",
+    age < 5 ~ "4yo", 
+    age < 7 ~ "6yo",
+    age < 8 ~ "7yo",
+    TRUE ~ "other"
+  ))
+
 ```
+
+
 ```{r}
 
 summary_adult <- df_adult %>%
@@ -192,6 +203,67 @@ summary_kid <- df_kid %>%
   mutate(true_x = ifelse(xrng > 0, (true_x - min(true_x))/xrng, 0.5),
          true_y = ifelse(yrng > 0, (true_y - min(true_y))/yrng, 0.5)) 
 
+# Create age-specific kid summaries
+summary_3yo <- df_kid %>%
+  filter(age_group == "3yo") %>%
+  group_by(func.name, n) %>%
+  summarise(correct_3yo = mean(correct),
+            se_correct_3yo = sd(correct) / sqrt(n()))
+
+summary_4yo <- df_kid %>%
+  filter(age_group == "4yo") %>%
+  group_by(func.name, n) %>%
+  summarise(correct_4yo = mean(correct),
+            se_correct_4yo = sd(correct) / sqrt(n()))
+
+summary_6yo <- df_kid %>%
+  filter(age_group == "6yo") %>%
+  group_by(func.name, n) %>%
+  summarise(correct_6yo = mean(correct),
+            se_correct_6yo = sd(correct) / sqrt(n()))
+
+summary_7yo <- df_kid %>%
+  filter(age_group == "7yo") %>%
+  group_by(func.name, n) %>%
+  summarise(correct_7yo = mean(correct),
+            se_correct_7yo = sd(correct) / sqrt(n()))
+
+# Calculate mean accuracies by age group and function
+mean_3yo <- df_kid %>%
+  filter(age_group == "3yo") %>%
+  group_by(func.name) %>%
+  summarise(mean_correct_3yo = mean(correct, na.rm=TRUE))
+
+mean_4yo <- df_kid %>%
+  filter(age_group == "4yo") %>%
+  group_by(func.name) %>%
+  summarise(mean_correct_4yo = mean(correct, na.rm=TRUE))
+
+mean_6yo <- df_kid %>%
+  filter(age_group == "6yo") %>%
+  group_by(func.name) %>%
+  summarise(mean_correct_6yo = mean(correct, na.rm=TRUE))
+
+mean_7yo <- df_kid %>%
+  filter(age_group == "7yo") %>%
+  group_by(func.name) %>%
+  summarise(mean_correct_7yo = mean(correct, na.rm=TRUE))
+
+# Create summary for monkey data 
+summary_monkey <- df_monkey_all %>%
+  group_by(func.name, n) %>%
+  summarise(correct_monkey = mean(correct), 
+            se_correct_monkey = sd(correct) / sqrt(n()),
+            true_x=mean(true_x), true_y=mean(true_y))  %>%
+  mutate(
+          xrng = max(true_x) - min(true_x),
+         yrng = max(true_y) - min(true_y)) %>%
+  mutate(true_x = ifelse(xrng > 0, (true_x - min(true_x))/xrng, 0.5),
+         true_y = ifelse(yrng > 0, (true_y - min(true_y))/yrng, 0.5)) 
+
+monkey_means <- summary_monkey %>%
+  group_by(func.name) %>%
+  summarise(mean_correct_monkey = mean(correct_monkey, na.rm=TRUE))
 
 summary_merged <- inner_join(summary_adult, summary_kid, 
                             by = c("func.name", "n", "true_x", "true_y"),
@@ -200,27 +272,190 @@ summary_merged <- inner_join(summary_adult, summary_kid,
 summary_merged <- summary_merged %>%
                     ungroup() %>%
                     group_by(func.name) %>%
-
                     mutate(mean_correct_adult = mean(correct_adult, na.rm=TRUE)) %>%
-                    mutate(mean_correct_kid = mean(correct_kid, na.rm=TRUE)) 
+                    mutate(mean_correct_kid = mean(correct_kid, na.rm=TRUE))
+
+summary_merged <- summary_merged %>%
+  left_join(mean_3yo, by = "func.name") %>%
+  left_join(mean_4yo, by = "func.name") %>%
+  left_join(mean_6yo, by = "func.name") %>%
+  left_join(mean_7yo, by = "func.name") %>%
+  left_join(monkey_means, by = "func.name")
+
+summary_merged <- summary_merged %>%
+  left_join(summary_3yo, by = c("func.name", "n")) %>%
+  left_join(summary_4yo, by = c("func.name", "n")) %>%
+  left_join(summary_6yo, by = c("func.name", "n")) %>%
+  left_join(summary_7yo, by = c("func.name", "n"))
 
 ```
 
-```{r, fig.width=6, fig.height=5}
+```{r, fig.width=5, fig.height=4}
 
 scale_fn <- 0.08
 aspect_ratio <- 5/4
 
+
+
+# Adult vs Kids 
 ggplot(data=summary_merged) + 
           geom_abline() +
-         # geom_point(aes(x=mean_correct_adult + 0.5*scale_fn, y=mean_correct_kid + 0.5*scale_fn *aspect_ratio, group=func.name), size=20, shape=1, alpha=0.01) +
-
           geom_path(aes(x=mean_correct_adult + true_x*scale_fn, y=mean_correct_kid + true_y*scale_fn*aspect_ratio, group=func.name, color=func.name), alpha=0.5, size=1) +
           geom_point(aes(x=mean_correct_adult + true_x*scale_fn, y=mean_correct_kid + true_y*scale_fn*aspect_ratio, group=func.name), alpha=0.8, size=0.25) +
-
           labs(x="Adult Accuracy", y="Children Accuracy") +
           coord_cartesian(xlim=c(0,1), ylim=c(0,1)) +
           guides(color="none") +
-          paper_theme 
+          paper_theme
+
+# Adult vs Monkey
+ggplot(data=summary_merged) + 
+          geom_abline() +
+          geom_path(aes(x=mean_correct_adult + true_x*scale_fn, y=mean_correct_monkey + true_y*scale_fn*aspect_ratio, group=func.name, color=func.name), alpha=0.5, size=1) +
+          geom_point(aes(x=mean_correct_adult + true_x*scale_fn, y=mean_correct_monkey + true_y*scale_fn*aspect_ratio, group=func.name), alpha=0.8, size=0.25) +
+          labs(x="Adult Accuracy", y="Monkey Accuracy") +
+          coord_cartesian(xlim=c(0,1), ylim=c(0,1)) +
+          guides(color="none") +
+          paper_theme
+
+# Kids vs Monkey
+ggplot(data=summary_merged) + 
+          geom_abline() +
+          geom_path(aes(x=mean_correct_kid + true_x*scale_fn, y=mean_correct_monkey + true_y*scale_fn*aspect_ratio, group=func.name, color=func.name), alpha=0.5, size=1) +
+          geom_point(aes(x=mean_correct_kid + true_x*scale_fn, y=mean_correct_monkey + true_y*scale_fn*aspect_ratio, group=func.name), alpha=0.8, size=0.25) +
+          labs(x="Children Accuracy", y="Monkey Accuracy") +
+          coord_cartesian(xlim=c(0,1), ylim=c(0,1)) +
+          guides(color="none") +
+          paper_theme
+
 
 ```
+
+
+```{r, fig.width=20, fig.height=4}
+
+
+# 3yo vs Monkey
+p1 <- ggplot(data=summary_merged) + 
+      geom_abline() +
+      geom_path(aes(x=mean_correct_3yo + true_x*scale_fn, 
+                   y=mean_correct_monkey + true_y*scale_fn*aspect_ratio, 
+                   group=func.name, color=func.name), alpha=0.5, size=1) +
+      geom_point(aes(x=mean_correct_3yo + true_x*scale_fn, 
+                    y=mean_correct_monkey + true_y*scale_fn*aspect_ratio, 
+                    group=func.name), alpha=0.8, size=0.25) +
+      labs(x="3-year-olds", y="Monkeys") +
+      coord_cartesian(xlim=c(0,1), ylim=c(0,1)) +
+      guides(color="none") +
+      paper_theme
+
+# 4yo vs Monkey
+p2 <- ggplot(data=summary_merged) + 
+      geom_abline() +
+      geom_path(aes(x=mean_correct_4yo + true_x*scale_fn, 
+                   y=mean_correct_monkey + true_y*scale_fn*aspect_ratio, 
+                   group=func.name, color=func.name), alpha=0.5, size=1) +
+      geom_point(aes(x=mean_correct_4yo + true_x*scale_fn, 
+                    y=mean_correct_monkey + true_y*scale_fn*aspect_ratio, 
+                    group=func.name), alpha=0.8, size=0.25) +
+      labs(x="4-year-olds", y="Monkeys") +
+      coord_cartesian(xlim=c(0,1), ylim=c(0,1)) +
+      guides(color="none") +
+      paper_theme
+
+# 6yo vs Monkey
+p3 <- ggplot(data=summary_merged) + 
+      geom_abline() +
+      geom_path(aes(x=mean_correct_6yo + true_x*scale_fn, 
+                   y=mean_correct_monkey + true_y*scale_fn*aspect_ratio, 
+                   group=func.name, color=func.name), alpha=0.5, size=1) +
+      geom_point(aes(x=mean_correct_6yo + true_x*scale_fn, 
+                    y=mean_correct_monkey + true_y*scale_fn*aspect_ratio, 
+                    group=func.name), alpha=0.8, size=0.25) +
+      labs(x="6-year-olds", y="Monkeys") +
+      coord_cartesian(xlim=c(0,1), ylim=c(0,1)) +
+      guides(color="none") +
+      paper_theme
+
+# 7yo vs Monkey
+p4 <- ggplot(data=summary_merged) + 
+      geom_abline() +
+      geom_path(aes(x=mean_correct_7yo + true_x*scale_fn, 
+                   y=mean_correct_monkey + true_y*scale_fn*aspect_ratio, 
+                   group=func.name, color=func.name), alpha=0.5, size=1) +
+      geom_point(aes(x=mean_correct_7yo + true_x*scale_fn, 
+                    y=mean_correct_monkey + true_y*scale_fn*aspect_ratio, 
+                    group=func.name), alpha=0.8, size=0.25) +
+      labs(x="7-year-olds", y="Monkeys") +
+      coord_cartesian(xlim=c(0,1), ylim=c(0,1)) +
+      guides(color="none") +
+      paper_theme
+
+grid.arrange(p1, p2,p3,p4, nrow=1 )
+ggsave("kids_vs_monkeys.png", width=20, height=4, dpi=400)
+```
+
+```{r, fig.width=20, fig.height=4}
+# Create plots comparing kids by age vs adults
+
+# 3yo vs Adults
+p1_adult <- ggplot(data=summary_merged) + 
+      geom_abline() +
+      geom_path(aes(x=mean_correct_3yo + true_x*scale_fn, 
+                   y=mean_correct_adult + true_y*scale_fn*aspect_ratio, 
+                   group=func.name, color=func.name), alpha=0.5, size=1) +
+      geom_point(aes(x=mean_correct_3yo + true_x*scale_fn, 
+                    y=mean_correct_adult + true_y*scale_fn*aspect_ratio, 
+                    group=func.name), alpha=0.8, size=0.25) +
+      labs(x="3-year-olds", y="Adults") +
+      coord_cartesian(xlim=c(0,1), ylim=c(0,1)) +
+      guides(color="none") +
+      paper_theme
+
+# 4yo vs Adults
+p2_adult <- ggplot(data=summary_merged) + 
+      geom_abline() +
+      geom_path(aes(x=mean_correct_4yo + true_x*scale_fn, 
+                   y=mean_correct_adult + true_y*scale_fn*aspect_ratio, 
+                   group=func.name, color=func.name), alpha=0.5, size=1) +
+      geom_point(aes(x=mean_correct_4yo + true_x*scale_fn, 
+                    y=mean_correct_adult + true_y*scale_fn*aspect_ratio, 
+                    group=func.name), alpha=0.8, size=0.25) +
+      labs(x="4-year-olds", y="Adults") +
+      coord_cartesian(xlim=c(0,1), ylim=c(0,1)) +
+      guides(color="none") +
+      paper_theme
+
+# 6yo vs Adults
+p3_adult <- ggplot(data=summary_merged) + 
+      geom_abline() +
+      geom_path(aes(x=mean_correct_6yo + true_x*scale_fn, 
+                   y=mean_correct_adult + true_y*scale_fn*aspect_ratio, 
+                   group=func.name, color=func.name), alpha=0.5, size=1) +
+      geom_point(aes(x=mean_correct_6yo + true_x*scale_fn, 
+                    y=mean_correct_adult + true_y*scale_fn*aspect_ratio, 
+                    group=func.name), alpha=0.8, size=0.25) +
+      labs(x="6-year-olds", y="Adults") +
+      coord_cartesian(xlim=c(0,1), ylim=c(0,1)) +
+      guides(color="none") +
+      paper_theme
+
+# 7yo vs Adults
+p4_adult <- ggplot(data=summary_merged) + 
+      geom_abline() +
+      geom_path(aes(x=mean_correct_7yo + true_x*scale_fn, 
+                   y=mean_correct_adult + true_y*scale_fn*aspect_ratio, 
+                   group=func.name, color=func.name), alpha=0.5, size=1) +
+      geom_point(aes(x=mean_correct_7yo + true_x*scale_fn, 
+                    y=mean_correct_adult + true_y*scale_fn*aspect_ratio, 
+                    group=func.name), alpha=0.8, size=0.25) +
+      labs(x="7-year-olds", y="Adults") +
+      coord_cartesian(xlim=c(0,1), ylim=c(0,1)) +
+      guides(color="none") +
+      paper_theme
+
+grid.arrange(p1_adult, p2_adult, p3_adult, p4_adult, nrow=1)
+
+grid.arrange(p1, p2,p3,p4, nrow=1 )
+ggsave("kids_vs_adults.png", width=20, height=4, dpi=400)
+```
+

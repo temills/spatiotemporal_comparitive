@@ -122,7 +122,7 @@ preprocess_model <- function(df_model) {
         mutate(abs_err = ((err_x**2)+(err_y)**2) **0.5) %>%  
         mutate(abs_rel_err = abs_err/(true_dist)) %>%
         group_by(func.name, n) %>%
-        mutate(norm_abs_rel_err = sum(abs_rel_err * posterior, na.rm=T)) %>%
+        mutate(norm_abs_rel_err = sum(abs_rel_err * posterior, na.rm=T))
   
   
   return(df_model)
@@ -216,7 +216,7 @@ add_png_to_facet <- function(ggplot_object, data, facet_var, x_loc,y_loc, width,
     panel_index <- ordered_panel_positions[i]
     facet_label <- facet_labels[i]
     if (!is.na(facet_label)) {
-      img <- readPNG(paste0("../../figs/func_ims/", facet_label, ".png"))
+      img <- readPNG(paste0("../figs/func_ims/", facet_label, ".png"))
       # Convert to raster and add it to the gtable
       g <- rasterGrob(img, interpolate = TRUE, width = unit(0.28, "npc"), height = unit(0.3, "npc"))
       g <- editGrob(g, vp = viewport(x = x_loc, y = y_loc, just = c("right", "top")))
@@ -280,7 +280,12 @@ p <- ggplot() +
     theme(legend.title=element_blank(), legend.position="top", plot.margin = unit(c(0, 0, 15, 0), "mm"),
           axis.text.x = element_blank(), strip.background=element_rect(fill="white", color="white")) +
   facet_wrap(~func.name, ncol=7) + labs(y="Accuracy", x="Timepoint") + scale_x_continuous(breaks = c(4, 8, 12))
-fname <- "figs/accuracy/adult_lot_gpsl.png"
+
+
+fname <- "nada.png"
+
+
+
 
 add_png_to_facet(p, summary_adult, "func.name",  1.33,.67,700/2,300/2, fname)
 print(knitr::include_graphics(fname))
@@ -340,7 +345,7 @@ add_png_to_plot <- function(ggplot_object, data, y_loc, width, height, out_file)
   labels = ggplot_build(ggplot_object)$layout$panel_params[[1]]$x$get_labels()
   for (i in seq_along(labels)) {
     facet_label <- labels[i]
-    img <- readPNG(paste0("../../figs/func_ims/", facet_label, ".png"))
+    img <- readPNG(paste0("../figs/func_ims/", facet_label, ".png"))
     g <- rasterGrob(img, interpolate = TRUE, width = unit(0.5, "npc"), height = unit(0.8, "npc"))
     ggplot_object <- ggplot_object + annotation_custom(g, xmin = i-.85, xmax = i+.85, ymin = y_loc-0.28, ymax = y_loc)
   }
@@ -350,7 +355,7 @@ add_png_to_plot <- function(ggplot_object, data, y_loc, width, height, out_file)
 }
 
 
-plot_df <- bind_rows(plot_df_adult, plot_df_kid, plot_df_monkey) %>% mutate(image_path = sprintf("../../figs/func_ims/%s.png", func.name))
+plot_df <- bind_rows(plot_df_adult, plot_df_kid, plot_df_monkey) %>% mutate(image_path = sprintf("../figs/func_ims/%s.png", func.name))
 
 summary1 <- plot_df %>%
   group_by(func.name, subj_id, agent) %>%
@@ -400,7 +405,7 @@ plot_df_kid <- df_kid %>% mutate(agent="Children") %>% select(correct, tpt, subj
 ```
 # Monkeys vs adults
 ```{r}
-plot_df <- merge(plot_df_adult, plot_df_monkey, by="func.name") %>% mutate(image_path = sprintf("../../figs/func_ims/%s.png", func.name))
+plot_df <- merge(plot_df_adult, plot_df_monkey, by="func.name") %>% mutate(image_path = sprintf("../figs/func_ims/%s.png", func.name))
 ggplot(data=plot_df%>%arrange(mean_p_true_monkey), aes(x=mean_p_true_monkey, y=mean_p_true_adult)) +
   geom_abline(slope = 1, intercept = 0, color = "gray", linetype = "dashed") +
   #stat_smooth(data=plot_df, aes(x=mean_p_true_monkey, y=mean_p_true_adult),color="orange", method="lm",se=TRUE, linewidth=0.8, alpha=0.2) +
@@ -418,7 +423,7 @@ ggsave("../../figs/scatters/monkeys_vs_adults.png", plot = last_plot(), width = 
 ```
 # Kids vs adults
 ```{r}
-plot_df <- merge(plot_df_adult, plot_df_kid, by="func.name") %>% mutate(image_path = sprintf("../../figs/func_ims/%s.png", func.name))
+plot_df <- merge(plot_df_adult, plot_df_kid, by="func.name") %>% mutate(image_path = sprintf("../figs/func_ims/%s.png", func.name))
 ggplot(data=plot_df%>%arrange(mean_p_true_kid), aes(x=mean_p_true_kid, y=mean_p_true_adult)) +
   geom_abline(slope = 1, intercept = 0, color = "gray", linetype = "dashed") +
   geom_image(aes(x=mean_p_true_kid+.05, y=mean_p_true_adult+.05, image = image_path), size=0.09) +
@@ -435,7 +440,7 @@ ggsave("../../figs/scatters/kids_vs_adults.png", plot = last_plot(), width = 5, 
 
 #kids vs monkeys
 ```{r}
-plot_df <- merge(plot_df_monkey, plot_df_kid, by="func.name") %>% mutate(image_path = sprintf("../../figs/func_ims/%s.png", func.name))
+plot_df <- merge(plot_df_monkey, plot_df_kid, by="func.name") %>% mutate(image_path = sprintf("../figs/func_ims/%s.png", func.name))
 ggplot(data=plot_df%>%arrange(mean_p_true_kid), aes(x=mean_p_true_kid, y=mean_p_true_monkey)) +
   geom_abline(slope = 1, intercept = 0, color = "gray", linetype = "dashed") +
   geom_image(aes(x=mean_p_true_kid+.05, y=mean_p_true_monkey+.05, image = image_path), size=0.09) +
@@ -461,7 +466,7 @@ summ_df_bp22 <- bind_rows(summ_df_monkey_1, summ_df_monkey_2) %>% select(-c('BP2
 summ_df_bp24 <- bind_rows(summ_df_monkey_1, summ_df_monkey_2) %>% select(-c('BP22')) %>% pivot_wider(names_from=phase, values_from=BP24)%>% rename("phase_1"="1", "phase_2"="2")
 
 
-df <- summ_df_bp24 %>% mutate(image_path = sprintf("figs/func_ims/%s.png", func.name))
+df <- summ_df_bp24 %>% mutate(image_path = sprintf("../figs/func_ims/%s.png", func.name))
 
 ggplot(data=df%>%arrange(phase_1), aes(x=phase_1, y=phase_2)) +
   geom_abline(slope = 1, intercept = 0, color = "gray", linetype = "dashed") +
@@ -474,9 +479,8 @@ ggplot(data=df%>%arrange(phase_1), aes(x=phase_1, y=phase_2)) +
            label = paste("R² =", round(summary(lm(phase_1 ~ phase_2, data = df))$r.squared, 3)), hjust = 1, vjust = 0) +
   paper_theme +
   labs(x="Accuracy (Phase 1)", y="Accuracy (Phase 2)")
-ggsave("figs/scatters/Monkey2_phase1_vs_2.png", plot = last_plot(), width = 5, height = 4.4, units = "in", bg="white")
+ggsave("../figs/scatters/Monkey2_phase1_vs_2.png", plot = last_plot(), width = 5, height = 4.4, units = "in", bg="white")
 ```
-
 
 
 ```{r}
@@ -667,7 +671,7 @@ add_png_to_facet <- function(ggplot_object, data, facet_var, x_loc,y_loc, width,
     panel_index <- ordered_panel_positions[i]
     facet_label <- facet_labels[i]
     if (!is.na(facet_label)) {
-      img <- readPNG(paste0("figs/func_ims/", facet_label, ".png"))
+      img <- readPNG(paste0("../figs/func_ims/", facet_label, ".png"))
       # Convert to raster and add it to the gtable
       g <- rasterGrob(img, interpolate = TRUE, width = unit(0.34, "npc"), height = unit(0.34, "npc"))
       g <- editGrob(g, vp = viewport(x = x_loc, y = y_loc, just = c("right", "top")))
