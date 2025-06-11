@@ -169,6 +169,7 @@ df_monkey_2 <- preprocess_df_monkey(read.csv("data/participants/monkeys_2.csv"))
 df_monkey_all <- preprocess_df_monkey(read.csv("data/participants/monkeys_all.csv"))
 df_stimuli <- read.csv("data/stimuli.csv")
 
+df_stimuli <- df_stimuli %>% mutate(func.name = seq_id)
 ```
 
 ```{r}
@@ -227,10 +228,10 @@ summary_monkey <- df_monkey_all %>%
          true_y = ifelse(yrng > 0, (true_y - min(true_y))/yrng, 0.5)) 
 
 summary_merged <- left_join(summary_adult, summary_kid, 
-                            by = c("func.name", "n", "true_x", "true_y"),
+                            by = c("func.name", "n"),
                             suffix = c("_adult", "_kid")) %>%
                  left_join(summary_monkey, 
-                            by = c("func.name", "n", "true_x", "true_y")) %>%
+                            by = c("func.name", "n")) %>%
                  left_join(summary_kid_by_age %>% 
                             group_by(func.name, age_year) %>%
                             summarise(mean_correct_by_age = mean(correct, na.rm=TRUE)) %>%
@@ -239,6 +240,7 @@ summary_merged <- left_join(summary_adult, summary_kid,
                                       names_prefix = "mean_correct_") %>%
                             ungroup(),
                           by = "func.name") %>%
+                 mutate(true_x=true_x_adult, true_y=true_y_adult) %>%
                  ungroup() %>%
                  group_by(func.name) %>%
                  mutate(mean_correct_adult = mean(correct_adult, na.rm=TRUE),
@@ -251,9 +253,9 @@ summary_merged <- left_join(summary_adult, summary_kid,
 scale_fn <- 0.08
 aspect_ratio <- 5/4
 
-r_adult_kid <- cor(summary_merged$mean_correct_adult, summary_merged$mean_correct_kid, use="complete.obs")
-r_adult_monkey <- cor(summary_merged$mean_correct_adult, summary_merged$mean_correct_monkey, use="complete.obs")
-r_kid_monkey <- cor(summary_merged$mean_correct_kid, summary_merged$mean_correct_monkey, use="complete.obs")
+r_adult_kid <- cor(summary_merged$correct_adult, summary_merged$correct_kid, use="complete.obs")
+r_adult_monkey <- cor(summary_merged$correct_adult, summary_merged$correct_monkey, use="complete.obs")
+r_kid_monkey <- cor(summary_merged$correct_kid, summary_merged$correct_monkey, use="complete.obs")
 
 ggplot(data=summary_merged) + 
           geom_abline() +
@@ -295,7 +297,6 @@ ggplot(data=summary_merged) +
 ```
 
 ```{r, fig.width=16, fig.height=3.5}
-# Reshape the data to long format for age-specific plotting
 age_comparison <- summary_merged %>%
   select(func.name, true_x, true_y, mean_correct_monkey, mean_correct_adult, starts_with("mean_correct_")) %>%
   pivot_longer(cols = starts_with("mean_correct_") & !matches("monkey|kid|adult"),
