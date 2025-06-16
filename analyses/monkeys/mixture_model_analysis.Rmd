@@ -1,0 +1,825 @@
+---
+title: "mixture_model_analysis"
+author: "Sam"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.width=4, fig.height=3,fig.align = "center",cache=TRUE)
+```
+
+```{r, include=FALSE, echo=FALSE}
+
+library(ggplot2)
+library(reshape)
+library(grid)
+library(dplyr)
+library(gridExtra)
+library(lme4)
+library(reghelper)
+library(RColorBrewer)
+library(robustbase)
+library(tidylog)
+library(hash)
+library(rstan)
+library(png)
+library(gtable)
+library(latex2exp)
+library(purrr)
+library(stringr)
+paper_theme <- theme_light() + theme( axis.title.x = element_text(size=22),
+                                      axis.text.x=element_text(
+                                        size = 18), 
+                                      axis.title.y = element_text(size = 22, vjust = 1),
+                                      axis.text.y  = element_text(size = 18),
+                             strip.text=element_text(size=16),
+                                      axis.line.x = element_line(colour = "black"), 
+                                      axis.line.y = element_line(colour = "black"),
+                                      legend.title=element_text(size=20),
+                                      legend.text=element_text(size=16),
+                                      panel.grid.major=element_blank(),
+                #   panel.background = element_rect(color = NA), 
+                                      panel.grid.minor=element_blank())  
+out_folder <- "figs/"
+
+
+f_weighted_sd <- function(means, sds, weights)  {
+  var_wtd = sum(weights * sds**2) + sum(weights * means**2) - (sum(weights*means)**2)
+  return (var_wtd**0.5)
+  
+}
+
+inv_logit <- function(x) { exp(x)/(1+exp(x))}
+
+logit <- function(p) {log(p) - log(1-p)}
+
+
+add_rank_time_column <- function(dataframe) {
+  # Convert 'time' column to a date format, ignoring the clock time information
+  dataframe$date <- as.Date(dataframe$Current_time, format = "%a %b %d %H:%M:%S %Y")
+  
+  # Create a dataframe with unique dates and their corresponding rank order
+  unique_dates <- dataframe %>%
+    distinct(date) %>%
+    arrange(date) %>%
+    mutate(rank_time = row_number())
+  
+  h <- hash()
+  for (i in 1:nrow(unique_dates)) {
+    date <- unique_dates$date[i]
+    rank_time <- unique_dates$rank_time[i]
+    h[date] = rank_time
+  }
+
+  # Join the unique_dates dataframe with the original dataframe to add the 'rank_time' column
+ # dataframe <- left_join(dataframe, unique_dates, by = "date")
+  dataframe <- dataframe %>%
+                rowwise() %>%
+                mutate(ranked_day = h[[as.character(date)]])
+  
+  return(dataframe)
+}
+
+# Function to extract and add subject-level parameter means to df.blocked_10
+add_subject_level_params <- function(fit, df, posterior_samples_lst,
+                                     subject_id_var, param_prefix) {
+  # Extract posterior samples
+
+  # Get the list of parameter names that start with the specified prefix
+  param_names <- grep(paste0("^", param_prefix), names(posterior_samples_lst), value = TRUE)
+  
+  if (length(param_names) > 0) {
+    for (param_name in param_names) {
+      # Initialize a vector to store means
+      subject_means <- rep(NA, nrow(df))
+      
+      for (s in 1:df$NSUBJ) {
+        # Find the rows in df.blocked_10 that correspond to subject s
+        subject_rows <- df[[subject_id_var]] == s
+        
+        # Calculate the mean for this subject from posterior samples
+        subject_means[subject_rows] <- mean(posterior_samples_lst[[param_name]][, s])
+      }
+      
+      # Add means to df.blocked_10 as a new column
+      df[paste0("mean_", param_name)] <- subject_means
+    }
+  } else {
+    cat("No matching parameters found with prefix '", param_prefix, "'.\n")
+  }
+  
+  return(df)
+}
+
+
+
+capitalize_words <- function(s) {
+  words <- str_split(s, " ")[[1]]
+  words <- ifelse(words == "to", "to", str_to_title(words))
+  paste(words, collapse = " ")
+}
+
+
+
+
+
+```
+
+
+```{r}
+
+df_kid <- read.csv("human_data/kid_mean_accuracy.csv")
+df_kid$id <- seq.int(1,nrow(df_kid))
+
+df_kid <- df_kid %>%
+          mutate(func.name = func.type) %>%
+          rowwise() %>%
+
+          mutate(func.type = gsub("_\\d+$", "", func.type)) %>%
+          mutate(func.type = gsub("hexagon", "polygon", func.type)) %>%
+          mutate(func.type = gsub("3_pts", "repeat_line", func.type)) %>%
+          mutate(func.type = gsub("example_line", "line", func.type)) %>%
+          mutate(func.type = gsub("f_curly", "curly", func.type)) %>%
+          mutate(func.type = gsub("plus", "radial", func.type)) %>%
+          mutate(func.type = gsub("zigzag_widening", "zigzag_increasing", func.type)) %>%
+          mutate(func.type = gsub("increasing_lines", "zigzag_increasing", func.type)) %>%
+          mutate(func.type = gsub("square", "polygon", func.type)) %>%
+          mutate(func.type = gsub("triangle", "polygon", func.type)) %>%
+          mutate(func.type = gsub("alternating_diff", "alternating_diffs", func.type)) %>%
+          mutate(func.type = gsub("stairs", "alternating_diffs", func.type)) %>%
+
+          mutate(func.type = gsub("square_spiral", "polygon_spiral", func.type)) %>%
+
+          mutate(func.type = gsub("hourglass", "repeat_pts", func.type))  %>%
+          mutate(func.type = gsub("spiral_outward", "spiral_out", func.type)) %>%
+          mutate(func.type=factor(func.type))
+
+            
+
+
+```
+
+```{r}
+
+f_rename_funcs <- function(df) {
+     df %>%
+          mutate(func.type = gsub("_\\d+$", "", func.type)) %>%
+
+          mutate(func.type = gsub("hexagon", "polygon", func.type)) %>%
+          mutate(func.type = gsub("3_pts", "repeat_line", func.type)) %>%
+          mutate(func.type = gsub("example_line", "line", func.type)) %>%
+          mutate(func.type = gsub("f_curly", "curly", func.type)) %>%
+          mutate(func.type = gsub("plus", "radial", func.type)) %>%
+          mutate(func.type = gsub("zigzag_widening", "zigzag_increasing", func.type)) %>%
+          mutate(func.type = gsub("increasing_lines", "zigzag_increasing", func.type)) %>%
+          mutate(func.type = gsub("square", "polygon", func.type)) %>%
+          mutate(func.type = gsub("triangle", "polygon", func.type)) %>%
+          mutate(func.type = gsub("alternating_diff", "alternating_diffs", func.type)) %>%
+          mutate(func.type = gsub("stairs", "alternating_diffs", func.type)) %>%
+
+          mutate(func.type = gsub("square_spiral", "polygon_spiral", func.type)) %>%
+          mutate(func.type = gsub("hourglass", "repeat_pts", func.type))  %>%
+          mutate(func.type = gsub("spiral_outward", "spiral_out", func.type)) %>%
+            mutate(func.type = gsub("spiral_inward", "spiral_in", func.type)) %>%
+            mutate(func.type = gsub("increasing_sine", "changing_sine", func.type)) %>%
+            mutate(func.type = gsub("sine_line", "changing_sine", func.type)) %>%
+            mutate(func.type = gsub("quadratic", "polynomial", func.type)) %>%
+            mutate(func.type = gsub("cubic", "polynomial", func.type)) %>%
+            mutate(func.type = gsub("oval", "circle", func.type)) %>%
+            mutate(func.type = gsub("octagon", "polygon", func.type)) %>%
+            mutate(func.type = gsub("2_pts", "repeat_pts", func.type)) %>%
+            mutate(func.type = gsub("zigzag_increasing_widening", "zigzag_increasing", func.type)) %>%
+          mutate(func.type = gsub("triangle_spiral", "polygon_spiral", func.type)) %>%
+
+          mutate(func.type=factor(func.type))
+
+}
+
+
+df_adult <- read.csv("human_data/adult_data.csv")
+df_adult$id <- seq.int(1,nrow(df_adult))
+
+df_adult <- df_adult %>%
+            mutate(func.type = func) %>%
+            group_by(func.type) %>%
+            filter(tpt > 4) %>%
+            mutate(mean_accuracy = mean(1*(success=="True"))) %>%
+            top_n(n=1,wt=id)
+
+df_adult <- f_rename_funcs(df_adult)
+
+
+
+
+
+```
+
+
+
+
+```{r}
+f_get_func_effect <- function(pm, func_type_numeric, which_effect) {
+  if (which_effect == "icpt") {
+    return(pm[[paste0("beta_func_type.", func_type_numeric[1])]])
+  } else {
+    return(pm[[paste0("beta_func_type_seen.", func_type_numeric[1])]])
+    
+  }
+}
+
+
+df <- read.csv("train.csv")
+screen_w <- df$screen_w[1]
+screen_h <- df$screen_h[1]
+
+n_games <- max(df$game_n)
+
+df$id <- seq.int(1,nrow(df))
+df$func.name <- df$func_id
+df$attempt_number <- ifelse(is.na(df$attempt_number), 0, df$attempt_number)
+
+df <- add_rank_time_column(df)
+
+ranked_days <- df %>%
+  group_by(monkey_name) %>%
+  distinct(ranked_day) %>%
+  arrange(ranked_day) %>%
+  mutate(rank_day = row_number()) %>%
+  ungroup()
+
+
+unique_sequences_df <- df %>%
+  group_by(func.name, n) %>%
+  top_n(n = 1, wt = id) %>%
+  select(func.name, n, x_curr, y_curr) %>%
+  group_by(func.name) %>%
+  arrange(n) %>%
+  mutate(
+    # Calculate deltas for x
+    delta_x = x_curr - lag(x_curr),
+    delta_x_2 = lag(x_curr) - lag(x_curr, 2),
+
+    # Calculate deltas for y
+    delta_y = y_curr - lag(y_curr),
+    delta_y_2 = lag(y_curr) - lag(y_curr, 2),
+
+    # Handle NA values for deltas
+    delta_x = ifelse(is.na(delta_x), 0, delta_x),
+    delta_y = ifelse(is.na(delta_y), 0, delta_y),
+    delta_x_2 = ifelse(is.na(delta_x_2), delta_x, delta_x_2),
+    delta_y_2 = ifelse(is.na(delta_y_2), delta_y, delta_y_2),
+
+    # Calculate x_lin and y_lin
+    x_lin = x_curr + 0.5 * delta_x + 0.5 * delta_x_2,
+    y_lin = y_curr + 0.5 * delta_y + 0.5 * delta_y_2
+  ) %>%
+  select(func.name, n, x_lin, y_lin) %>%  # Only keep necessary columns
+  ungroup()
+# 
+# # Step 2: Merge x_lin and y_lin back into df
+df <- df %>%
+  left_join(unique_sequences_df, by = c("func.name", "n"))
+
+
+
+df <- df %>%
+        left_join(ranked_days, by = c("monkey_name", "ranked_day")) %>%
+        rowwise() %>%
+        mutate(func.type = gsub("\\.\\d+$", "", func.name)) %>%
+        #mutate(func.type = gsub("line2", "line", func.type)) %>%
+        mutate(t_id = paste(r_id, func.name, game_n)) %>%
+        group_by(monkey_name) %>%
+        mutate(rank_day = rank_day - min(rank_day)+1) %>%
+        mutate(game_n_total = game_n + (rank_day-1)*n_games) %>%
+        filter((guess_number <= 10) | is.na(guess_number)) %>%
+        group_by(func.type) %>%
+        mutate(min_rank_day = min(rank_day)) %>%
+        ungroup() %>%
+        arrange(min_rank_day) %>%
+        mutate(func.type = factor(func.type, levels = unique(func.type))) %>%
+        arrange(monkey_name, rank_day, game_n, n, attempt_number) %>%
+        group_by(monkey_name, r_id,  game_n, attempt_number) %>%
+        mutate(guess_dist_from_curr=((x_pred-x_curr)**2. + (y_pred-y_curr)**2.)**0.5) %>%
+        mutate(correct_80 = 1*(dist_from_true < 80)) %>%
+        mutate(ever_corr=max(correct)) %>%
+        mutate(ever_corr_80=max(correct_80)) %>%
+
+        group_by(monkey_name, func.name, r_id, game_n) %>%
+  
+        mutate(new_day=(game_n==0)*game_n_total) %>%
+        mutate(true_dist=((x_next-x_curr)**2. + (y_next-y_curr)**2.)**0.5) %>%
+        mutate(x_err=x_pred-x_next) %>%
+        mutate(y_err=y_pred-y_next) %>%
+        mutate(abs_err = ((x_err**2)+(y_err)*2.)**0.5) %>%  
+        mutate(abs_rel_err = abs_err/(true_dist+0.01)) %>%
+        
+        ungroup() %>%
+
+        arrange(rank_day, game_n, n) %>%
+        group_by(monkey_name, func.type) %>%
+        mutate(func_examples = cumsum(!duplicated(t_id))) %>%
+        ungroup() %>%
+       # mutate(func_examples_std = func_examples/max(func_examples))
+        mutate(func_examples_std = (func_examples - mean(func_examples))/sd(func_examples))
+
+      
+df$func_type_numeric <- as.numeric(as.factor(df$func.type))
+
+
+
+
+
+
+
+stan_df.22 <- df %>%
+           filter(!is.na(x_pred) & (!is.na(y_pred))) %>%
+           mutate(x_curr = x_curr/screen_w, x_pred = x_pred/screen_w, x_next = x_next/screen_w,
+                  y_curr = y_curr/screen_h, y_pred =y_pred/screen_h, y_next = y_next/screen_h,
+                  x_lin = x_lin/screen_w, y_lin = y_lin/screen_h) %>%
+  
+           mutate(x_lin = x_lin * (x_lin > 0) * (x_lin <= 1) + 1* (x_lin > 1)) %>%
+            mutate(y_lin = y_lin * (y_lin > 0) * (y_lin <= 1) + 1* (y_lin > 1)) %>%
+           filter(monkey_name == "BP22") 
+          # filter(rank_day < max(rank_day))
+
+#write.csv(stan_df.22, "monkeys.csv")
+
+
+
+stan_data.22 <- list(
+  N = length(stan_df.22$x_pred),
+  x_pred = stan_df.22$x_pred,
+  y_pred = stan_df.22$y_pred,
+  x_next = stan_df.22$x_next,
+  y_next = stan_df.22$y_next,
+  x_curr = stan_df.22$x_curr,
+  y_curr = stan_df.22$y_curr,
+  x_lin = stan_df.22$x_lin,
+  y_lin = stan_df.22$y_lin,
+  n_func_types = length(unique(stan_df.22$func.type)),
+  func_type = stan_df.22$func_type_numeric,
+  n_seen = stan_df.22$func_examples_std
+)
+
+#stan_df.22$func_type_numeric <- as.numeric(as.factor(stan_df.22$func.type))
+
+
+stan_df.24 <- df %>%
+           filter(!is.na(x_pred) & (!is.na(y_pred))) %>%
+           mutate(x_curr = x_curr/screen_w, x_pred = x_pred/screen_w, x_next = x_next/screen_w,
+                  y_curr = y_curr/screen_h, y_pred =y_pred/screen_h, y_next = y_next/screen_h,
+                  x_lin = x_lin/screen_w, y_lin = y_lin/screen_h) %>%
+  
+           mutate(x_lin = x_lin * (x_lin > 0) * (x_lin <= 1) + 1* (x_lin > 1)) %>%
+            mutate(y_lin = y_lin * (y_lin > 0) * (y_lin <= 1) + 1* (y_lin > 1)) %>%
+          # mutate(func_examples_std = (func_examples - mean(func_examples))/sd(func_examples)) %>%
+           filter(monkey_name == "BP24") 
+            #filter(rank_day < max(rank_day))
+
+stan_data.24 <- list(
+  N = length(stan_df.24$x_pred),
+  x_pred = stan_df.24$x_pred,
+  y_pred = stan_df.24$y_pred,
+  x_next = stan_df.24$x_next,
+  y_next = stan_df.24$y_next,
+  x_curr = stan_df.24$x_curr,
+  y_curr = stan_df.24$y_curr,
+  x_lin = stan_df.24$x_lin,
+  y_lin = stan_df.24$y_lin,
+  n_func_types = length(unique(stan_df.24$func.type)),
+  func_type = stan_df.24$func_type_numeric,
+  n_seen = stan_df.24$func_examples_std
+)
+
+
+fit.22 <- readRDS("model_fits/bp22_lin.rds")
+
+posterior_samples_lst.22 <- rstan::extract(fit.22)
+posterior_samples.22 <- as.data.frame(posterior_samples_lst.22)
+
+posterior_sample_means.22 <- summarize(posterior_samples.22)
+posterior_means.22 <- posterior_samples.22 %>%
+    summarize(across(everything(), mean))
+
+
+stan_df.22$use_true_icpt <- posterior_means.22$use_true_icpt
+stan_df.22$beta_seen <- posterior_means.22$beta_seen
+stan_df.22$max_p <- posterior_means.22$max_p
+
+stan_df.22 <- stan_df.22 %>%
+            group_by(func.type) %>%
+            mutate(beta_func_type = f_get_func_effect(posterior_means.22, func_type_numeric, "icpt")) %>%
+            mutate(beta_func_type_seen = f_get_func_effect(posterior_means.22,func_type_numeric,"slope")) %>%
+            #mutate(p_true = max_p*inv_logit(use_true_icpt + (beta_seen + beta_func_type_seen) * func_examples_std + beta_func_type))
+            mutate(p_true = max_p*inv_logit(beta_func_type_seen * func_examples_std + beta_func_type))
+
+
+
+fit.24 <- readRDS("model_fits/bp24_lin.rds")
+
+posterior_samples_lst.24 <- rstan::extract(fit.24)
+
+posterior_samples.24 <- as.data.frame(posterior_samples_lst.24)
+
+
+
+posterior_sample_means.24 <- summarize(posterior_samples.24)
+posterior_means.24 <- posterior_samples.24 %>%
+  summarize(across(everything(), mean))
+
+
+stan_df.24$use_true_icpt <- posterior_means.24$use_true_icpt
+stan_df.24$beta_seen <- posterior_means.24$beta_seen
+stan_df.24$max_p <- posterior_means.24$max_p
+
+
+
+
+stan_df.24 <- stan_df.24 %>%
+            group_by(func.type) %>%
+            mutate(beta_func_type = f_get_func_effect(posterior_means.24, func_type_numeric, "icpt")) %>%
+            mutate(beta_func_type_seen = f_get_func_effect(posterior_means.24,func_type_numeric,"slope")) %>%
+            #mutate(p_true = max_p*inv_logit(use_true_icpt + (beta_seen + beta_func_type_seen) * func_examples_std + beta_func_type))
+            mutate(p_true = max_p*inv_logit(beta_func_type_seen * func_examples_std + beta_func_type))
+
+
+
+
+
+
+posterior_samples.22.long <- posterior_samples.22 %>% 
+  pivot_longer(
+    cols = c(starts_with("beta_func_type"), starts_with("beta_func_type_seen")), # Selects all relevant columns
+    names_to = c(".value", "func_type"), # Creates two new columns: one for values (alpha/beta), one for func_type
+    names_pattern = "(.*)\\.(\\d+)" # Pattern to split the column names
+  )
+
+posterior_samples.24.long <- posterior_samples.24 %>% 
+  pivot_longer(
+    cols = c(starts_with("beta_func_type"), starts_with("beta_func_type_seen")), # Selects all relevant columns
+    names_to = c(".value", "func_type"), # Creates two new columns: one for values (alpha/beta), one for func_type
+    names_pattern = "(.*)\\.(\\d+)" # Pattern to split the column names
+  )
+# Clean up the func_type column
+posterior_samples.22.long$func.type <- unique(df$func.type)[as.numeric(posterior_samples.22.long$func_type)]
+posterior_samples.24.long$func.type <- unique(df$func.type)[as.numeric(posterior_samples.24.long$func_type)]
+
+
+labels <- as.character(unique(stan_df.22$func.type))
+names(labels) <- unique(stan_df.22$func.type)
+labels <- gsub("\\bline2\\b", "line_left", labels)
+labels <- gsub("\\bline\\b", "line_right", labels)
+labels <- gsub("repeat_pts", "repeating_points", labels)
+labels <- gsub("repeat_line", "repeating_line", labels)
+labels <- gsub("alternating_diffs", "alternation", labels)
+labels <- gsub("zigzag_increasing", "increasing_zigzag", labels)
+labels <- gsub("_", " ", labels)
+labels <- sapply(labels, capitalize_words)
+
+
+
+```
+
+
+
+
+
+```{r}
+
+calculate_p_true <- function(max_p, use_true_icpt, beta_seen, beta_func_type, beta_func_type_seen, func_type_numeric, func_examples_std) {
+
+  p_true <- max_p * inv_logit(use_true_icpt + 
+                              (beta_seen + beta_func_type_seen) * func_examples_std + 
+                              beta_func_type)
+  return(p_true)
+}
+
+
+
+
+pst_s.22 <- head(posterior_samples.22, 100)
+pst_s.24 <- head(posterior_samples.24, 100)
+
+unique_stan_df.22 <- stan_df.22 %>%
+      group_by(func.type, func_examples_std) %>%
+      top_n(n=1, wt=id)
+
+unique_stan_df.24 <- stan_df.24 %>%
+      group_by(func.type, func_examples_std) %>%
+      top_n(n=1, wt=id)
+
+
+
+expanded_df.22 <- unique_stan_df.22[rep(1:nrow(unique_stan_df.22), times = nrow(pst_s.22)), ]
+expanded_df.22$posterior_sample_id <- rep(1:nrow(pst_s.22), each = nrow(unique_stan_df.22))
+
+expanded_df.22 %>%
+      group_by(func.type, func_examples_std, posterior_sample_id) %>%
+      top_n(n=1, wt=id)
+
+rownames(expanded_df.22) <- NULL
+
+for (param in names(pst_s.22)) {
+  expanded_df.22[[param]] <- NA  # Initialize columns with NA
+}
+
+for (i in 1:nrow(pst_s.22)) {
+  # Filter rows corresponding to the current posterior sample
+  rows_to_update <- expanded_df.22$posterior_sample_id == i
+  
+  # Update the parameter columns for these rows
+  for (param in names(pst_s.22)) {
+    expanded_df.22[rows_to_update, param] <- pst_s.22[i, param]
+  }
+}
+
+expanded_df.22 <- expanded_df.22 %>%
+  rowwise() %>%
+  mutate(
+    p_true = calculate_p_true(max_p, 0, 0, 
+                              get(paste0("beta_func_type.", func_type_numeric)), 
+                              get(paste0("beta_func_type_seen.", func_type_numeric)),
+                              func_type_numeric, func_examples_std)
+  )
+
+expanded_df.24 <- unique_stan_df.24[rep(1:nrow(unique_stan_df.24), times = nrow(pst_s.24)), ]
+expanded_df.24$posterior_sample_id <- rep(1:nrow(pst_s.24), each = nrow(unique_stan_df.24))
+rownames(expanded_df.24) <- NULL
+
+for (param in names(pst_s.24)) {
+  expanded_df.24[[param]] <- NA  # Initialize columns with NA
+}
+
+for (i in 1:nrow(pst_s.24)) {
+  # Filter rows corresponding to the current posterior sample
+  rows_to_update <- expanded_df.24$posterior_sample_id == i
+  
+  # Update the parameter columns for these rows
+  for (param in names(pst_s.24)) {
+    expanded_df.24[rows_to_update, param] <- pst_s.24[i, param]
+  }
+}
+
+expanded_df.24 <- expanded_df.24 %>%
+  rowwise() %>%
+  mutate(
+    p_true = calculate_p_true(max_p, 0, 0, 
+                              get(paste0("beta_func_type.", func_type_numeric)), 
+                              get(paste0("beta_func_type_seen.", func_type_numeric)),
+                              func_type_numeric, func_examples_std)
+  )
+
+
+```
+
+
+
+
+
+```{r, fig.width=14,fig.height=7}
+
+#expanded_df.22$p_true <- ifelse(grepl("spiky", expanded_df.22$func.type), expanded_df.22$p_true/1.5, expanded_df.22$p_true)
+# Example character vector
+
+# Replace underscores with spaces
+
+# Function to capitalize each word except 'to'
+
+
+
+
+bs <- 8
+
+
+
+
+ggplot() +
+        stat_summary(data=expanded_df.22, aes(x=func_examples, y=p_true, color = "BP22"), fun.data="median_hilow",geom="errorbar", alpha=0.25) +
+        stat_summary(data=expanded_df.22, aes(x=func_examples, y=p_true, color = "BP22"), fun="median",geom="line", size=1) +
+     stat_summary(data=expanded_df.24, aes(x=func_examples, y=p_true, color = "BP24"), fun.data="median_hilow",geom="errorbar", alpha=0.25) +
+        stat_summary(data=expanded_df.24, aes(x=func_examples, y=p_true, color = "BP24"), fun="median",geom="line", size=1) +
+        scale_color_manual(values=c("dodgerblue","orange")) +
+        facet_wrap(~func.type, nrow=4, labeller=labeller(func.type = labels)) +
+        paper_theme + theme(legend.title=element_blank(), strip.background=element_rect(fill="white", color="white"), strip.text=element_text(color="black")) +
+        labs(x="Pattern examples", y="Modeled accuracy") 
+
+
+
+ggplot() +
+        stat_summary(data=expanded_df.22, aes(x=func_examples, y=p_true, color = "BP22"), fun.data="median_hilow",geom="errorbar", alpha=0.25) +
+        stat_summary(data=expanded_df.22, aes(x=func_examples, y=p_true, color = "BP22"), fun="median",geom="line", size=1) +
+        stat_summary(data=stan_df.22, aes(x=floor(func_examples/bs)*bs, y=correct_80, color="BP22"), fun="mean",geom="point") +
+        stat_summary(data=stan_df.22, aes(x=floor(func_examples/bs)*bs, y=correct_80, color="BP22"), fun.data="mean_se",geom="errorbar", width=0.1) +
+     stat_summary(data=expanded_df.24, aes(x=func_examples, y=p_true, color = "BP24"), fun.data="median_hilow",geom="errorbar", alpha=0.25) +
+        stat_summary(data=expanded_df.24, aes(x=func_examples, y=p_true, color = "BP24"), fun="median",geom="line", size=1) +
+        stat_summary(data=stan_df.24, aes(x=floor(func_examples/bs)*bs, y=correct_80, color="BP24"), fun="mean",geom="point") +
+        stat_summary(data=stan_df.24, aes(x=floor(func_examples/bs)*bs, y=correct_80, color="BP24"), fun.data="mean_se",geom="errorbar", width=0.1) +
+        scale_color_manual(values=c("dodgerblue","orange")) +
+        facet_wrap(~func.type, nrow=4, labeller=labeller(func.type = labels)) +
+        paper_theme + theme(legend.title=element_blank(), strip.background=element_rect(fill="white", color="white"), strip.text=element_text(color="black")) +
+        labs(x="Pattern examples", y="Overall accuracy") 
+
+
+
+ggplot() +
+
+        stat_summary(data=subset(stan_df.22, stan_df.22$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_80, color="BP22"), fun="mean",geom="point") +
+        stat_summary(data=subset(stan_df.22, stan_df.22$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_80, color="BP22"), fun.data="mean_se",geom="errorbar", width=0.1) +
+        stat_summary(data=subset(stan_df.24, stan_df.24$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_80, color="BP24"), fun="mean",geom="point") +
+        stat_summary(data=subset(stan_df.24, stan_df.24$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_80, color="BP24"), fun.data="mean_se",geom="errorbar", width=0.1) +
+        scale_color_manual(values=c("dodgerblue","orange")) +
+        facet_wrap(~func.type, nrow=4, labeller=labeller(func.type = labels)) +
+        paper_theme + theme(legend.title=element_blank(), strip.background=element_rect(fill="white", color="white"), strip.text=element_text(color="black")) +
+        labs(x="Pattern examples", y="Accuracy")
+
+ggplot() +
+
+        stat_summary(data=subset(stan_df.22, stan_df.22$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=abs_rel_err, color="BP22"), fun="mean",geom="point") +
+        stat_summary(data=subset(stan_df.22, stan_df.22$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=abs_rel_err, color="BP22"), fun.data="mean_se",geom="errorbar", width=0.1) +
+        stat_summary(data=subset(stan_df.24, stan_df.24$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=abs_rel_err, color="BP24"), fun="mean",geom="point") +
+        stat_summary(data=subset(stan_df.24, stan_df.24$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=abs_rel_err, color="BP24"), fun.data="mean_se",geom="errorbar", width=0.1) +
+        scale_color_manual(values=c("dodgerblue","orange")) +
+        geom_hline(linetype="dotted", yintercept=1) +
+        facet_wrap(~func.type, nrow=4, labeller=labeller(func.type = labels)) +
+        paper_theme + theme(legend.title=element_blank(), strip.background=element_rect(fill="white", color="white"), strip.text=element_text(color="black")) +
+        labs(x="Pattern examples", y="Accuracy") +
+        coord_cartesian(ylim=c(0,3))
+
+
+# Create a text grob for the annotation
+#ggsave("bp24.png", width=14, height=6, dpi=400)
+
+```
+
+
+```{r, fig.width=14,fig.height=9}
+add_png_to_facet <- function(ggplot_object, data, facet_var,x_loc,y_loc, width, height, out_file) {
+  # Get the ggplotGrob
+  gtable <- ggplotGrob(ggplot_object)
+
+  # Get the unique facet labels in the order they appear in the data
+  facet_labels <- unique(data[[facet_var]])
+
+  # Extract panel positions from the layout
+  panel_positions <- subset(gtable$layout, grepl("panel", name))
+
+  # Order the panels by their left (l) and top (t) positions
+  ordered_panel_positions <- with(panel_positions, order(t, l))
+  
+  print(c(length(facet_labels), length(ordered_panel_positions)))
+  # Ensure the facet labels order matches the plot
+
+  # For each ordered panel position, add the PNG
+  for (i in seq_along(ordered_panel_positions)) {
+    panel_index <- ordered_panel_positions[i]
+    facet_label <- facet_labels[i]
+
+    if (!is.na(facet_label)) {
+      img <- readPNG(paste0("func_ims/", facet_label, ".png"))
+
+      # Convert to raster and add it to the gtable
+      g <- rasterGrob(img, interpolate = TRUE, width = unit(0.3, "npc"), height = unit(0.3, "npc"))
+      g <- editGrob(g, vp = viewport(x = x_loc, y = y_loc, just = c("right", "top")))
+      gtable <- gtable_add_grob(gtable, g, t = panel_positions$t[panel_index], l = panel_positions$l[panel_index])
+    }
+  }
+
+  # Save the plot
+  png(filename = out_file, width = width, height = height, units = 'mm', res = 400)
+  grid.draw(gtable)
+  dev.off()
+}
+
+
+
+p.11 <- ggplot() +
+        stat_summary(data=subset(stan_df.22, stan_df.22$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_80, color="Monkey A"), fun="mean",geom="point") +
+        stat_summary(data=subset(stan_df.22, stan_df.22$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_80, color="Monkey A"), fun.data="mean_se",geom="errorbar", width=0.1) +
+        stat_summary(data=subset(stan_df.24, stan_df.24$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_80, color="Monkey B"), fun="mean",geom="point") +
+        stat_summary(data=subset(stan_df.24, stan_df.24$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_80, color="Monkey B"), fun.data="mean_se",geom="errorbar", width=0.1) +
+        scale_color_manual(values=c("dodgerblue","orange")) +
+        facet_wrap(~func.type, nrow=4, labeller=labeller(func.type = labels)) +
+        paper_theme + theme(legend.title=element_blank(), strip.background=element_rect(fill="white", color="white"), strip.text=element_text(color="black")) +
+        labs(x="Pattern examples", y="Accuracy (first attempt)") +
+        coord_cartesian(ylim=c(0,1))
+
+p.12 <- ggplot() +
+        stat_summary(data=expanded_df.22, aes(x=func_examples, y=p_true, color = "Monkey A"), fun.data="median_hilow",geom="errorbar", alpha=0.25) +
+        stat_summary(data=expanded_df.22, aes(x=func_examples, y=p_true, color = "Monkey A"), fun="median",geom="line", size=1) +
+     stat_summary(data=expanded_df.24, aes(x=func_examples, y=p_true, color = "Monkey B"), fun.data="median_hilow",geom="errorbar", alpha=0.25) +
+        stat_summary(data=expanded_df.24, aes(x=func_examples, y=p_true, color = "Monkey B"), fun="median",geom="line", size=1) +
+        scale_color_manual(values=c("dodgerblue","orange")) +
+        facet_wrap(~func.type, nrow=4, labeller=labeller(func.type = labels)) +
+        paper_theme + theme(legend.title=element_blank(), strip.background=element_rect(fill="white", color="white"), strip.text=element_text(color="black")) +
+        labs(x="Pattern examples", y="P(learned pattern)")+
+        coord_cartesian(ylim=c(0,1))
+
+
+p.13 <- ggplot() +
+        stat_summary(data=expanded_df.22, aes(x=func_examples, y=p_true, color = "Monkey A"), fun.data="median_hilow",geom="errorbar", alpha=0.25) +
+        stat_summary(data=expanded_df.22, aes(x=func_examples, y=p_true, color = "Monkey A"), fun="median",geom="line", size=1) +
+        stat_summary(data=subset(stan_df.22, stan_df.22$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_80, color="Monkey A"), fun="mean",geom="point") +
+        stat_summary(data=subset(stan_df.22, stan_df.22$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_80, color="Monkey A"), fun.data="mean_se",geom="errorbar", width=0.1) +
+     stat_summary(data=expanded_df.24, aes(x=func_examples, y=p_true, color = "Monkey B"), fun.data="median_hilow",geom="errorbar", alpha=0.25) +
+        stat_summary(data=expanded_df.24, aes(x=func_examples, y=p_true, color = "Monkey B"), fun="median",geom="line", size=1) +
+        stat_summary(data=subset(stan_df.24, stan_df.24$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_80, color="Monkey B"), fun="mean",geom="point") +
+        stat_summary(data=subset(stan_df.24, stan_df.24$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_80, color="Monkey B"), fun.data="mean_se",geom="errorbar", width=0.1) +
+        scale_color_manual(values=c("dodgerblue","orange")) +
+        facet_wrap(~func.type, nrow=4, labeller=labeller(func.type = labels)) +
+        paper_theme + theme(legend.title=element_blank(), strip.background=element_rect(fill="white", color="white"), strip.text=element_text(color="black")) +
+        labs(x="Pattern examples", y="Accuracy (first attempt)")+
+        coord_cartesian(ylim=c(0,1))
+
+p.21 <- ggplot() +
+       # stat_summary(data=stan_df.22, aes(x=func_examples, y=p_true, color = "BP22"), fun="mean",geom="line", size=1) +
+        stat_summary(data=subset(stan_df.22, stan_df.22$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=ever_corr, color="Monkey A"), fun.data="mean_se",geom="errorbar", width=0.1) +
+        stat_summary(data=subset(stan_df.24, stan_df.24$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=ever_corr, color="Monkey B"), fun.data="mean_se",geom="errorbar", width=0.1) +
+        stat_summary(data=subset(stan_df.22, stan_df.22$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=ever_corr, color="Monkey A"), fun="mean",geom="point") +
+        stat_summary(data=subset(stan_df.24, stan_df.24$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=ever_corr, color="Monkey B"), fun="mean",geom="point") +
+        stat_summary(data=subset(stan_df.22, stan_df.22$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=ever_corr), color="white", fun="mean",geom="point", size=0.3) +
+        stat_summary(data=subset(stan_df.24, stan_df.24$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=ever_corr), color="white", fun="mean",geom="point", size=0.3) +
+        scale_color_manual(values=c("dodgerblue","orange")) +
+        facet_wrap(~func.type, nrow=4, labeller=labeller(func.type = labels)) +
+        paper_theme + theme(legend.title=element_blank(), strip.background=element_rect(fill="white", color="white"), strip.text=element_text(color="black")) +
+        labs(x="Pattern examples", y="Accuracy")+
+        coord_cartesian(ylim=c(0,1))
+
+
+p.22 <- ggplot() +
+        stat_summary(data=expanded_df.22, aes(x=func_examples, y=p_true, color = "Monkey A"), fun.data="median_hilow",geom="errorbar", alpha=0.25) +
+        stat_summary(data=expanded_df.22, aes(x=func_examples, y=p_true, color = "Monkey A"), fun="median",geom="line", size=1) +
+     stat_summary(data=expanded_df.24, aes(x=func_examples, y=p_true, color = "Monkey B"), fun.data="median_hilow",geom="errorbar", alpha=0.25) +
+        stat_summary(data=expanded_df.24, aes(x=func_examples, y=p_true, color = "Monkey B"), fun="median",geom="line", size=1) +
+
+        scale_color_manual(values=c("dodgerblue","orange")) +
+        facet_wrap(~func.type, nrow=4, labeller=labeller(func.type = labels)) +
+        paper_theme + theme(legend.title=element_blank(), strip.background=element_rect(fill="white", color="white"), strip.text=element_text(color="black")) +
+        #theme(legend.title=element_blank(), strip.text=element_blank()) +
+        labs(x="Pattern examples", y="P(learned pattern)")+
+        coord_cartesian(ylim=c(0,1))
+
+p.23 <- ggplot() +
+        stat_summary(data=expanded_df.22, aes(x=func_examples, y=p_true, color = "Monkey A"), fun.data="median_hilow",geom="errorbar", alpha=0.25) +
+        stat_summary(data=expanded_df.22, aes(x=func_examples, y=p_true, color = "Monkey A"), fun="median",geom="line", size=1) +
+        stat_summary(data=subset(stan_df.22, stan_df.22$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=ever_corr, color="Monkey A"), fun="mean",geom="point") +
+        stat_summary(data=subset(stan_df.22, stan_df.22$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=ever_corr, color="Monkey A"), fun.data="mean_se",geom="errorbar", width=0.1) +
+     stat_summary(data=expanded_df.24, aes(x=func_examples, y=p_true, color = "Monkey B"), fun.data="median_hilow",geom="errorbar", alpha=0.25) +
+        stat_summary(data=expanded_df.24, aes(x=func_examples, y=p_true, color = "Monkey B"), fun="median",geom="line", size=1) +
+        stat_summary(data=subset(stan_df.24, stan_df.24$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=ever_corr, color="Monkey B"), fun="mean",geom="point") +
+        stat_summary(data=subset(stan_df.24, stan_df.24$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=ever_corr, color="Monkey B"), fun.data="mean_se",geom="errorbar", width=0.1) +
+        scale_color_manual(values=c("dodgerblue","orange")) +
+        facet_wrap(~func.type, nrow=4, labeller=labeller(func.type = labels)) +
+        paper_theme + theme(legend.title=element_blank(), strip.background=element_rect(fill="white", color="white"), strip.text=element_text(color="black")) +
+        labs(x="Pattern examples", y="Accuracy")+
+        coord_cartesian(ylim=c(0,1))
+
+
+
+
+p.31 <- ggplot() +
+       # stat_summary(data=stan_df.22, aes(x=func_examples, y=p_true, color = "BP22"), fun="mean",geom="line", size=1) +
+        stat_summary(data=subset(stan_df.24, (stan_df.24$attempt_number == 1) & (stan_df.24$min_rank_day < 7)), aes(x=floor(func_examples/bs)*bs, y=ever_corr, color="Monkey B"), fun.data="mean_se",geom="errorbar", width=0.1) +
+        stat_summary(data=subset(stan_df.22, (stan_df.22$attempt_number == 1) & (stan_df.22$min_rank_day < 7)), aes(x=floor(func_examples/bs)*bs, y=ever_corr, color="Monkey A"), fun.data="mean_se",geom="errorbar", width=0.1) +
+
+        stat_summary(data=subset(stan_df.22, (stan_df.22$attempt_number == 1) & (stan_df.22$min_rank_day < 7)), aes(x=floor(func_examples/bs)*bs, y=ever_corr, color="Monkey A"), fun="mean",geom="point") +
+        stat_summary(data=subset(stan_df.24, (stan_df.24$attempt_number == 1) & (stan_df.24$min_rank_day < 7)), aes(x=floor(func_examples/bs)*bs, y=ever_corr, color="Monkey B"), fun="mean",geom="point") +
+        stat_summary(data=subset(stan_df.22, (stan_df.22$attempt_number == 1) & (stan_df.22$min_rank_day < 7)), aes(x=floor(func_examples/bs)*bs, y=ever_corr), fun="mean",geom="point", color="white", size=0.3) +
+        stat_summary(data=subset(stan_df.24, (stan_df.24$attempt_number == 1) & (stan_df.24$min_rank_day < 7)), aes(x=floor(func_examples/bs)*bs, y=ever_corr), fun="mean",geom="point", color="white", size=0.3) +
+        scale_color_manual(values=c("dodgerblue","orange")) +
+        facet_wrap(~func.type, nrow=1, labeller=labeller(func.type = labels)) +
+        paper_theme + theme(legend.title=element_blank(), strip.background=element_rect(fill="white", color="white"), strip.text=element_text(color="black")) +
+        labs(x="Pattern examples", y="Accuracy")+
+        coord_cartesian(ylim=c(0,1))
+
+
+p.32 <- ggplot() +
+        stat_summary(data=subset(expanded_df.22, expanded_df.22$min_rank_day < 7), aes(x=func_examples, y=p_true, color = "Monkey A"), fun.data="median_hilow",geom="errorbar", alpha=0.25) +
+        stat_summary(data=subset(expanded_df.22, expanded_df.22$min_rank_day < 7), aes(x=func_examples, y=p_true, color = "Monkey A"), fun="median",geom="line", size=1) +
+     stat_summary(data=subset(expanded_df.24, expanded_df.24$min_rank_day < 7), aes(x=func_examples, y=p_true, color = "Monkey B"), fun.data="median_hilow",geom="errorbar", alpha=0.25) +
+        stat_summary(data=subset(expanded_df.24, expanded_df.24$min_rank_day < 7), aes(x=func_examples, y=p_true, color = "Monkey B"), fun="median",geom="line", size=1) +
+        scale_color_manual(values=c("dodgerblue","orange")) +
+        facet_wrap(~func.type, nrow=1, labeller=labeller(func.type = labels)) +
+        paper_theme + theme(legend.title=element_blank(), strip.background=element_rect(fill="white", color="white"), strip.text=element_text(color="black")) +
+        labs(x="Pattern examples", y="P(learned pattern)")+
+        coord_cartesian(ylim=c(0,1))
+
+
+
+
+      
+
+add_png_to_facet(p.11, stan_df.22, "func.type",1.3,0.7,400,250, "figs/monkeys_model_1_1.png")
+add_png_to_facet(p.12, stan_df.22, "func.type",1.3,0.7,400,250,   "figs/monkeys_model_1_2.png")
+add_png_to_facet(p.13, stan_df.22, "func.type",1.3,0.7, 400,250,  "figs/monkeys_model_1_3.png")
+
+add_png_to_facet(p.21, stan_df.22, "func.type",1.3,0.7,400,250,   "figs/monkeys_model_2_1.png")
+add_png_to_facet(p.22, stan_df.22, "func.type",1.3,0.7, 400,250,  "figs/monkeys_model_2_2.png")
+add_png_to_facet(p.23, stan_df.22, "func.type",1.3,0.7, 400,250,  "figs/monkeys_model_2_3.png")
+
+add_png_to_facet(p.31, stan_df.22, "func.type",1.3,0.7, 400,70,  "figs/monkeys_model_3_1.png")
+add_png_to_facet(p.32, stan_df.22, "func.type",1.3,0.7, 400,70,  "figs/monkeys_model_3_2.png")
+
+
+
+```
+

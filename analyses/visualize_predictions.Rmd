@@ -104,7 +104,7 @@ df_lot <- preprocess_df_model(read.csv('data/models/lot.csv'))
 df_lin <- preprocess_df_model(read.csv('data/models/linear.csv'))
 
 
-df_noisy_repeat <- preprocess_df_model(read.csv('data/models/noisy_model_variants/noisy_repeat.csv'))
+#df_noisy_repeat <- preprocess_df_model(read.csv('data/models/noisy_model_variants/noisy_repeat.csv'))
 df_noisy_idx <- preprocess_df_model(read.csv('data/models/noisy_model_variants/noisy_idx.csv'))
 df_noisy_op_order <- preprocess_df_model(read.csv('data/models/noisy_model_variants/noisy_op_order.csv'))
 df_lot_plus_noise <- preprocess_df_model(read.csv('data/models/noisy_model_variants/lot_plus_noise.csv'))

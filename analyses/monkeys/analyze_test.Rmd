@@ -1,0 +1,341 @@
+---
+title: "analyis"
+author: "Sam"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.width=4, fig.height=3,fig.align = "center",cache=FALSE)
+```
+
+```{r, include=FALSE, echo=FALSE}
+
+library(ggplot2)
+library(reshape)
+library(grid)
+library(dplyr)
+library(tidyr)
+library(gridExtra)
+library(lme4)
+library(hash)
+
+
+paper_theme <- theme_light() + theme( axis.title.x = element_text(size=22),
+                                      axis.text.x=element_text(
+                                        size = 18), 
+                                      axis.title.y = element_text(size = 22, vjust = 1),
+                                      axis.text.y  = element_text(size = 18),
+                                      strip.text=element_text(size=16, color="black"),
+                                      strip.background=element_blank(), 
+                                      
+                                      axis.line.x = element_line(colour = "black"), 
+                                      axis.line.y = element_line(colour = "black"),
+                                      legend.title=element_text(size=20),
+                                      legend.text=element_text(size=16),
+                                      panel.grid.major=element_blank(),
+                                      panel.background = element_rect(color = NA), 
+                                      
+                                      panel.grid.minor=element_blank())  
+out_folder <- "figs/"
+
+
+add_rank_time_column <- function(dataframe) {
+  # Convert 'time' column to a date format, ignoring the clock time information
+  dataframe$date <- as.Date(dataframe$Current_time, format = "%a %b %d %H:%M:%S %Y")
+  
+  # Create a dataframe with unique dates and their corresponding rank order
+  unique_dates <- dataframe %>%
+    distinct(date) %>%
+    arrange(date) %>%
+    mutate(rank_time = row_number())
+  
+  h <- hash()
+  for (i in 1:nrow(unique_dates)) {
+    date <- unique_dates$date[i]
+    rank_time <- unique_dates$rank_time[i]
+    h[date] = rank_time
+  }
+
+  # Join the unique_dates dataframe with the original dataframe to add the 'rank_time' column
+ # dataframe <- left_join(dataframe, unique_dates, by = "date")
+  dataframe <- dataframe %>%
+                rowwise() %>%
+                mutate(ranked_day = h[[as.character(date)]])
+  
+  return(dataframe)
+}
+
+
+
+
+```
+
+
+
+```{r}
+
+
+df_monkey_test <- read.csv('test.csv')
+df_monkey_test$id <- seq.int(1,nrow(df_monkey_test))
+df_monkey_test$func.name <- df_monkey_test$func_id
+df_monkey_test <- add_rank_time_column(df_monkey_test)
+
+
+df_monkey_test$time_numeric <- as.numeric(strptime(df_monkey_test$Current_time, format="%a %b %d %H:%M:%S %Y"))
+
+ranked_days <- df_monkey_test %>%
+  group_by(monkey_name) %>%
+  distinct(ranked_day) %>%
+  arrange(ranked_day) %>%
+  mutate(rank_day = row_number()) %>%
+  ungroup()
+
+
+df_monkey_test <- df_monkey_test %>%
+        left_join(ranked_days, by = c("monkey_name", "ranked_day")) %>%
+        group_by(func.type) %>%
+
+        mutate(func_accuracy = mean(correct, na.rm=TRUE)) %>%
+        mutate(x_err=x_pred-x_next,
+               y_err=y_pred-y_next,
+              abs_err = ((x_err**2)+(y_err)**2) **0.5) %>%
+        mutate(true_dist=((x_next-x_curr)**2. + (y_next-y_curr)**2.)**0.5) %>%
+        mutate(dist_from_prev = ((x_pred - x_curr)**2. + (y_pred-y_curr)**2.)**0.5) %>%
+        mutate(abs_rel_err = abs_err/(true_dist)) %>%
+        ungroup() %>%
+        filter((abs_rel_err < 4) & (abs_rel_err < mean(abs_rel_err,na.rm=TRUE) +2* sd(abs_rel_err,na.rm=TRUE)) | is.na(abs_err))
+
+#df_monkey_test$func.type <- reorder(factor(df_monkey_test$func.type), df_monkey_test$abs_rel_err)
+
+df_monkey_test$func.type <- reorder(factor(df_monkey_test$func.type), df_monkey_test$func_accuracy)
+
+
+
+df_kid <- read.csv("human_data/kid_data.csv")
+
+df_kid <- df_kid %>%
+          mutate(correct=1*(success=="True")) %>%
+        group_by(func.type) %>%
+        mutate(func_accuracy = mean(correct, na.rm=TRUE)) %>%
+        mutate(x_err=x_pred-x_next,
+               y_err=y_pred-y_next,
+              abs_err = ((x_err**2)+(y_err)**2) **0.5) %>%
+        mutate(true_dist=((x_next-x_curr)**2. + (y_next-y_curr)**2.)**0.5) %>%
+        mutate(dist_from_prev = ((x_pred - x_curr)**2. + (y_pred-y_curr)**2.)**0.5) %>%
+        mutate(abs_rel_err = abs_err/(true_dist)) %>%
+        ungroup() %>%
+        filter((abs_rel_err < 4) & (abs_rel_err < mean(abs_rel_err,na.rm=TRUE) +2* sd(abs_rel_err,na.rm=TRUE)) | is.na(abs_err))
+
+
+
+
+```
+
+
+```{r, fig.width=10, fig.height=6}
+ggplot(data=df_monkey_test,aes(x=func.type, y=correct, group=monkey_name, color=monkey_name)) +
+      stat_summary() +
+      paper_theme + theme(axis.title.x=element_blank(), axis.text.x=element_text(angle=45, hjust=1, vjust=1)) +
+      coord_cartesian(ylim=c(0,1)) +
+      ylab("P(correct)")
+
+
+ggplot(data=df_monkey_test,aes(x=func.type, y = abs_err)) +
+      stat_summary() +
+      paper_theme + theme(axis.title.x=element_blank(), axis.text.x=element_text(angle=45, hjust=1, vjust=1)) +
+      ylab("Absolute error")
+
+ggplot(data=df_monkey_test,aes(x=func.type, y = abs_rel_err)) +
+      stat_summary() +
+      paper_theme + theme(axis.title.x=element_blank(), axis.text.x=element_text(angle=45, hjust=1, vjust=1)) +
+      ylab("Relative error")
+
+ggplot(data=df_monkey_test,aes(x=func.type, y = abs_rel_err, group=monkey_name, color=monkey_name)) +
+      stat_summary() +
+      paper_theme + theme(axis.title.x=element_blank(), axis.text.x=element_text(angle=45, hjust=1, vjust=1)) +
+      ylab("Relative error")
+
+ggplot(data=df_monkey_test,aes(x=func.type, y=1*(abs_rel_err < 1))) +
+      stat_summary() +
+      paper_theme + theme(axis.title.x=element_blank(), axis.text.x=element_text(angle=45, hjust=1, vjust=1)) +
+      labs(x="Timepoint", y="Rel. err < 1")
+
+
+ggplot(data=df_monkey_test,aes(x=func.type, y = abs_err )) +
+          geom_point() +
+          paper_theme
+
+```
+
+
+```{r}
+library(png)
+
+add_png_to_x_axis <- function(ggplot_object, y_loc, width, height, out_file) {
+  # Get x-axis labels
+  labels <- ggplot_build(ggplot_object)$layout$panel_params[[1]]$x$get_labels()
+  
+  ggplot_object <- ggplot_object + 
+                   geom_hline(yintercept=0) +
+                  theme(axis.line.x=element_blank(), axis.text.x=element_blank(), axis.line.y=element_blank(),
+                    panel.border = element_blank(), 
+                    panel.grid.major = element_blank(),
+                    panel.grid.minor = element_blank()) +
+                  scale_y_continuous(breaks=c(0,0.5,1), labels=c(0,0.5,1)) +
+                  geom_segment(aes(x=0, xend=0, y=0, yend=1))
+
+  # Calculate x-locations based on the number of labels
+  x_loc <- seq_along(labels)
+
+  # Loop through each label and add the corresponding image
+  for (i in seq_along(labels)) {
+    label <- labels[i]
+    img_path <- paste0("func_ims/", label, ".png")
+    
+    # Check if image file exists
+    if(file.exists(img_path)){
+      img <- readPNG(img_path)
+
+      # Create a rasterGrob with the image
+      g <- rasterGrob(img, interpolate = TRUE, width = unit(0.85, "npc"), height = unit(1, "npc"))
+      
+      # Add the image to the plot
+      ggplot_object <- ggplot_object + 
+        annotation_custom(g, xmin = x_loc[i]-0.5, xmax = x_loc[i]+0.5, ymin = y_loc, ymax = y_loc + 0.1)
+    } else {
+      warning(paste("Image not found for label:", label))
+    }
+  }
+
+  # Save the plot
+  png(filename = out_file, width = width, height = height, units = 'in', res = 400)
+  grid.draw(ggplot_object)
+  dev.off()
+}
+
+
+p1 <- ggplot(data=df_monkey_test,aes(x=func.type, y=correct)) +
+      stat_summary() +
+      paper_theme + theme(axis.title.x=element_blank()) +
+  #    scale_y_continuous(limits=c(-0.5,1))+
+      coord_cartesian(ylim=c(-0.125,1)) +
+      
+      ylab("P(correct)")
+
+
+p1
+
+#add_png_to_x_axis(p1, -0.125,12,5,"figs/monkey_acc.png")
+
+```
+
+```{r, fig.width=9, fig.height=5}
+
+df_monkey_test$func.type <- reorder(factor(df_monkey_test$func.type), df_monkey_test$func_accuracy)
+df_kid$func.type <- reorder(factor(df_kid$func.type), df_kid$func_accuracy)
+
+# Step 2: Extract the ordered levels of func.type
+ordered_levels <- levels(factor(df_kid$func.type))
+
+# Step 3: Reorder the factor levels in both dataframes
+df_monkey_test$func.type <- factor(df_monkey_test$func.type, levels = ordered_levels)
+df_kid$func.type <- factor(df_kid$func.type, levels = ordered_levels)
+
+ggplot() +
+        stat_summary(data=df_kid,aes(x=func.type, y=correct,, color="4-6yo"))  +
+       stat_summary(data=df_monkey_test,aes(x=func.type, y=correct, color="Monkeys")) +
+
+                     
+      paper_theme + theme(axis.title.x=element_blank(), axis.text.x=element_text(angle=45, hjust=1, vjust=1)) +
+      coord_cartesian(ylim=c(0,1)) +
+      ylab("P(correct)")
+
+
+```
+
+```{r}
+
+#funcs <- unique(df_funcs$func.name)
+rank_days <- unique(df_monkey_test$rank_day)
+monkeys <- unique(df_monkey_test$monkey_name)
+game_ns <- unique(df_monkey_test$game_n)
+# 
+
+
+#cols <- c("1" = "blue", "2" = "purple", "3" = "red", "4" = "orange")
+monkeys_use <- c("BP22")
+#unlink("figs/BP22/28/", recursive=TRUE)
+
+
+
+for (monkey in monkeys_use) {
+  monkey_folder <- paste0(paste0(paste0("figs/test/", monkey), "/"))
+  
+  if (!(dir.exists(monkey_folder))) {
+      dir.create(monkey_folder)
+  }
+
+  for (d in sort(rank_days, decreasing=TRUE)) {
+    out_folder <- paste0(paste0(paste0(paste0("figs/test/", monkey), "/"),d), "/")
+
+    if (!(dir.exists(out_folder))) {
+      dir.create(out_folder)
+
+      for (g in rev(game_ns)) {
+                  #unlink(out_folder, recursive=TRUE)
+            df_func <- subset(df_monkey_test, (df_monkey_test$rank_day == d) & (df_monkey_test$monkey_name == monkey) & (df_monkey_test$game_n == g))
+            if (nrow(df_func) > 0) {
+              
+                f <- df_func$func.name[1]
+                day <- df_func$rank_day[1]
+                r_id <- df_func$r_id[1]
+      
+      
+                
+                xmin <- min(min(df_func$x_pred), min(df_func$x_curr))
+                xmax <- max(max(df_func$x_pred), max(df_func$x_curr))
+                ymin <- min(min(df_func$y_pred), min(df_func$y_curr))
+                ymax <- max(max(df_func$y_pred), max(df_func$y_curr))
+                
+                
+                for (i in 0:min(max(df_func$n))) {
+                  df_upto <- subset(df_func, df_func$n <= i)
+                  df_curr <- subset(df_func, df_func$n == i)
+                
+                  p <- ggplot() +
+                        geom_path(data=df_upto, aes(x=x_curr, y=y_curr,alpha=n)) +
+                          geom_point(data=df_upto, aes(x=x_curr, y=y_curr,alpha=n)) +
+                          #geom_ellipse(data=df_curr, aes(x0=x_next, y0=y_next, a = correct_distance, b=correct_distance, angle=0), color="gold",alpha=0.13) +
+                          #geom_point(data=df_curr, aes(x=x_next, y=y_next), color="gold", shape=8, alpha=0.25) +
+                          geom_point(data=df_curr, aes(x=x_next, y=y_next), color="gold", shape=8, size=0.75) +
+      
+                        geom_point(data=df_curr, aes(x=x_pred,y=y_pred, color=as.character(correct), group=attempt_number, alpha=0.5)) +
+                        geom_text(aes(x=100,y=50),label=paste(paste0("D", day),paste0("G",g))) +
+                        theme_void() + theme(legend.title=element_blank(), legend.text=element_blank(),
+                                               panel.background = element_rect(fill = "white"))+
+                        #scale_color_gradient2(midpoint=2.5, low="blue",mid="purple", high="red") +
+                        
+                        scale_color_manual(values=c("0"="darkred", "1"="darkgreen")) + 
+                        scale_alpha(range=c(0.2,0.9)) +
+                        guides(color="none",alpha="none",size="none") +
+                          scale_radius() +
+                          coord_fixed(xlim=c(0, screen_w), ylim=c(0, screen_h)) # +
+                         # coord_fixed()
+                    
+                
+                 f_name <- paste(paste(paste(out_folder,paste(paste(paste(paste(day, g, sep="_"), f, sep="_"), g, sep="_"), r_id, sep="_"),sep="/"), as.character(i),sep="_n"),".png",sep="")
+                 ggsave(f_name, plot=p,width=4,height=2.25, dpi=400)
+                }
+      
+            }
+  
+        }
+
+      
+    }
+  }
+}
+
+
+
+```

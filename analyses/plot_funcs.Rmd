@@ -44,19 +44,6 @@ panel.background = element_rect(fill = "white", colour = "grey50"),
 
 
 
-get_ll <- function(df) {
-  logsumexp <- function(x) {
-    max_x <- max(x)
-    max_x + log(sum(exp(x - max_x)))
-  }
-  df <- df %>%
-    group_by(tpt, seq_id) %>%
-    mutate(norm = logsumexp(score)) %>%
-    ungroup() %>%
-    mutate(posterior = exp(score - norm)) 
-  return(df)
-}
-
 preprocess_df_human <- function(df) {
   sm <- 1e-10
   df$attempt = 1
@@ -99,64 +86,8 @@ preprocess_df_monkey <- function(df) {
   return(df)
 }
 
-preprocess_model <- function(df_model) {
-  df_model$id <- seq.int(1,nrow(df_model))
-  df_model <- df_model %>%
-        get_ll() %>%
-        rename(func.name = seq_id, n = tpt) %>%
-        rowwise() %>%
-        mutate(std_x = sd_x) %>%
-        mutate(std_y = sd_y) %>%
-        mutate(err_x = pred_x - true_x) %>%
-        mutate(err_y = pred_y - true_y) %>%
-        group_by(func.name) %>%
-        mutate(range_x = max(true_x) - min(true_x)) %>%
-        mutate(range_y = max(true_y) - min(true_y)) %>%
-        mutate(mean_x = mean(true_x)) %>%
-        mutate(mean_y = mean(true_y)) %>%
-        group_by(func.name, particle) %>%
-        arrange(n) %>%
-        mutate(prev_x = lag(true_x), prev_y = lag(true_y)) %>%
-        ungroup() %>%
-        mutate(true_dist=((true_x-prev_x)**2. + (true_y-prev_y)**2.)**0.5) %>%
-        mutate(err_x=pred_x-true_x) %>%
-        mutate(err_y=pred_y-true_y) %>%
-        mutate(abs_err = ((err_x**2)+(err_y)**2) **0.5) %>%  
-        mutate(abs_rel_err = abs_err/(true_dist)) %>%
-        group_by(func.name, n) %>%
-        mutate(norm_abs_rel_err = sum(abs_rel_err * posterior, na.rm=T)) %>%
-  
-  
-  return(df_model)
-}
-
-get_model_data <- function(df_model, s_id, t,  model_type) {
-  s_id <- as.character(s_id[1])
-  t <- t[1]
-  df_use <- subset(df_model, (df_model$n==t) & (as.character(df_model$func.name) == as.character(s_id)))
-    if (nrow(df_use) == 0) {
-    return(NA) 
-  } else {
-    return(list(df_use$pred_x, df_use$std_x, df_use$pred_y, df_use$std_y, df_use$posterior, df_use$particle))
-  }
-}
-
-add_new_columns_grouped <- function(df, df_model, func, group_cols, model_type, new_col_names) {
-  # Number of times you want each row to be repeated
-  n_particle <- length(unique(df_model$particle))
-  # Create a new data frame by repeating each row
-  df_expanded <- df %>% 
-    slice(rep(1:n(), n_particle)) %>%
-    group_by(id) %>%
-    mutate(particle = rep(1:n_particle))
-  df_expanded %>%
-    group_by(across(all_of(group_cols))) %>%
-    #summarize(result = list(func(!!sym(input_col))), .groups = 'drop') %>%
-    summarize(result = list(func(df_model, func.name, n, model_type)), .groups = 'drop') %>%
-    unnest_wider(result, names_sep = "_") %>%
-    setNames(., c(group_cols, new_col_names)) %>%
-    left_join(df, by = group_cols) 
-}
+canonical_seqs <- c("alternating_diffs.21", "changing_sine.5", "circle.1", "curly.0", "left_to_right.24", "right_to_left.0", "line.0", "line2.0", "polygon.3", "polygon_spiral.14", "polynomial.37", "radial.49", 
+                    "repeat_pts.0", "repeat_line.4", "sine.0", "spiky_circle.49", "spiral_in.2", "spiral_out.6", "zigzag.10", "zigzag_increasing.27")
 
 ```
 
@@ -167,6 +98,21 @@ df_kid <- preprocess_df_human(read.csv("data/participants/kids_chs.csv"))
 df_monkey_1 <- preprocess_df_monkey(read.csv("data/participants/monkeys_1.csv"))
 df_monkey_2 <- preprocess_df_monkey(read.csv("data/participants/monkeys_2.csv"))
 df_monkey_all <- preprocess_df_monkey(read.csv("data/participants/monkeys_all.csv"))
+
+df_monkey_train <- preprocess_df_monkey(read.csv("data/participants/all_monkey_data/train.csv"))
+df_monkey_test <- preprocess_df_monkey(read.csv("data/participants/all_monkey_data/test.csv"))
+
+df_monkey_1$n <- df_monkey_1$n + 1
+df_monkey_2$n <- df_monkey_2$n + 1
+df_monkey_all$n <- df_monkey_all$n+ 1
+df_monkey_train$n <- df_monkey_train$n + 1
+df_monkey_test$n <- df_monkey_test$n + 1
+
+
+df_adult$func.type <- df_adult$func.name
+df_kid$func.type <- df_kid$func.name
+
+
 df_stimuli <- read.csv("data/stimuli.csv")
 
 df_stimuli <- df_stimuli %>% mutate(func.name = seq_id)
@@ -216,11 +162,84 @@ summary_kid_by_age <- df_kid %>%
   mutate(mean_correct_by_age = mean(correct, na.rm=TRUE)) %>%
   ungroup()
 
+
+starting_points <- df_monkey_test %>%
+  filter(n == 1) %>%
+  select(func.type, prev_x, prev_y, subj_id) %>%
+  rename(true_x = prev_x, true_y = prev_y)
+
+# Create timepoint 0 entries
+timepoint_0 <- starting_points %>%
+  mutate(
+    n = 0,
+    correct = NA,  # or whatever default value makes sense
+    pred_x = NA,   # since there are no predictions for timepoint 0
+    pred_y = NA,
+    prev_x = NA,   # no previous point for timepoint 0
+    prev_y = NA
+  )
+
+df_monkey_test <- bind_rows(timepoint_0, df_monkey_test) %>%
+  arrange(func.type, subj_id, n)
+
 summary_monkey <- df_monkey_all %>%
   group_by(func.name, n) %>%
   summarise(correct_monkey = mean(correct), 
             true_x=mean(true_x), true_y=mean(true_y),
             se_correct = sd(correct) / sqrt(n()))  %>%
+  mutate(
+          xrng = max(true_x) - min(true_x),
+         yrng = max(true_y) - min(true_y)) %>%
+  mutate(true_x = ifelse(xrng > 0, (true_x - min(true_x))/xrng, 0.5),
+         true_y = ifelse(yrng > 0, (true_y - min(true_y))/yrng, 0.5)) 
+
+
+summary_monkey_test <- df_monkey_test %>%
+  filter(n < 15) %>%
+  group_by(func.name, n, subj_id) %>%
+  summarise(correct_monkey = mean(correct), 
+            true_x=mean(true_x), true_y=mean(true_y),
+            se_correct = sd(correct) / sqrt(n()))  
+
+summary_monkey_test <- summary_monkey_test %>%
+  pivot_wider(
+    id_cols = c(func.name, n, true_x, true_y),  
+    names_from = subj_id,                        
+    values_from = correct_monkey,               
+    names_prefix = "correct_monkey_"           
+  ) %>%
+    ungroup() %>%
+    group_by(func.name) %>%
+    mutate(mean_correct_BP22 = mean(correct_monkey_BP22, na.rm=TRUE), mean_correct_BP24 = mean(correct_monkey_BP24, na.rm=TRUE)) %>%
+  mutate(
+          xrng = max(true_x) - min(true_x),
+         yrng = max(true_y) - min(true_y)) %>%
+  mutate(true_x = ifelse(xrng > 0, (true_x - min(true_x))/xrng, 0.5),
+         true_y = ifelse(yrng > 0, (true_y - min(true_y))/yrng, 0.5)) 
+
+
+
+summary_monkey_train <- df_monkey_train %>%
+  filter(n < 15) %>%
+  group_by(func.name, func.type, n, subj_id) %>%
+  summarise(correct_monkey = mean(correct, na.rm=TRUE), 
+            true_x=mean(true_x), true_y=mean(true_y),
+            se_correct = sd(correct) / sqrt(n()))  
+
+summary_monkey_train <- summary_monkey_train %>%
+  pivot_wider(
+    id_cols = c(func.name, func.type, n, true_x, true_y),  
+    names_from = subj_id,                        
+    values_from = correct_monkey,               
+    names_prefix = "correct_monkey_"           
+  ) %>%
+    ungroup() %>%
+    group_by(func.type) %>%
+    mutate(mean_correct_BP22 = mean(correct_monkey_BP22, na.rm=TRUE), mean_correct_BP24 = mean(correct_monkey_BP24, na.rm=TRUE)) %>%
+    rowwise() %>%
+    filter(func.name %in% canonical_seqs) %>%
+    group_by(func.name) %>%
+
   mutate(
           xrng = max(true_x) - min(true_x),
          yrng = max(true_y) - min(true_y)) %>%
@@ -253,9 +272,13 @@ summary_merged <- left_join(summary_adult, summary_kid,
 scale_fn <- 0.08
 aspect_ratio <- 5/4
 
-r_adult_kid <- cor(summary_merged$correct_adult, summary_merged$correct_kid, use="complete.obs")
-r_adult_monkey <- cor(summary_merged$correct_adult, summary_merged$correct_monkey, use="complete.obs")
-r_kid_monkey <- cor(summary_merged$correct_kid, summary_merged$correct_monkey, use="complete.obs")
+#r_adult_kid <- cor(summary_merged$correct_adult, summary_merged$correct_kid, use="complete.obs")
+#r_adult_monkey <- cor(summary_merged$correct_adult, summary_merged$correct_monkey, use="complete.obs")
+#r_kid_monkey <- cor(summary_merged$correct_kid, summary_merged$correct_monkey, use="complete.obs")
+
+r_adult_kid <- cor(summary_merged$mean_correct_adult, summary_merged$mean_correct_kid, use="complete.obs")
+r_adult_monkey <- cor(summary_merged$mean_correct_adult, summary_merged$mean_correct_monkey, use="complete.obs")
+r_kid_monkey <- cor(summary_merged$mean_correct_kid, summary_merged$mean_correct_monkey, use="complete.obs")
 
 ggplot(data=summary_merged) + 
           geom_abline() +
@@ -296,7 +319,10 @@ ggplot(data=summary_merged) +
 
 ```
 
-```{r, fig.width=16, fig.height=3.5}
+```{r, fig.width=15, fig.height=3.5}
+scale_fn <- 0.08
+aspect_ratio <- 1
+
 age_comparison <- summary_merged %>%
   select(func.name, true_x, true_y, mean_correct_monkey, mean_correct_adult, starts_with("mean_correct_")) %>%
   pivot_longer(cols = starts_with("mean_correct_") & !matches("monkey|kid|adult"),
@@ -323,15 +349,15 @@ ggplot(data=age_comparison) +
                  y=mean_correct_monkey + true_y*scale_fn*aspect_ratio, 
                  group=func.name), 
              alpha=0.8, size=0.25) +
-  facet_wrap(~age_year, nrow=1, labeller = labeller(age_year = function(x) paste(x, "years old"))) +
-  geom_text(data=age_correlations, aes(x=0.1, y=0.9, label=sprintf("R = %.2f", r_monkey)), 
-            size=4, family="Georgia") +
+  facet_wrap(~age_year, nrow=1, labeller = labeller(age_year = function(x) paste(x, "year olds"))) +
+  geom_text(data=age_correlations, aes(x=0.1, y=0.9, label=paste("R^2 == ", sprintf("%.2f", r_monkey**2))),  
+            size=5, family="Georgia", parse=TRUE) +
   labs(x="Children Accuracy", y="Monkey Accuracy") +
   coord_cartesian(xlim=c(-0.02, 1.02), ylim=c(-0.02, 1.02)) +
   scale_x_continuous(breaks=c(0,0.5,1)) +
   scale_y_continuous(breaks=c(0,0.5,1)) +
   guides(color="none") +
-  paper_theme 
+  paper_theme + theme(strip.background=element_blank())
 
 
 ggplot(data=age_comparison) + 
@@ -339,18 +365,308 @@ ggplot(data=age_comparison) +
   geom_path(aes(x=age_accuracy + true_x*scale_fn, 
                 y=mean_correct_adult + true_y*scale_fn*aspect_ratio, 
                 group=func.name, color=func.name), 
-           alpha=0.9, size=0.5) +
+           alpha=0.7, size=0.4) +
   geom_point(aes(x=age_accuracy + true_x*scale_fn, 
                  y=mean_correct_adult + true_y*scale_fn*aspect_ratio, 
-                 group=func.name), 
-             alpha=0.8, size=0.25) +
-  facet_wrap(~age_year, nrow=1, labeller = labeller(age_year = function(x) paste(x, "years old"))) +
-  geom_text(data=age_adult_correlations, aes(x=0.9, y=0.1, label=sprintf("R = %.2f", r_adult)), 
-            size=4, family="Georgia") +
+                 group=func.name, color=func.name), 
+             alpha=0.8, size=0.3) +
+  geom_point(aes(x=age_accuracy + true_x*scale_fn, 
+                 y=mean_correct_adult + true_y*scale_fn*aspect_ratio, 
+                 group=func.name), color="black",
+             alpha=0.05, size=0.1) +
+  facet_wrap(~age_year, nrow=1, labeller = labeller(age_year = function(x) paste(x, "year olds"))) +
+  geom_text(data=age_adult_correlations, aes(x=0.9, y=0.1, 
+            label=paste("R^2 == ", sprintf("%.2f", r_adult**2))), 
+            size=5, family="Georgia", parse=TRUE) +
   labs(x="Children Accuracy", y="Adult Accuracy") +
   coord_cartesian(xlim=c(-0.02, 1.02), ylim=c(-0.02, 1.02)) +
   scale_x_continuous(breaks=c(0,0.5,1)) +
   scale_y_continuous(breaks=c(0,0.5,1)) +
   guides(color="none") +
-  paper_theme
+  paper_theme + theme(strip.background=element_blank())
+
+
+ggsave("figs/adults_vs_kids.png", width=15, height=3.5, dpi=400)
 ```
+
+
+```{r, fig.width=17, fig.height=3.5}
+
+scale_fn <- 0.08
+aspect_ratio <- 1 #18/(3.5*6)
+
+
+adult_comparison <- summary_merged %>%
+  select(func.name, true_x, true_y, mean_correct_monkey, mean_correct_adult) %>%
+  mutate(age_year = "Adult",
+         age_accuracy = mean_correct_adult)
+
+# Now combine adult and kid data
+all_human_comparison <- bind_rows(
+  age_comparison,
+  adult_comparison
+) %>%
+  mutate(age_year = factor(age_year, levels = c("3", "4", "5", "6", "7", "Adult")))
+
+all_human_correlations <- all_human_comparison %>%
+  group_by(age_year) %>%
+  summarise(r_monkey = cor(age_accuracy, mean_correct_monkey, use="complete.obs"))
+
+age_labels <- function(x) {
+  ifelse(x == "Adult", "Adults", paste(x, "year olds"))
+}
+
+ggplot(data=all_human_comparison) + 
+  geom_abline() +
+  geom_path(aes(x=age_accuracy + true_x*scale_fn, 
+                y=mean_correct_monkey + true_y*scale_fn*aspect_ratio, 
+                group=func.name, color=func.name), 
+           alpha=0.7, size=0.4) +
+  
+  geom_point(aes(x=age_accuracy + true_x*scale_fn, 
+                 y=mean_correct_monkey + true_y*scale_fn*aspect_ratio, 
+                 group=func.name, color=func.name), 
+             alpha=0.8, size=0.3) +
+  geom_point(aes(x=age_accuracy + true_x*scale_fn, 
+                 y=mean_correct_monkey + true_y*scale_fn*aspect_ratio, 
+                  group=func.name), color="black",
+             alpha=0.05, size=0.1) +
+
+  facet_wrap(~age_year, nrow=1, labeller = labeller(age_year = age_labels)) +
+  geom_text(data=all_human_correlations, 
+            aes(x=0.12, y=0.9, label=paste("R^2 == ", sprintf("%.2f", r_monkey**2))),  
+            size=5, family="Georgia", parse=TRUE) +
+  labs(x="Human Accuracy", y="Monkey Accuracy") +
+  coord_cartesian(xlim=c(-0.02, 1.02), ylim=c(-0.02, 1.02)) +
+  scale_x_continuous(breaks=c(0,0.5,1)) +
+  scale_y_continuous(breaks=c(0,0.5,1)) +
+  guides(color="none") + 
+  paper_theme + theme(strip.background=element_blank(), axis.title.x=element_text(size=20), axis.title.y=element_text(size=20))
+
+ggsave("figs/human_vs_monkeys.png", dpi=400, width=17, height=3.5)
+
+```
+
+
+```{r, fig.width=4.5, fig.height=4}
+
+scale_fn <- 0.08
+aspect_ratio <- 5/4
+
+#r_monkey_test <- cor(summary_monkey_test$correct_monkey_BP22, summary_monkey_test$correct_monkey_BP24, use="complete.obs")
+r_monkey_test <- cor(summary_monkey_test$mean_correct_BP22, summary_monkey_test$mean_correct_BP24, use="complete.obs")
+r_monkey_train <- cor(summary_monkey_train$mean_correct_BP22, summary_monkey_train$mean_correct_BP24, use="complete.obs")
+
+
+ggplot(data=summary_monkey_test) + 
+          geom_abline() +
+          geom_path(aes(x=mean_correct_BP22 + true_x*scale_fn, y=mean_correct_BP24 + true_y*scale_fn*aspect_ratio, group=func.name, color=func.name), alpha=0.7, size=0.4) +
+          geom_point(aes(x=mean_correct_BP22 + true_x*scale_fn, y=mean_correct_BP24 + true_y*scale_fn*aspect_ratio, group=func.name, color=func.name), alpha=0.8, size=0.3) +
+          geom_point(aes(x=mean_correct_BP22 + true_x*scale_fn, 
+                 y=mean_correct_BP24 + true_y*scale_fn*aspect_ratio, 
+                  group=func.name), color="black",
+             alpha=0.05, size=0.1) +
+          annotate("text", x=0.1, y=0.9, label=paste("R^2 == ", sprintf("%.2f", r_monkey_test**2)), size=6, family="Georgia", parse=TRUE) +
+          labs(x="Monkey 1 Accuracy (Test)", y="Monkey 2 Accuracy (Test)") +
+          coord_cartesian(xlim=c(-0.02, 1.02), ylim=c(-0.02, 1.02)) +
+          guides(color="none") +
+          paper_theme 
+ggsave("figs/monkey_scatterplot_test.png", width=5, height=4, dpi=400)
+
+
+library(colorspace)
+
+palette_20 <- qualitative_hcl(20, palette = "Dynamic")
+
+ggplot(data = summary_monkey_train) + 
+            geom_abline() +
+            geom_path(aes(x = mean_correct_BP22 + true_x * scale_fn, 
+                          y = mean_correct_BP24 + true_y * scale_fn * aspect_ratio, 
+                          group = func.name, 
+                          color = func.name), 
+                      alpha = 1, size = 0.4) +
+            geom_point(aes(x = mean_correct_BP22 + true_x * scale_fn, 
+                           y = mean_correct_BP24 + true_y * scale_fn * aspect_ratio, 
+                           group = func.name, 
+                           color = func.name), 
+                       alpha = 0.8, size = 0.3) +
+            geom_point(aes(x = mean_correct_BP22 + true_x * scale_fn, 
+                           y = mean_correct_BP24 + true_y * scale_fn * aspect_ratio, 
+                           group = func.name), 
+                       color = "black", alpha = 0.05, size = 0.1) +
+            annotate("text", x = 0.1, y = 0.9, 
+                     label = paste("R^2 == ", sprintf("%.2f", r_monkey_train^2)), 
+                     size = 6, family = "Georgia", parse = TRUE) +
+            labs(x = "Monkey 1 Accuracy (Train)", y = "Monkey 2 Accuracy (Train)") +
+            coord_cartesian(xlim = c(-0.02, 1.02), ylim = c(-0.02, 1.02)) +
+            scale_color_manual(values = palette_20) +
+            guides(color = "none") +
+            paper_theme
+
+ggsave("figs/monkey_scatterplot_train.png", width=5, height=4, dpi=400)
+```
+
+
+```{r}
+
+```
+
+```{r, fig.width=5,fig.height=5}
+#seq <- "hexagon"
+#rng <- 0.25
+
+plot_preds <- function(df, seq, rng) {
+  
+  df_func_only <- df %>% ungroup() %>% mutate(id=seq.int(1,nrow(df)))
+  
+  df_func_only <- df_func_only %>% filter(func.type == seq) %>%
+                  group_by(func.type, n) %>%
+                    top_n(n=1, wt=id) %>%
+                    filter(n < 15) %>%
+
+                    ungroup() %>%
+                    arrange(n)
+  
+  df_seq <- df %>% filter(func.type == seq) %>%
+                  ungroup() %>%
+                  mutate(min_x = min(true_x), max_x = max(true_x), range_x = max_x - min_x,  min_y = min(true_y), max_y = max(true_y), range_y = max_y - min_y) %>%
+                  mutate(range_xy = max(range_x, range_y)) %>%
+                  filter(n <= 2 | ((pred_x >= min_x - range_xy *rng ) & (pred_y >= min_y - range_xy * rng))) %>%
+                  filter(n <= 2 | ((pred_x <= max_x + range_xy *rng ) & (pred_y <= max_y + range_xy * rng))) %>%
+                  filter(n < 15)
+  
+  
+  min_x <- min(df_seq$true_x)
+  max_x <- max(df_seq$true_x) 
+  min_y <- min(df_seq$true_y)
+  max_y <- max(df_seq$true_y)
+  range_x <- max_x - min_x
+  range_y <- max_y - min_y
+  range_xy <- max(range_x, range_y)
+
+  
+
+  
+  p <- ggplot() +
+          geom_path(data = df_func_only, aes(x=true_x, y=true_y), size=0.2) +
+            geom_point(data=df_func_only, aes( x=true_x, y=true_y), size=3.5, alpha=0.2) +
+          geom_point(data=df_func_only, aes(alpha = n, x=true_x, y=true_y), size=3.5) +
+              geom_point(data=df_func_only, aes( x=true_x, y=true_y), size=1, color="white") +
+
+          geom_point(data=df_seq, aes(x=pred_x, y=pred_y, color=n), size=1.75, alpha=0.65) +
+          guides(alpha="none", color="none") +
+          # guides(alpha="none") +
+          scale_color_gradientn(colors=c("darkblue", "darkred", "orange")) +
+         coord_cartesian(xlim=c(min_x - range_xy *rng, max_x + range_xy * rng), ylim=c(min_y - range_xy * rng, max_y + range_xy*rng)) +
+          theme_void() + theme(legend.title=element_blank(), legend.text=element_blank())
+  return(p)
+}
+
+
+grp <- "monkey"
+
+if (grp == "kid") {
+  df <- df_kid
+} else if (grp == "adult") {
+  df <- df_adult
+} else {
+  df <- df_monkey_test
+
+}
+funcs <- unique(df$func.type)
+plot_preds(df, "stairs_2", 0.25)
+
+  
+# ggsave("figs/for_colorbar.png",width=8,height=8,dpi=600, bg="white")
+
+
+for (func in funcs) {
+
+ p <- plot_preds(df,func, 0.25)
+ filename <- paste0(paste(paste0("figs/func_predictions/", func), grp, sep="_"), ".png")
+ ggsave(plot=p, filename, width=5, height=4, dpi=500, bg="white")
+
+}
+
+```
+
+
+```{r, fig.width=15, fig.height=5, warning=FALSE}
+# First standardize the line naming in monkey data
+df_monkey_test <- df_monkey_test %>%
+  mutate(func.type = ifelse(func.type == "example_line", "line", func.type)) %>%
+  filter(n < 15)
+
+# Get common patterns across all datasets
+common_patterns <- Reduce(intersect, list(
+  unique(df_adult$func.type),
+  unique(df_kid$func.type),
+  unique(df_monkey_test$func.type)
+))
+
+# Filter all datasets to only include common patterns
+df_adult_filtered <- df_adult %>% filter(func.type %in% common_patterns)
+df_kid_filtered <- df_kid %>% filter(func.type %in% common_patterns)
+df_monkey_test_filtered <- df_monkey_test %>% filter(func.type %in% common_patterns)
+
+# Create pattern_df with only common patterns
+pattern_df <- df_adult_filtered %>%
+  group_by(func.type, n) %>%
+  summarise(true_x = mean(true_x),
+            true_y = mean(true_y)) %>%
+  group_by(func.type) %>%
+  mutate(
+    xrng = max(true_x) - min(true_x),
+    yrng = max(true_y) - min(true_y),
+    range_xy = max(xrng, yrng)
+  ) %>%
+  mutate(
+    true_x_norm = ifelse(xrng > 0, (true_x - min(true_x))/xrng, 0.5),
+    true_y_norm = ifelse(yrng > 0, (true_y - min(true_y))/yrng, 0.5)
+  )
+
+# Create the plot with filtered data
+ggplot() +
+  # Add the pattern visualization in each facet
+  geom_path(data=pattern_df, 
+            aes(x=true_x_norm * 2.5, y=true_y_norm * 0.25 + 0.7),
+            size=0.5, alpha=0.8) +
+  geom_point(data=pattern_df, 
+             aes(x=true_x_norm * 2.5, y=true_y_norm * 0.25 + 0.7),
+             size=1, alpha=0.8) +
+             
+  stat_summary(data=df_adult_filtered, aes(x=n, y=correct, color="Adults"), 
+              fun.data="mean_se", geom="errorbar", size=1, width=0.1) +
+  stat_summary(data=df_adult_filtered, aes(x=n, y=correct, color="Adults"), 
+              fun="mean", geom="line", alpha=0.8, size=0.3) +
+  stat_summary(data=df_adult_filtered, aes(x=n, y=correct, color="Adults"), 
+              fun="mean", geom="point") +
+              
+  stat_summary(data=df_kid_filtered, aes(x=n, y=correct, color="Children"), 
+              fun.data="mean_se", geom="errorbar", size=1, width=0.1) +
+  stat_summary(data=df_kid_filtered, aes(x=n, y=correct, color="Children"), 
+              fun="mean", geom="line", alpha=0.8, size=0.3) +
+  stat_summary(data=df_kid_filtered, aes(x=n, y=correct, color="Children"), 
+              fun="mean", geom="point") +
+              
+  stat_summary(data=df_monkey_test_filtered, aes(x=n, y=correct, color="Monkeys"), 
+              fun.data="mean_se", geom="errorbar", size=1, width=0.1) +
+  stat_summary(data=df_monkey_test_filtered, aes(x=n, y=correct, color="Monkeys"), 
+              fun="mean", geom="line", alpha=0.8, size=0.3) +
+  stat_summary(data=df_monkey_test_filtered, aes(x=n, y=correct, color="Monkeys"), 
+              fun="mean", geom="point") +
+              
+  scale_color_manual(values = c("Adults" = "#59ab9d", "Children" = "#75073c", "Monkeys" = "#c9ac69")) +
+  guides(alpha="none") +
+  paper_theme +
+  scale_y_continuous(breaks=c(0,0.5,1)) +
+  theme(legend.position = "top") + theme(strip.background=element_blank(), strip.text=element_blank(), legend.title=element_blank()) +
+  facet_wrap(~func.type, nrow=3) +
+
+  labs(x = "Sequence timepoint", y = "Accuracy")
+
+ggsave("figs/all_group_learning.png", width=15, height=5, dpi=500)
+
+```
+
+

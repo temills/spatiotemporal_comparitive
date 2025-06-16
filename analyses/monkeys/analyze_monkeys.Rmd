@@ -1,0 +1,306 @@
+---
+title: "analylze_monkeys"
+author: "Sam"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.width=4, fig.height=3,fig.align = "center",cache=TRUE)
+```
+
+```{r, include=FALSE, echo=FALSE}
+
+library(ggplot2)
+library(reshape)
+library(grid)
+library(dplyr)
+library(gridExtra)
+library(lme4)
+library(reghelper)
+library(RColorBrewer)
+library(robustbase)
+library(tidylog)
+library(hash)
+library(rstan)
+library(png)
+library(gtable)
+library(latex2exp)
+library(purrr)
+library(stringr)
+ # Install and load extrafont
+
+
+ # Add the DejaVu Serif font
+ #font_add("DejaVu Serif", regular = "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf")
+ #font_add("DejaVu Sans", regular = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+
+
+
+
+paper_theme <- theme_light() + theme(
+  axis.text.x=element_text(colour="#292929",
+                           size = 14), 
+axis.title.x = element_text(size=18, family="Georgia"),
+  axis.title.y = element_text(size = 18, vjust = 1,  family="Georgia"),
+  axis.text.y  = element_text(size = 14, colour="#292929", family="Georgia"),
+  strip.text=element_text(size=16,color="black", family="Georgia"),
+strip.background = element_rect(colour = "grey50", fill = "white"),
+panel.background = element_rect(fill = "white", colour = "grey50"),
+  axis.ticks.x=element_blank(),axis.ticks.y=element_blank(),
+  axis.line.x = element_line(colour = "black"), 
+  axis.line.y = element_line(colour = "black"),
+  legend.title=element_text(size=18, family="Georgia"),
+  legend.text=element_text(size=15, family="Georgia"),
+  panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ 
+out_folder <- "figs/"
+
+
+f_weighted_sd <- function(means, sds, weights)  {
+  var_wtd = sum(weights * sds**2) + sum(weights * means**2) - (sum(weights*means)**2)
+  return (var_wtd**0.5)
+  
+}
+
+inv_logit <- function(x) { exp(x)/(1+exp(x))}
+
+logit <- function(p) {log(p) - log(1-p)}
+
+nonparametric_seqs <- c("alternating_diffs", "changing_sine", "radial", "repeat_pts", "repeat_line", "polygon", "polygon_spiral", "spiky_circle", "zigzag", "zigzag_increasing" )
+
+
+add_rank_time_column <- function(dataframe) {
+  # Convert 'time' column to a date format, ignoring the clock time information
+  dataframe$date <- as.Date(dataframe$Current_time, format = "%a %b %d %H:%M:%S %Y")
+  
+  # Create a dataframe with unique dates and their corresponding rank order
+  unique_dates <- dataframe %>%
+    distinct(date) %>%
+    arrange(date) %>%
+    mutate(rank_time = row_number())
+  
+  h <- hash()
+  for (i in 1:nrow(unique_dates)) {
+    date <- unique_dates$date[i]
+    rank_time <- unique_dates$rank_time[i]
+    h[date] = rank_time
+  }
+
+  # Join the unique_dates dataframe with the original dataframe to add the 'rank_time' column
+ # dataframe <- left_join(dataframe, unique_dates, by = "date")
+  dataframe <- dataframe %>%
+                rowwise() %>%
+                mutate(ranked_day = h[[as.character(date)]])
+  
+  return(dataframe)
+}
+
+
+capitalize_words <- function(s) {
+  words <- str_split(s, " ")[[1]]
+  words <- ifelse(words == "to", "to", str_to_title(words))
+  paste(words, collapse = " ")
+}
+
+```
+
+
+
+
+```{r}
+
+
+df <- read.csv("all_monkey_data/train.csv")
+screen_w <- df$screen_w[1]
+screen_h <- df$screen_h[1]
+
+n_games <- max(df$game_n)
+
+df$id <- seq.int(1,nrow(df))
+df$func.name <- df$func_id
+df$attempt_number <- ifelse(is.na(df$attempt_number), 0, df$attempt_number)
+
+df <- add_rank_time_column(df)
+
+ranked_days <- df %>%
+  group_by(monkey_name) %>%
+  distinct(ranked_day) %>%
+  arrange(ranked_day) %>%
+  mutate(rank_day = row_number()) %>%
+  ungroup()
+
+
+unique_sequences_df <- df %>%
+  group_by(func.name, n) %>%
+  top_n(n = 1, wt = id) %>%
+  select(func.name, n, x_curr, y_curr) %>%
+  group_by(func.name) %>%
+  arrange(n) %>%
+  mutate(
+    delta_x = x_curr - lag(x_curr),
+    delta_y = y_curr - lag(y_curr),
+    delta_x = ifelse(is.na(delta_x), 0, delta_x),
+    delta_y = ifelse(is.na(delta_y), 0, delta_y),
+    x_lin = x_curr + delta_x,
+    y_lin = y_curr + delta_y
+  ) %>%
+  select(func.name, n, x_lin, y_lin) %>%  # Only keep necessary columns
+  ungroup()
+# 
+
+df <- df %>%
+  left_join(unique_sequences_df, by = c("func.name", "n"))
+
+df <- df %>%
+        left_join(ranked_days, by = c("monkey_name", "ranked_day")) %>%
+        rowwise() %>%
+        mutate(func.type = gsub("\\.\\d+$", "", func.name)) %>%
+        mutate(nonparametric_seq = (func.type %in% nonparametric_seqs)) %>%
+        #mutate(func.type = gsub("line2", "line", func.type)) %>%
+        mutate(t_id = paste(r_id, func.name, game_n)) %>%
+        group_by(monkey_name) %>%
+        mutate(rank_day = rank_day - min(rank_day)+1) %>%
+        mutate(game_n_total = game_n + (rank_day-1)*n_games) %>%
+        filter((guess_number <= 10) | is.na(guess_number)) %>%
+        group_by(func.type) %>%
+        mutate(min_rank_day = min(rank_day)) %>%
+        ungroup() %>%
+        arrange(min_rank_day) %>%
+        mutate(func.type = factor(func.type, levels = unique(func.type))) %>%
+        arrange(monkey_name, rank_day, game_n, n, attempt_number) %>%
+        mutate(guess_dist_from_curr=((x_pred-x_curr)**2. + (y_pred-y_curr)**2.)**0.5) %>%
+        mutate(guess_dist_from_linear = ((x_pred - x_lin)**2 + (y_pred - y_lin)**2)**0.5 ) %>%
+        mutate(correct_80 = 1*(dist_from_true < 80)) %>%
+        mutate(correct_120 = 1*(dist_from_true < 120)) %>%
+        group_by(monkey_name, r_id,  game_n, n) %>%
+        mutate(ever_corr=max(correct)) %>%
+        mutate(ever_corr_80=max(correct_80)) %>%
+        mutate(ever_corr_120=max(correct_120)) %>%
+        group_by(monkey_name, func.name, r_id, game_n) %>%
+        mutate(new_day=(game_n==0)*game_n_total) %>%
+        mutate(true_dist=((x_next-x_curr)**2. + (y_next-y_curr)**2.)**0.5) %>%
+        mutate(lin_err_x = (x_lin - x_next), lin_err_y = (y_lin - y_next)) %>%
+        mutate(lin_dist = (lin_err_x**2 + lin_err_y**2)**0.5) %>%
+        mutate(lin_correct_80 = 1*(lin_dist < 80), lin_correct_120 = 1*(lin_dist < 120)) %>%
+        mutate(x_err=x_pred-x_next) %>%
+        mutate(y_err=y_pred-y_next) %>%
+        mutate(abs_err = ((x_err**2)+(y_err)*2.)**0.5) %>%  
+        mutate(abs_rel_err = abs_err/(true_dist+0.01)) %>%
+        ungroup() %>%
+        arrange(rank_day, game_n, n) %>%
+        group_by(monkey_name, func.type) %>%
+        mutate(func_examples = cumsum(!duplicated(t_id))) %>%
+        ungroup() %>%
+        mutate(func_examples_std = (func_examples - mean(func_examples))/sd(func_examples))
+
+      
+df$func_type_numeric <- as.numeric(as.factor(df$func.type))
+
+
+df_seqs <- df %>%
+           group_by(func.name, n) %>%
+          top_n(n=1, wt=id) %>%
+           mutate(x_curr = x_curr/screen_w, x_pred = x_pred/screen_w, x_next = x_next/screen_w,
+                  y_curr = y_curr/screen_h, y_pred =y_pred/screen_h, y_next = y_next/screen_h,
+                  x_lin = x_lin/screen_w, y_lin = y_lin/screen_h) %>%
+  
+           mutate(x_lin = x_lin * (x_lin > 0) * (x_lin <= 1) + 1* (x_lin > 1)) %>%
+            mutate(y_lin = y_lin * (y_lin > 0) * (y_lin <= 1) + 1* (y_lin > 1)) 
+
+
+canonical_seqs <- c("alternating_diffs.21", "changing_sine.5", "circle.1", "curly.0", "left_to_right.0", "right_to_left.0", "line.0", "line2.0", "polygon.3", "polygon_spiral.14", "polynomial.37", "radial.49", 
+                    "repeat_pts.0", "repeat_line.4", "sine.0", "spiky_circle.49", "spiral_in.2", "spiral_out.6", "zigzag.10", "zigzag_increasing.27")
+
+
+df_canonical_seqs <- df_seqs %>% rowwise() %>% filter(func.name %in% canonical_seqs) %>%
+                      ungroup() %>%
+                      group_by(func.name) %>%
+
+                      mutate(
+                            xrng = max(x_curr, na.rm=TRUE) - min(x_curr, na.rm=TRUE),
+                           yrng = max(y_curr, na.rm=TRUE) - min(y_curr, na.rm=TRUE)) %>%
+                    mutate(true_x = ifelse(xrng > 0, (x_curr - min(x_curr))/xrng, 0.5),
+                           true_y = ifelse(yrng > 0, (y_curr - min(y_curr))/yrng, 0.5)) 
+                                        
+
+
+```
+
+
+
+```{r, fig.width=9, fig.height=5}
+bs <- 15
+df$scaled_func_examples <- floor(df$func_examples/bs)*bs
+xmin <- min(df$scaled_func_examples)
+xmax <- max(df$scaled_func_examples)
+xscale <- xmax - xmin
+
+
+ggplot(data=df, aes(x=scaled_func_examples, y=correct_120, group=monkey_name, color=monkey_name)) +
+        stat_summary(fun.data="mean_se", geom="errorbar", width=1) +
+
+        stat_summary(fun="mean", geom="line", size=1) +
+       # stat_summary(fun="mean", geom="point") +
+        
+        geom_path(data=df_canonical_seqs, aes(x=0+true_x*xscale*0.22, y= 0.8 + true_y * 0.3), size=0.8, color="black", alpha=0.5) +
+        geom_point(data=df_canonical_seqs, aes(x=0+true_x*xscale*0.22, y= 0.8 + true_y * 0.3, alpha=n), color="black", size=0.9) +
+        scale_color_manual(values = c("dodgerblue", "orange"), labels=c("Monkey 1", "Monkey 2")) +
+        scale_fill_manual(values = c("dodgerblue", "orange")) +
+        scale_x_continuous(breaks=c(0,100, 200)) +
+        scale_y_continuous(breaks=c(0,0.5,1)) +
+        guides(alpha="none", color="none") +
+        coord_cartesian(xlim=c(xmin, xmax+10), ylim=c(0,1.08)) +
+        facet_wrap(~func.type, nrow=4) + 
+        labs(x="Pattern example number", y="Accuracy" ) +
+        
+        paper_theme+ theme(legend.title = element_blank(),
+                     strip.background = element_blank(),
+                     strip.text = element_blank()) 
+
+ggsave("figs/monkey_training.png",width=8, height=5, dpi=500)
+
+
+
+
+```
+
+
+```{r, fig.width=10, fig.height=5}
+
+ggplot(data=df, aes(x=func.type, y=lin_correct_120)) +
+        stat_summary() +
+        paper_theme + 
+        theme( axis.text.x = element_text(angle=45)
+          
+        )
+
+
+ggplot(data=df, aes(x=func.type, y=guess_dist_from_linear - guess_dist_from_curr)) +
+        stat_summary() +
+          paper_theme + 
+          theme( axis.text.x = element_text(angle=45)
+          )
+          
+  
+        
+ggplot(data=df, aes(x=round(lin_dist/25)*25, y=correct_120)) +
+              stat_summary() +
+              paper_theme +
+              facet_wrap(~func.type)
+
+
+
+```
+
+```{r, fig.width=10, fig.height=5}
+
+bs <- 5
+df$scaled_rank_day <- floor((df$rank_day - df$min_rank_day)/bs)*bs
+
+ggplot(data=df, aes(x=scaled_rank_day, y=correct_80, color=nonparametric_seq)) +
+        stat_summary(fun="mean", geom="line") +
+        paper_theme 
+
+
+
+```

@@ -1,0 +1,594 @@
+---
+title: "mixture_model_analysis"
+author: "Sam"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.width=4, fig.height=3,fig.align = "center",cache=TRUE)
+```
+
+```{r, include=FALSE, echo=FALSE}
+
+library(ggplot2)
+library(reshape)
+library(grid)
+library(dplyr)
+library(gridExtra)
+library(lme4)
+library(reghelper)
+library(RColorBrewer)
+library(robustbase)
+library(tidylog)
+library(hash)
+library(rstan)
+library(png)
+library(gtable)
+library(latex2exp)
+library(purrr)
+library(stringr)
+ # Install and load extrafont
+
+
+ # Add the DejaVu Serif font
+ #font_add("DejaVu Serif", regular = "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf")
+ #font_add("DejaVu Sans", regular = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+
+
+
+
+paper_theme <- theme_light() + theme(
+  axis.text.x=element_text(colour="#292929",
+                           size = 14), 
+axis.title.x = element_text(size=18, family="Georgia"),
+  axis.title.y = element_text(size = 18, vjust = 1,  family="Georgia"),
+  axis.text.y  = element_text(size = 14, colour="#292929", family="Georgia"),
+  strip.text=element_text(size=16,color="black", family="Georgia"),
+strip.background = element_rect(colour = "grey50", fill = "white"),
+panel.background = element_rect(fill = "white", colour = "grey50"),
+  axis.ticks.x=element_blank(),axis.ticks.y=element_blank(),
+  axis.line.x = element_line(colour = "black"), 
+  axis.line.y = element_line(colour = "black"),
+  legend.title=element_text(size=18, family="Georgia"),
+  legend.text=element_text(size=15, family="Georgia"),
+  panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ 
+out_folder <- "figs/"
+
+
+f_weighted_sd <- function(means, sds, weights)  {
+  var_wtd = sum(weights * sds**2) + sum(weights * means**2) - (sum(weights*means)**2)
+  return (var_wtd**0.5)
+  
+}
+
+inv_logit <- function(x) { exp(x)/(1+exp(x))}
+
+logit <- function(p) {log(p) - log(1-p)}
+
+
+
+add_rank_time_column <- function(dataframe) {
+  # Convert 'time' column to a date format, ignoring the clock time information
+  dataframe$date <- as.Date(dataframe$Current_time, format = "%a %b %d %H:%M:%S %Y")
+  
+  # Create a dataframe with unique dates and their corresponding rank order
+  unique_dates <- dataframe %>%
+    distinct(date) %>%
+    arrange(date) %>%
+    mutate(rank_time = row_number())
+  
+  h <- hash()
+  for (i in 1:nrow(unique_dates)) {
+    date <- unique_dates$date[i]
+    rank_time <- unique_dates$rank_time[i]
+    h[date] = rank_time
+  }
+
+  # Join the unique_dates dataframe with the original dataframe to add the 'rank_time' column
+ # dataframe <- left_join(dataframe, unique_dates, by = "date")
+  dataframe <- dataframe %>%
+                rowwise() %>%
+                mutate(ranked_day = h[[as.character(date)]])
+  
+  return(dataframe)
+}
+
+
+capitalize_words <- function(s) {
+  words <- str_split(s, " ")[[1]]
+  words <- ifelse(words == "to", "to", str_to_title(words))
+  paste(words, collapse = " ")
+}
+
+```
+
+
+
+
+```{r}
+
+
+df <- read.csv("all_monkey_data/train.csv")
+screen_w <- df$screen_w[1]
+screen_h <- df$screen_h[1]
+
+n_games <- max(df$game_n)
+
+df$id <- seq.int(1,nrow(df))
+df$func.name <- df$func_id
+df$attempt_number <- ifelse(is.na(df$attempt_number), 0, df$attempt_number)
+
+df <- add_rank_time_column(df)
+
+ranked_days <- df %>%
+  group_by(monkey_name) %>%
+  distinct(ranked_day) %>%
+  arrange(ranked_day) %>%
+  mutate(rank_day = row_number()) %>%
+  ungroup()
+
+
+unique_sequences_df <- df %>%
+  group_by(func.name, n) %>%
+  top_n(n = 1, wt = id) %>%
+  select(func.name, n, x_curr, y_curr) %>%
+  group_by(func.name) %>%
+  arrange(n) %>%
+  mutate(
+    # Calculate deltas for x
+    delta_x = x_curr - lag(x_curr),
+    delta_x_2 = lag(x_curr) - lag(x_curr, 2),
+
+    # Calculate deltas for y
+    delta_y = y_curr - lag(y_curr),
+    delta_y_2 = lag(y_curr) - lag(y_curr, 2),
+
+    # Handle NA values for deltas
+    delta_x = ifelse(is.na(delta_x), 0, delta_x),
+    delta_y = ifelse(is.na(delta_y), 0, delta_y),
+    delta_x_2 = ifelse(is.na(delta_x_2), delta_x, delta_x_2),
+    delta_y_2 = ifelse(is.na(delta_y_2), delta_y, delta_y_2),
+
+    # Calculate x_lin and y_lin
+    #x_lin = x_curr + 0.5 * delta_x + 0.5 * delta_x_2,
+    #y_lin = y_curr + 0.5 * delta_y + 0.5 * delta_y_2
+    
+    x_lin = x_curr + delta_x,
+    y_lin = y_curr + delta_y
+  ) %>%
+  select(func.name, n, x_lin, y_lin) %>%  # Only keep necessary columns
+  ungroup()
+# 
+# # Step 2: Merge x_lin and y_lin back into df
+df <- df %>%
+  left_join(unique_sequences_df, by = c("func.name", "n"))
+
+
+
+df <- df %>%
+        left_join(ranked_days, by = c("monkey_name", "ranked_day")) %>%
+        rowwise() %>%
+        mutate(func.type = gsub("\\.\\d+$", "", func.name)) %>%
+        #mutate(func.type = gsub("line2", "line", func.type)) %>%
+        mutate(t_id = paste(r_id, func.name, game_n)) %>%
+        group_by(monkey_name) %>%
+        mutate(rank_day = rank_day - min(rank_day)+1) %>%
+        mutate(game_n_total = game_n + (rank_day-1)*n_games) %>%
+        filter((guess_number <= 10) | is.na(guess_number)) %>%
+        group_by(func.type) %>%
+        mutate(min_rank_day = min(rank_day)) %>%
+        ungroup() %>%
+        arrange(min_rank_day) %>%
+        mutate(func.type = factor(func.type, levels = unique(func.type))) %>%
+        arrange(monkey_name, rank_day, game_n, n, attempt_number) %>%
+        mutate(guess_dist_from_curr=((x_pred-x_curr)**2. + (y_pred-y_curr)**2.)**0.5) %>%
+        mutate(correct_80 = 1*(dist_from_true < 80)) %>%
+        mutate(correct_120 = 1*(dist_from_true < 120)) %>%
+        group_by(monkey_name, r_id,  game_n, n) %>%
+
+        mutate(ever_corr=max(correct)) %>%
+        mutate(ever_corr_80=max(correct_80)) %>%
+        mutate(ever_corr_120=max(correct_120)) %>%
+
+        group_by(monkey_name, func.name, r_id, game_n) %>%
+  
+        mutate(new_day=(game_n==0)*game_n_total) %>%
+        mutate(true_dist=((x_next-x_curr)**2. + (y_next-y_curr)**2.)**0.5) %>%
+        mutate(x_err=x_pred-x_next) %>%
+        mutate(y_err=y_pred-y_next) %>%
+        mutate(abs_err = ((x_err**2)+(y_err)*2.)**0.5) %>%  
+        mutate(abs_rel_err = abs_err/(true_dist+0.01)) %>%
+        
+        ungroup() %>%
+
+        arrange(rank_day, game_n, n) %>%
+        group_by(monkey_name, func.type) %>%
+        mutate(func_examples = cumsum(!duplicated(t_id))) %>%
+        ungroup() %>%
+       #mutate(func_examples_std = func_examples/max(func_examples))
+        mutate(func_examples_std = (func_examples - mean(func_examples))/sd(func_examples))
+
+      
+df$func_type_numeric <- as.numeric(as.factor(df$func.type))
+
+
+df_seqs <- df %>%
+           group_by(func.name, n) %>%
+          top_n(n=1, wt=id) %>%
+           mutate(x_curr = x_curr/screen_w, x_pred = x_pred/screen_w, x_next = x_next/screen_w,
+                  y_curr = y_curr/screen_h, y_pred =y_pred/screen_h, y_next = y_next/screen_h,
+                  x_lin = x_lin/screen_w, y_lin = y_lin/screen_h) %>%
+  
+           mutate(x_lin = x_lin * (x_lin > 0) * (x_lin <= 1) + 1* (x_lin > 1)) %>%
+            mutate(y_lin = y_lin * (y_lin > 0) * (y_lin <= 1) + 1* (y_lin > 1)) 
+
+
+
+
+stan_df.22 <- df %>%
+           filter(!is.na(x_pred) & (!is.na(y_pred))) %>%
+           mutate(x_curr = x_curr/screen_w, x_pred = x_pred/screen_w, x_next = x_next/screen_w,
+                  y_curr = y_curr/screen_h, y_pred =y_pred/screen_h, y_next = y_next/screen_h,
+                  x_lin = x_lin/screen_w, y_lin = y_lin/screen_h) %>%
+  
+           mutate(x_lin = x_lin * (x_lin > 0) * (x_lin <= 1) + 1* (x_lin > 1)) %>%
+            mutate(y_lin = y_lin * (y_lin > 0) * (y_lin <= 1) + 1* (y_lin > 1)) %>%
+          mutate(is_lin = ifelse(n < 1, NA, 1*(abs(x_lin - x_next) + abs(y_lin - y_next) < 0.001))) %>%
+           filter(monkey_name == "BP22")  %>%
+            group_by(func.type) %>%
+            mutate(p_func_linear = mean(is_lin, na.rm=TRUE)) %>%
+            mutate(linear_func = min(is_lin, na.rm=TRUE)) %>%
+          mutate(screen_ratio=screen_h/screen_w) 
+          # filter(rank_day < max(rank_day))
+
+#write.csv(stan_df.22, "monkeys.csv")
+
+
+
+stan_data.22 <- list(
+  N = length(stan_df.22$x_pred),
+  x_pred = stan_df.22$x_pred,
+  y_pred = stan_df.22$y_pred,
+  x_next = stan_df.22$x_next,
+  y_next = stan_df.22$y_next,
+  x_curr = stan_df.22$x_curr,
+  y_curr = stan_df.22$y_curr,
+  x_lin = stan_df.22$x_lin,
+  y_lin = stan_df.22$y_lin,
+  n_func_types = length(unique(stan_df.22$func.type)),
+  func_type = stan_df.22$func_type_numeric,
+  n_seen = stan_df.22$func_examples_std
+)
+
+#stan_df.22$func_type_numeric <- as.numeric(as.factor(stan_df.22$func.type))
+
+
+stan_df.24 <- df %>%
+           filter(!is.na(x_pred) & (!is.na(y_pred))) %>%
+           mutate(x_curr = x_curr/screen_w, x_pred = x_pred/screen_w, x_next = x_next/screen_w,
+                  y_curr = y_curr/screen_h, y_pred =y_pred/screen_h, y_next = y_next/screen_h,
+                  x_lin = x_lin/screen_w, y_lin = y_lin/screen_h) %>%
+  
+           mutate(x_lin = x_lin * (x_lin > 0) * (x_lin <= 1) + 1* (x_lin > 1)) %>%
+            mutate(y_lin = y_lin * (y_lin > 0) * (y_lin <= 1) + 1* (y_lin > 1)) %>%
+          mutate(is_lin = ifelse(n < 1, NA, 1*(abs(x_lin - x_next) + abs(y_lin - y_next) < 0.001))) %>%
+           filter(monkey_name == "BP24")  %>%
+            group_by(func.type) %>%
+            mutate(p_func_linear = mean(is_lin, na.rm=TRUE)) %>%
+            mutate(linear_func = min(is_lin, na.rm=TRUE)) %>%
+          mutate(screen_ratio=screen_h/screen_w) 
+
+            #filter(rank_day < max(rank_day))
+
+stan_data.24 <- list(
+  N = length(stan_df.24$x_pred),
+  x_pred = stan_df.24$x_pred,
+  y_pred = stan_df.24$y_pred,
+  x_next = stan_df.24$x_next,
+  y_next = stan_df.24$y_next,
+  x_curr = stan_df.24$x_curr,
+  y_curr = stan_df.24$y_curr,
+  x_lin = stan_df.24$x_lin,
+  y_lin = stan_df.24$y_lin,
+  n_func_types = length(unique(stan_df.24$func.type)),
+  func_type = stan_df.24$func_type_numeric,
+  n_seen = stan_df.24$func_examples_std
+)
+
+
+```
+
+```{r}
+
+# Modified f_get_func_effect
+f_get_func_effect <- function(pm, func_type_numeric, which_effect) {
+  if (which_effect == "icpt") {
+    return(pm[[paste0("beta_func_type.", func_type_numeric[1])]])
+  } else if (which_effect == "slope") {
+    return(pm[[paste0("beta_func_type_seen.", func_type_numeric[1])]])
+  } else {
+    stop("Unknown effect requested")
+  }
+}
+
+
+fit.22 <- readRDS("model_fits/bp22_ind.rds")
+
+posterior_samples_lst.22 <- rstan::extract(fit.22)
+posterior_samples.22 <- as.data.frame(posterior_samples_lst.22)
+
+posterior_sample_means.22 <- summarize(posterior_samples.22)
+posterior_means.22 <- posterior_samples.22 %>%
+    summarize(across(everything(), mean))
+
+stan_df.22$use_true_icpt <- posterior_means.22$use_true_icpt
+stan_df.22$beta_seen <- posterior_means.22$beta_seen
+stan_df.22$p_prev <- posterior_means.22$p_rand_strategy.1
+stan_df.22$p_rand <- posterior_means.22$p_rand_strategy.2
+#stan_df.22$p_lin <- posterior_means.22$p_rand_strategy.3
+stan_df.22$sd_motor <- posterior_means.22$sd_motor
+
+# Modify the mutate logic
+stan_df.22 <- stan_df.22 %>%
+  group_by(func.type) %>%
+  mutate(
+    beta_func_type = f_get_func_effect(posterior_means.22, func_type_numeric, "icpt"),
+    beta_func_type_seen = f_get_func_effect(posterior_means.22, func_type_numeric, "slope"),
+    p_true = inv_logit(beta_func_type_seen * func_examples_std + beta_func_type),
+    p_prev = (1 - p_true) * posterior_means.22[[paste0("p_rand_strategy.", func_type_numeric[1], ".1")]],
+    p_rand = (1 - p_true) * posterior_means.22[[paste0("p_rand_strategy.", func_type_numeric[1], ".2")]],
+   # p_lin = (1 - p_true) * posterior_means.22[[paste0("p_rand_strategy.", func_type_numeric[1], ".3")]]
+  )
+
+
+
+fit.24 <- readRDS("model_fits/bp24_ind.rds")
+
+posterior_samples_lst.24 <- rstan::extract(fit.24)
+posterior_samples.24 <- as.data.frame(posterior_samples_lst.24)
+
+posterior_sample_means.24 <- summarize(posterior_samples.24)
+posterior_means.24 <- posterior_samples.24 %>%
+  summarize(across(everything(), mean))
+
+# Extract the relevant parameters from posterior means for BP24
+stan_df.24$use_true_icpt <- posterior_means.24$use_true_icpt
+stan_df.24$beta_seen <- posterior_means.24$beta_seen
+stan_df.24$p_prev <- posterior_means.24$p_rand_strategy.1
+stan_df.24$p_rand <- posterior_means.24$p_rand_strategy.2
+#stan_df.24$p_lin <- posterior_means.24$p_rand_strategy.3
+stan_df.24$sd_motor <- posterior_means.24$sd_motor
+
+stan_df.24 <- stan_df.24 %>%
+  group_by(func.type) %>%
+  mutate(
+    beta_func_type = f_get_func_effect(posterior_means.24, func_type_numeric, "icpt"),
+    beta_func_type_seen = f_get_func_effect(posterior_means.24, func_type_numeric, "slope"),
+    p_true = inv_logit(beta_func_type_seen * func_examples_std + beta_func_type),
+    p_prev = (1 - p_true) * posterior_means.24[[paste0("p_rand_strategy.", func_type_numeric[1], ".1")]],
+    p_rand = (1 - p_true) * posterior_means.24[[paste0("p_rand_strategy.", func_type_numeric[1], ".2")]],
+   #p_lin = (1 - p_true) * posterior_means.24[[paste0("p_rand_strategy.", func_type_numeric[1], ".3")]]
+  )
+
+posterior_samples.22 <- posterior_samples.22 %>%
+  rename_with(~gsub("p_rand_strategy\\.(\\d+)\\.(\\d+)", "p_rand_strategy_\\2.\\1", .), 
+              starts_with("p_rand_strategy"))
+
+posterior_samples.24 <- posterior_samples.24 %>%
+  rename_with(~gsub("p_rand_strategy\\.(\\d+)\\.(\\d+)", "p_rand_strategy_\\2.\\1", .), 
+              starts_with("p_rand_strategy"))
+
+
+posterior_samples.22.long <- posterior_samples.22 %>%
+  pivot_longer(
+    cols = c(starts_with("beta_func_type"), starts_with("beta_func_type_seen"), 
+             starts_with("p_rand_strategy_1"), starts_with("p_rand_strategy_2")),
+    names_to = c(".value", "func_type"),
+    names_pattern = "(.*)\\.(\\d+)"
+  )
+
+posterior_samples.24.long <- posterior_samples.24 %>%
+  pivot_longer(
+    cols = c(starts_with("beta_func_type"), starts_with("beta_func_type_seen"), 
+             starts_with("p_rand_strategy_1"), starts_with("p_rand_strategy_2")),
+    names_to = c(".value", "func_type"),
+    names_pattern = "(.*)\\.(\\d+)"
+  )
+
+posterior_samples.22.long$func.type <- unique(df$func.type)[as.numeric(posterior_samples.22.long$func_type)]
+posterior_samples.24.long$func.type <- unique(df$func.type)[as.numeric(posterior_samples.24.long$func_type)]
+
+
+
+
+labels <- as.character(unique(stan_df.22$func.type))
+names(labels) <- unique(stan_df.22$func.type)
+labels <- gsub("\\bline2\\b", "line_left", labels)
+labels <- gsub("\\bline\\b", "line_right", labels)
+labels <- gsub("repeat_pts", "repeating_points", labels)
+labels <- gsub("repeat_line", "repeating_line", labels)
+labels <- gsub("alternating_diffs", "alternation", labels)
+labels <- gsub("zigzag_increasing", "increasing_zigzag", labels)
+labels <- gsub("polygon_spiral", "increasing_polygon", labels)
+labels <- gsub("_", " ", labels)
+labels <- sapply(labels, capitalize_words)
+
+
+
+```
+
+
+```{r, fig.width=14,fig.height=7}
+
+
+slope <- sd(df$func_examples)
+intercept <- mean(df$func_examples)
+func_examples_std_vals <- seq(min(df$func_examples_std), max(df$func_examples_std), length.out=50)
+
+# Step 2: Expand func.examples for BP22
+expanded_func_examples_22 <- expand.grid(
+  func_examples_std = func_examples_std_vals,
+  sample = 1:nrow(posterior_samples.22.long)
+) %>%
+  mutate(beta_func_type = posterior_samples.22.long$beta_func_type[sample],
+         beta_func_type_seen = posterior_samples.22.long$beta_func_type_seen[sample],
+         p_prev = posterior_samples.22.long$p_rand_strategy_1[sample],  
+         p_rand = posterior_samples.22.long$p_rand_strategy_2[sample],  
+         func.type = posterior_samples.22.long$func.type[sample]) %>%
+  
+  # Compute p_true
+  mutate(p_true = plogis(beta_func_type_seen * func_examples_std + beta_func_type)) %>%
+  mutate(p_prev=(1-p_true)*p_prev, p_rand = (1-p_true)*p_rand) %>%
+  mutate(func_examples = func_examples_std * slope + intercept) %>%
+  
+  # Merge with stan_df.22 to get linear_func status
+  left_join(stan_df.22 %>% select(func.type, linear_func, p_func_linear) %>% distinct(), by = "func.type")
+
+# Step 3: Expand func.examples for BP24
+expanded_func_examples_24 <- expand.grid(
+  func_examples_std = func_examples_std_vals,
+  sample = 1:nrow(posterior_samples.24.long)
+) %>%
+  mutate(beta_func_type = posterior_samples.24.long$beta_func_type[sample],
+         beta_func_type_seen = posterior_samples.24.long$beta_func_type_seen[sample],
+         p_prev = posterior_samples.24.long$p_rand_strategy_1[sample],  
+         p_rand = posterior_samples.24.long$p_rand_strategy_2[sample],  
+         func.type = posterior_samples.24.long$func.type[sample]) %>%
+  
+  # Compute p_true
+  mutate(p_true = plogis(beta_func_type_seen * func_examples_std + beta_func_type)) %>%
+  mutate(p_prev=(1-p_true)*p_prev, p_rand = (1-p_true)*p_rand) %>%
+  mutate(func_examples = func_examples_std * slope + intercept) %>%
+  
+  # Merge with stan_df.24 to get linear_func status
+  left_join(stan_df.24 %>% select(func.type, linear_func, p_func_linear) %>% distinct(), by = "func.type")
+
+# Step 4: Summarize posterior predictions
+posterior_summary_22 <- expanded_func_examples_22 %>%
+  group_by(func.type, func_examples_std, func_examples) %>%
+  summarize(p_true_mean = mean(p_true),
+            p_true_lower = quantile(p_true, probs = 0.025),
+            p_true_upper = quantile(p_true, probs = 0.975))
+
+posterior_summary_24 <- expanded_func_examples_24 %>%
+  group_by(func.type, func_examples_std, func_examples) %>%
+  summarize(p_true_mean = mean(p_true),
+            p_true_lower = quantile(p_true, probs = 0.025),
+            p_true_upper = quantile(p_true, probs = 0.975))
+
+
+```
+
+
+```{r, fig.width=14,fig.height=7}
+
+bs <- 8
+
+
+ggplot() +
+      stat_summary(data=subset(stan_df.22, stan_df.22$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_120, color="Monkey A"), fun="mean",geom="line", alpha=0.5, size=0.9) +
+
+      stat_summary(data=subset(stan_df.22, stan_df.22$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_120, color="Monkey A"), fun="mean",geom="point", alpha=0.9, size=0.8) +
+      stat_summary(data=subset(stan_df.22, stan_df.22$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_120, color="Monkey A"), fun.data="mean_se",geom="errorbar", width=0.1, alpha=0.5) +
+      
+   stat_summary(data=subset(stan_df.24, stan_df.24$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_120, color="Monkey B"), fun="mean",geom="line", alpha=0.5, size=0.9) +
+    stat_summary(data=subset(stan_df.24, stan_df.24$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_120, color="Monkey B"), fun="mean",geom="point", alpha=0.9, size=0.8) +
+    stat_summary(data=subset(stan_df.24, stan_df.24$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_120, color="Monkey B"), fun.data="mean_se",geom="errorbar", width=0.1, alpha=0.5) +
+  scale_color_manual(values = c("dodgerblue", "orange")) +
+  scale_fill_manual(values = c("dodgerblue", "orange")) +
+  guides(fill="none") +
+
+  facet_wrap(~func.type, nrow = 4, labeller = function(x) lapply(x, function(y) "X")) +
+  paper_theme + theme(legend.title = element_blank(),
+                      strip.background = element_rect(fill = "white", color = "black"),
+                      strip.text = element_text(color="white", size=40)) +
+  labs(x = "Trial number (by pattern)", y = "P(correct)")
+
+
+ggsave("figs/raw_accuracy.png", width=13,height=8.5, dpi=400)
+
+ggplot() +
+
+  geom_line(data = posterior_summary_22, aes(x = func_examples, y = p_true_mean, color = "Monkey A")) +
+  geom_ribbon(data = posterior_summary_22, aes(x = func_examples, ymin = p_true_lower, ymax = p_true_upper, fill= "Monkey A"), alpha = 0.2) +
+  geom_line(data = posterior_summary_24, aes(x = func_examples, y = p_true_mean, color = "Monkey B")) +
+  geom_ribbon(data = posterior_summary_24, aes(x = func_examples, ymin = p_true_lower, ymax = p_true_upper, fill="Monkey B"), alpha = 0.2) +
+
+
+  scale_color_manual(values = c("dodgerblue", "orange")) +
+  scale_fill_manual(values = c("dodgerblue", "orange")) +
+  guides(fill="none") +
+
+  facet_wrap(~func.type, nrow = 4, labeller = labeller(func.type = labels)) +
+  paper_theme + theme(legend.title = element_blank(),
+                      strip.background = element_rect(fill = "white", color = "white"),
+                      strip.text = element_text(color = "black")) +
+  labs(x = "Pattern examples", y = "Modeled accuracy")
+
+ggsave("figs/modeled_accuracy.png", width=14, height=7, dpi=400)
+
+
+```
+
+
+
+```{r}
+
+
+
+add_png_to_facet <- function(ggplot_object, data, facet_var, x_loc,y_loc, width, height, out_file) {
+  # Get the ggplotGrob
+  gtable <- ggplotGrob(ggplot_object)
+  # Get the unique facet labels in the order they appear in the data
+  facet_labels <- rev(unique(data[[facet_var]]))
+  # Extract panel positions from the layout
+  panel_positions <- subset(gtable$layout, grepl("panel", name))
+  # Order the panels by their left (l) and top (t) positions
+  ordered_panel_positions <- with(panel_positions, order(t, l))
+  # Ensure the facet labels order matches the plot
+  # For each ordered panel position, add the PNG
+  for (i in seq_along(ordered_panel_positions)) {
+    panel_index <- ordered_panel_positions[i]
+    facet_label <- facet_labels[i]
+    if (!is.na(facet_label)) {
+      img <- readPNG(paste0("../../figs/monkey_func_ims/all/", facet_label, ".png"))
+      # Convert to raster and add it to the gtable
+      g <- rasterGrob(img, interpolate = TRUE, width = unit(0.24, "npc"), height = unit(0.35, "npc"))
+      g <- editGrob(g, vp = viewport(x = x_loc, y = y_loc, just = c("right", "top")))
+      gtable <- gtable_add_grob(gtable, g, t = panel_positions$t[panel_index], l = panel_positions$l[panel_index])
+    }
+  }
+  png(filename = out_file, width = width, height = height, units = 'mm', res = 400)
+  grid.draw(gtable)
+  dev.off()
+}
+
+# Create the base plot and save it to a variable
+p <- ggplot() +
+  geom_line(data = posterior_summary_22, aes(x = func_examples, y = p_true_mean, color = "Monkey A")) +
+  geom_ribbon(data = posterior_summary_22, aes(x = func_examples, ymin = p_true_lower, ymax = p_true_upper, fill= "Monkey A"), alpha = 0.2) +
+  geom_line(data = posterior_summary_24, aes(x = func_examples, y = p_true_mean, color = "Monkey B")) +
+  geom_ribbon(data = posterior_summary_24, aes(x = func_examples, ymin = p_true_lower, ymax = p_true_upper, fill="Monkey B"), alpha = 0.2) +
+  scale_color_manual(values = c("dodgerblue", "orange")) +
+  scale_fill_manual(values = c("dodgerblue", "orange")) +
+  guides(fill="none") +
+  facet_wrap(~func.type, nrow = 4, labeller = labeller(func.type = labels)) +
+  paper_theme + theme(legend.title = element_blank(),
+                     strip.background = element_rect(fill = "white", color = "white"),
+                     strip.text = element_text(color = "black")) +
+  labs(x = "Pattern examples", y = "Modeled accuracy")
+
+# Call add_png_to_facet with the plot
+add_png_to_facet(
+  ggplot_object = p,
+  data = posterior_summary_22,  # Using posterior_summary_22 as the data source
+  facet_var = "func.type",     # The variable used for faceting
+  x_loc = 0.7,                # Position the image near the right side
+  y_loc =1.4,                # Position the image near the top
+  width = 280,                 # Width in mm (14 inches ≈ 280mm)
+  height = 140,                # Height in mm (7 inches ≈ 140mm)
+  out_file = "figs/modeled_accuracy_with_images.png"  # Output file path
+)
+
+```
