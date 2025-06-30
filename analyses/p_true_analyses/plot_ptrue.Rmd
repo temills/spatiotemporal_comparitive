@@ -1,0 +1,642 @@
+---
+title: "model comparison"
+output: html_document
+---
+
+```{r, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.width=4, fig.height=3,fig.align = "center",cache=TRUE)
+library(ggplot2)
+library(reshape)
+library(grid)
+library(dplyr)
+library(gridExtra)
+library(lme4)
+library(reghelper)
+library(RColorBrewer)
+library(robustbase)
+library(tidylog)
+library(tidyr)
+library(hash)
+library(rstan)
+library(png)
+library(gtable)
+library(ggimage)
+library(hash)
+library(purrr)
+library(stringr)
+library(ggforce)
+
+paper_theme <- theme_light() + theme(
+  axis.text.x=element_text(colour="#292929",
+                           size = 14), 
+axis.title.x = element_text(size=18, family="Georgia"),
+  axis.title.y = element_text(size = 18, vjust = 1,  family="Georgia"),
+  axis.text.y  = element_text(size = 14, colour="#292929", family="Georgia"),
+  strip.text=element_text(size=16,color="black", family="Georgia"),
+strip.background = element_rect(colour = "grey50", fill = "white"),
+panel.background = element_rect(fill = "white", colour = "grey50"),
+  axis.ticks.x=element_blank(),axis.ticks.y=element_blank(),
+  axis.line.x = element_line(colour = "black"), 
+  axis.line.y = element_line(colour = "black"),
+  legend.title=element_text(size=18, family="Georgia"),
+  legend.text=element_text(size=15, family="Georgia"),
+  panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+```
+
+
+```{r}
+
+df_adult <-read.csv("../data/inferred_accuracies/mean_adult.csv")
+df_kid <-read.csv("../data/inferred_accuracies/mean_kid_chs.csv")
+df_monkey <- read.csv("../data/inferred_accuracies/mean_monkey.csv")
+
+df_stimuli <- read.csv("../data/stimuli.csv") %>% 
+              rename(func.type=seq_id) %>%
+              group_by(func.type) %>%
+
+              filter(tpt < 15) %>%
+
+              mutate(
+              xrng = max(true_x) - min(true_x),
+              yrng = max(true_y) - min(true_y),
+              
+              true_x = ifelse(xrng > 0, (true_x - min(true_x))/xrng, 0.5),
+              true_y = ifelse(yrng > 0, (true_y - min(true_y))/yrng, 0.5))
+
+adult_seqs <- unique(as.character(df_adult$func.type))
+df_kid <- df_kid %>%
+          rowwise() %>%
+          filter(func.type %in% adult_seqs)
+
+
+
+```
+
+```{r}
+summary_monkey <- df_monkey %>%
+  group_by(func.type, tpt) %>%
+  summarise(
+    prob_true_monkey = mean(prob_true, na.rm=TRUE),
+    prob_rand_monkey = mean(prob_rand, na.rm=TRUE), 
+    prob_prev_monkey = mean(prob_prev, na.rm=TRUE),
+    se_prob_true_monkey = sd(prob_true, na.rm=TRUE) / sqrt(n()),
+    se_prob_rand_monkey = sd(prob_rand, na.rm=TRUE) / sqrt(n()),
+    se_prob_prev_monkey = sd(prob_prev, na.rm=TRUE) / sqrt(n()),
+    .groups = 'drop'
+  )
+
+summary_adult <- df_adult %>%
+  group_by(func.type, tpt) %>%
+  summarise(
+    prob_true_adult = mean(prob_true, na.rm=TRUE),
+    prob_rand_adult = mean(prob_rand, na.rm=TRUE),
+    prob_prev_adult = mean(prob_prev, na.rm=TRUE),
+    se_prob_true_adult = sd(prob_true, na.rm=TRUE) / sqrt(n()),
+    se_prob_rand_adult = sd(prob_rand, na.rm=TRUE) / sqrt(n()),
+    se_prob_prev_adult = sd(prob_prev, na.rm=TRUE) / sqrt(n()),
+    .groups = 'drop'
+  )
+
+df_kid_with_age <- df_kid %>%
+  mutate(age_year = as.numeric(str_extract(group, "\\d+"))) # Extract number from group
+
+summary_3yo <- df_kid_with_age %>%
+  filter(age_year == 3) %>%
+  group_by(func.type, tpt) %>%
+  summarise(
+    prob_true_3yo = mean(prob_true, na.rm=TRUE),
+    prob_rand_3yo = mean(prob_rand, na.rm=TRUE),
+    prob_prev_3yo = mean(prob_prev, na.rm=TRUE),
+    se_prob_true_3yo = sd(prob_true, na.rm=TRUE) / sqrt(n()),
+    se_prob_rand_3yo = sd(prob_rand, na.rm=TRUE) / sqrt(n()),
+    se_prob_prev_3yo = sd(prob_prev, na.rm=TRUE) / sqrt(n()),
+    .groups = 'drop'
+  )
+
+summary_4yo <- df_kid_with_age %>%
+  filter(age_year == 4) %>%
+  group_by(func.type, tpt) %>%
+  summarise(
+    prob_true_4yo = mean(prob_true, na.rm=TRUE),
+    prob_rand_4yo = mean(prob_rand, na.rm=TRUE),
+    prob_prev_4yo = mean(prob_prev, na.rm=TRUE),
+    se_prob_true_4yo = sd(prob_true, na.rm=TRUE) / sqrt(n()),
+    se_prob_rand_4yo = sd(prob_rand, na.rm=TRUE) / sqrt(n()),
+    se_prob_prev_4yo = sd(prob_prev, na.rm=TRUE) / sqrt(n()),
+    .groups = 'drop'
+  )
+
+summary_5yo <- df_kid_with_age %>%
+  filter(age_year == 5) %>%
+  group_by(func.type, tpt) %>%
+  summarise(
+    prob_true_5yo = mean(prob_true, na.rm=TRUE),
+    prob_rand_5yo = mean(prob_rand, na.rm=TRUE),
+    prob_prev_5yo = mean(prob_prev, na.rm=TRUE),
+    se_prob_true_5yo = sd(prob_true, na.rm=TRUE) / sqrt(n()),
+    se_prob_rand_5yo = sd(prob_rand, na.rm=TRUE) / sqrt(n()),
+    se_prob_prev_5yo = sd(prob_prev, na.rm=TRUE) / sqrt(n()),
+    .groups = 'drop'
+  )
+
+summary_6yo <- df_kid_with_age %>%
+  filter(age_year == 6) %>%
+  group_by(func.type, tpt) %>%
+  summarise(
+    prob_true_6yo = mean(prob_true, na.rm=TRUE),
+    prob_rand_6yo = mean(prob_rand, na.rm=TRUE),
+    prob_prev_6yo = mean(prob_prev, na.rm=TRUE),
+    se_prob_true_6yo = sd(prob_true, na.rm=TRUE) / sqrt(n()),
+    se_prob_rand_6yo = sd(prob_rand, na.rm=TRUE) / sqrt(n()),
+    se_prob_prev_6yo = sd(prob_prev, na.rm=TRUE) / sqrt(n()),
+    .groups = 'drop'
+  )
+
+summary_7yo <- df_kid_with_age %>%
+  filter(age_year == 7) %>%
+  group_by(func.type, tpt) %>%
+  summarise(
+    prob_true_7yo = mean(prob_true, na.rm=TRUE),
+    prob_rand_7yo = mean(prob_rand, na.rm=TRUE),
+    prob_prev_7yo = mean(prob_prev, na.rm=TRUE),
+    se_prob_true_7yo = sd(prob_true, na.rm=TRUE) / sqrt(n()),
+    se_prob_rand_7yo = sd(prob_rand, na.rm=TRUE) / sqrt(n()),
+    se_prob_prev_7yo = sd(prob_prev, na.rm=TRUE) / sqrt(n()),
+    .groups = 'drop'
+  )
+
+summary_merged_behavioral <- summary_adult %>%
+  full_join(summary_monkey, by = c("func.type", "tpt")) %>%
+  full_join(summary_3yo, by = c("func.type", "tpt")) %>%
+  full_join(summary_4yo, by = c("func.type", "tpt")) %>%
+  full_join(summary_5yo, by = c("func.type", "tpt")) %>%
+  full_join(summary_6yo, by = c("func.type", "tpt")) %>%
+  full_join(summary_7yo, by = c("func.type", "tpt"))
+
+# Create complete template with all func.type/tpt combinations and join behavioral data
+summary_merged <- df_stimuli %>%
+  select(func.type, tpt, true_x, true_y) %>%
+  left_join(summary_merged_behavioral, by = c("func.type", "tpt")) %>%
+  group_by(func.type) %>%
+  mutate(
+    mean_prob_true_adult = mean(prob_true_adult, na.rm=TRUE),
+    mean_prob_true_monkey = mean(prob_true_monkey, na.rm=TRUE),
+    mean_prob_true_3yo = mean(prob_true_3yo, na.rm=TRUE),
+    mean_prob_true_4yo = mean(prob_true_4yo, na.rm=TRUE),
+    mean_prob_true_5yo = mean(prob_true_5yo, na.rm=TRUE),
+    mean_prob_true_6yo = mean(prob_true_6yo, na.rm=TRUE),
+    mean_prob_true_7yo = mean(prob_true_7yo, na.rm=TRUE)
+  ) %>%
+  ungroup()
+
+
+summary_merged_tpt <- df_stimuli %>%
+  select(func.type, tpt, true_x, true_y) %>%
+  left_join(summary_merged_behavioral, by = c("func.type", "tpt")) %>%
+  group_by(func.type, tpt) %>%
+  mutate(
+    mean_prob_true_adult = mean(prob_true_adult, na.rm=TRUE),
+    mean_prob_true_monkey = mean(prob_true_monkey, na.rm=TRUE),
+    mean_prob_true_3yo = mean(prob_true_3yo, na.rm=TRUE),
+    mean_prob_true_4yo = mean(prob_true_4yo, na.rm=TRUE),
+    mean_prob_true_5yo = mean(prob_true_5yo, na.rm=TRUE),
+    mean_prob_true_6yo = mean(prob_true_6yo, na.rm=TRUE),
+    mean_prob_true_7yo = mean(prob_true_7yo, na.rm=TRUE)
+  ) %>%
+  ungroup()
+
+
+```
+
+
+```{r, fig.width=15, fig.height=5, warning=FALSE}
+
+scale_fn <- 0.2
+aspect_ratio <-0.9
+tpt_rng = max(df_adult$tpt) - min(df_adult$tpt) 
+
+ggplot() +
+    geom_path(data=df_stimuli, aes(x=0.5+true_x*scale_fn*tpt_rng, y =  (1-scale_fn) + true_y*scale_fn*aspect_ratio), size=0.5, alpha=0.5) +
+    geom_point(data=df_stimuli, aes(x=0.5+true_x*scale_fn*tpt_rng, y =  (1-scale_fn) + true_y*scale_fn*aspect_ratio), size=1,alpha=0.8) +
+      stat_summary(data=df_monkey, aes(x=tpt, y=prob_true, color="Monkeys"), fun="mean", geom="line") +
+      stat_summary(data=df_monkey, aes(x=tpt, y=prob_true, color="Monkeys"), fun.data="mean_se", geom="errorbar", width=0.1, alpha=0.75) +
+      stat_summary(data=df_monkey, aes(x=tpt, y=prob_true, color="Monkeys"), fun="mean", geom="point", size=2) +
+      stat_summary(data=df_monkey, aes(x=tpt, y=prob_true), fun="mean", geom="point", color="white", size=0.5) +
+  
+      stat_summary(data=df_adult, aes(x=tpt, y=prob_true, color="Adults"), fun="mean", geom="line") +
+      stat_summary(data=df_adult, aes(x=tpt, y=prob_true, color="Adults"), fun.data="mean_se", geom="errorbar", width=0.1, alpha=0.75) +
+      stat_summary(data=df_adult, aes(x=tpt, y=prob_true, color="Adults"), fun="mean", geom="point", size=2) +
+      stat_summary(data=df_adult, aes(x=tpt, y=prob_true), fun="mean", geom="point", color="white", size=0.5) +
+
+      stat_summary(data=df_kid, aes(x=tpt, y=prob_true, color="Children"), fun="mean", geom="line") +
+      stat_summary(data=df_kid, aes(x=tpt, y=prob_true, color="Children"), fun.data="mean_se", geom="errorbar", width=0.1, alpha=0.75) +
+      stat_summary(data=df_kid, aes(x=tpt, y=prob_true, color="Children"), fun="mean", geom="point", size=2) +
+      stat_summary(data=df_kid, aes(x=tpt, y=prob_true), fun="mean", geom="point", color="white", size=0.5) +
+  
+
+      guides(alpha="none") +
+      scale_color_manual(values = c("Adults" = "#59ab9d", "Children" = "#75073c", "Monkeys" = "#ad9e26")) +
+
+      facet_wrap(~func.type, nrow=3) +
+      labs(x="Sequence timepoint", y="Inferred accuracy") +
+        paper_theme + theme(legend.title=element_blank(), strip.text = element_blank(), strip.background=element_blank())
+        
+
+
+```
+
+
+
+```{r, fig.width=16, fig.height=3.5}
+scale_fn <- 0.08
+aspect_ratio <- 1
+
+# Create age comparison data (similar to plot_funcs structure)
+age_comparison <- summary_merged %>%
+  select(func.type, true_x, true_y, mean_prob_true_monkey, starts_with("mean_prob_true_")) %>%
+  pivot_longer(cols = starts_with("mean_prob_true_") & !matches("monkey|adult"),
+               names_to = "age_year",
+               values_to = "age_prob_true",
+               names_prefix = "mean_prob_true_") %>%
+  filter(age_year %in% c("3yo", "4yo", "5yo", "6yo", "7yo")) %>%
+  mutate(age_year = str_replace(age_year, "yo", ""))  # Remove "yo" to get just numbers
+
+# Add adult data
+adult_comparison <- summary_merged %>%
+  select(func.type, true_x, true_y, mean_prob_true_monkey, mean_prob_true_adult) %>%
+  mutate(age_year = "Adult",
+         age_prob_true = mean_prob_true_adult)
+
+all_human_comparison <- bind_rows(
+  age_comparison,
+  adult_comparison
+) %>%
+  mutate(age_year = factor(age_year, levels = c("3", "4", "5", "6", "7", "Adult")))
+
+all_human_correlations <- all_human_comparison %>%
+  group_by(age_year) %>%
+  summarise(r_monkey = cor(age_prob_true, mean_prob_true_monkey, use="complete.obs"))
+
+age_labels <- function(x) {
+  ifelse(x == "Adult", "Adults", paste(x, "year olds"))
+}
+
+# Create the plot
+ggplot(data=all_human_comparison) + 
+  geom_abline() +
+  geom_path(aes(x=age_prob_true + true_x*scale_fn, 
+                y=mean_prob_true_monkey + true_y*scale_fn*aspect_ratio, 
+                group=func.type, color=func.type), 
+           alpha=0.7, size=0.4) +
+  
+  geom_point(aes(x=age_prob_true + true_x*scale_fn, 
+                 y=mean_prob_true_monkey + true_y*scale_fn*aspect_ratio, 
+                 group=func.type, color=func.type), 
+             alpha=0.8, size=0.3) +
+  geom_point(aes(x=age_prob_true + true_x*scale_fn, 
+                 y=mean_prob_true_monkey + true_y*scale_fn*aspect_ratio, 
+                  group=func.type), color="black",
+             alpha=0.05, size=0.1) +
+
+  facet_wrap(~age_year, nrow=1, labeller = labeller(age_year = age_labels)) +
+  geom_text(data=all_human_correlations, 
+            aes(x=0.14, y=0.94, label=paste("R^2 == ", sprintf("%.2f", r_monkey**2))),  
+            size=5, family="Georgia", parse=TRUE) +
+  labs(x=expression(hat(theta)[t] ~ "Human"), y=expression(hat(theta)[t] ~ "Monkey")) +
+  coord_cartesian(xlim=c(-0.02, 1.02), ylim=c(-0.02, 1.02)) +
+  scale_x_continuous(breaks=c(0,0.5,1)) +
+  scale_y_continuous(breaks=c(0,0.5,1)) +
+  guides(color="none") + 
+  paper_theme + theme(strip.background=element_blank(), 
+                      axis.title.x=element_text(size=22), 
+                      axis.title.y=element_text(size=21), 
+                      strip.text=element_text(size=19))
+
+
+#ggsave("../figs/human_monkey_ptrue_correlation.png", width=16, height=3.5, dpi=400)
+
+```
+
+
+```{r, fig.width=13.5, fig.height=3.5}
+scale_fn <- 0.08
+aspect_ratio <- 1
+
+# Create age comparison data for kids vs adults
+age_comparison_adult <- summary_merged %>%
+  select(func.type, true_x, true_y, mean_prob_true_adult, starts_with("mean_prob_true_")) %>%
+  pivot_longer(cols = starts_with("mean_prob_true_") & !matches("monkey|adult"),
+               names_to = "age_year",
+               values_to = "age_prob_true",
+               names_prefix = "mean_prob_true_") %>%
+  filter(age_year %in% c("3yo", "4yo", "5yo", "6yo", "7yo")) %>%
+  mutate(age_year = str_replace(age_year, "yo", ""))  # Remove "yo" to get just numbers
+
+# Calculate correlations with adults
+all_human_adult_correlations <- age_comparison_adult %>%
+  group_by(age_year) %>%
+  summarise(r_adult = cor(age_prob_true, mean_prob_true_adult, use="complete.obs"))
+
+age_labels <- function(x) {
+  paste(x, "year olds")
+}
+
+ggplot(data=age_comparison_adult) + 
+  geom_abline() +
+  geom_path(aes(x=age_prob_true + true_x*scale_fn, 
+                y=mean_prob_true_adult + true_y*scale_fn*aspect_ratio, 
+                group=func.type, color=func.type), 
+           alpha=0.7, size=0.4) +
+  
+  geom_point(aes(x=age_prob_true + true_x*scale_fn, 
+                 y=mean_prob_true_adult + true_y*scale_fn*aspect_ratio, 
+                 group=func.type, color=func.type), 
+             alpha=0.8, size=0.3) +
+  geom_point(aes(x=age_prob_true + true_x*scale_fn, 
+                 y=mean_prob_true_adult + true_y*scale_fn*aspect_ratio, 
+                  group=func.type), color="black",
+             alpha=0.05, size=0.1) +
+
+  facet_wrap(~age_year, nrow=1, labeller = labeller(age_year = age_labels)) +
+  geom_text(data=all_human_adult_correlations, 
+            aes(x=0.85, y=0.1, label=paste("R^2 == ", sprintf("%.2f", r_adult**2))),  
+            size=5, family="Georgia", parse=TRUE) +
+  labs(x=expression(hat(theta)[t] ~ "Children"), y=expression(hat(theta)[t] ~ "Adults")) +
+  coord_cartesian(xlim=c(-0.02, 1.02), ylim=c(-0.02, 1.02)) +
+  scale_x_continuous(breaks=c(0,0.5,1)) +
+  scale_y_continuous(breaks=c(0,0.5,1)) +
+  guides(color="none") + 
+  paper_theme + theme(strip.background=element_blank(), 
+                      axis.title.x=element_text(size=22), 
+                      axis.title.y=element_text(size=21), 
+                      strip.text=element_text(size=19))
+
+
+
+#ggsave("../figs/children_adult_ptrue_correlation.png", width=13.5, height=3.5, dpi=400)
+
+
+
+```
+
+
+
+```{r, fig.width=4.5, fig.height=4}
+summary_monkey_individual <- df_monkey %>%
+  group_by(func.type, tpt, r_id) %>%
+  summarise(
+    prob_true = mean(prob_true, na.rm=TRUE),
+    prob_rand = mean(prob_rand, na.rm=TRUE), 
+    prob_prev = mean(prob_prev, na.rm=TRUE),
+    motor_sd = mean(motor_sd, na.rm=TRUE),
+    .groups = 'drop'
+  ) %>%
+  pivot_wider(
+    id_cols = c(func.type, tpt),
+    names_from = r_id,
+    values_from = c(prob_true, prob_rand, prob_prev, motor_sd),
+    names_sep = "_"
+  )
+
+summary_monkey_individual <- df_stimuli %>%
+  select(func.type, tpt, true_x, true_y) %>%
+  left_join(summary_monkey_individual, by = c("func.type", "tpt"))
+
+
+summary_monkey_individual_tpt <- summary_monkey_individual %>%
+  group_by(func.type, tpt) %>%
+  mutate(
+    mean_prob_true_BP22 = mean(prob_true_BP22, na.rm=TRUE),
+    mean_prob_true_BP24 = mean(prob_true_BP24, na.rm=TRUE),
+    mean_motor_sd_BP22 = mean(motor_sd_BP22, na.rm=TRUE),
+    mean_motor_sd_BP24 = mean(motor_sd_BP24, na.rm=TRUE),
+
+  ) %>%
+  ungroup()
+
+summary_monkey_individual <- summary_monkey_individual %>%
+  group_by(func.type) %>%
+  mutate(
+    mean_prob_true_BP22 = mean(prob_true_BP22, na.rm=TRUE),
+    mean_prob_true_BP24 = mean(prob_true_BP24, na.rm=TRUE),
+    mean_motor_sd_BP22 = mean(motor_sd_BP22, na.rm=TRUE),
+    mean_motor_sd_BP24 = mean(motor_sd_BP24, na.rm=TRUE),
+
+  ) %>%
+  ungroup()
+
+
+
+scale_fn <- 0.085
+aspect_ratio <- 5/4.5
+
+
+cor(summary_monkey_individual_tpt$mean_prob_true_BP22, 
+                           summary_monkey_individual_tpt$mean_prob_true_BP24, 
+                           use="complete.obs")
+
+r_monkey_correlation <- cor(summary_monkey_individual$mean_prob_true_BP22, 
+                           summary_monkey_individual$mean_prob_true_BP24, 
+                           use="complete.obs")
+
+ggplot(data=summary_monkey_individual) +
+  geom_abline() +
+  geom_path(aes(x=mean_prob_true_BP22 + true_x*scale_fn - scale_fn *0.5, 
+                y=mean_prob_true_BP24 + true_y*scale_fn*aspect_ratio, 
+                group=func.type, color=func.type), 
+           alpha=0.7, size=0.4) +
+  geom_point(aes(x=mean_prob_true_BP22 + true_x*scale_fn - scale_fn *0.5, 
+                 y=mean_prob_true_BP24 + true_y*scale_fn*aspect_ratio, 
+                 group=func.type, color=func.type), 
+             alpha=0.8, size=0.3) +
+  geom_point(aes(x=mean_prob_true_BP22 + true_x*scale_fn - scale_fn *0.5, 
+                 y=mean_prob_true_BP24 + true_y*scale_fn*aspect_ratio, 
+                 group=func.type), 
+             color="black", alpha=0.05, size=0.1) +
+  
+  annotate("text", x=0.1, y=0.9,
+           label=paste("R^2 == ", sprintf("%.2f", r_monkey_correlation^2)),
+           size=6, family="Georgia", parse=TRUE) +
+  
+  labs(x=expression(hat(theta)[t] ~ "Monkey 1"), 
+       y=expression(hat(theta)[t] ~ "Monkey 2")) +
+  coord_cartesian(xlim=c(-0.02, 1.02), ylim=c(-0.02, 1.02)) +
+  scale_x_continuous(breaks=c(0,0.5,1)) +
+  scale_y_continuous(breaks=c(0,0.5,1)) +
+  guides(color="none") + 
+  paper_theme
+
+
+ggsave("../figs/monkey_ptrue_correlation.png", width=5, height=4.5, dpi=400)
+
+
+
+```
+
+
+```{r, fig.width=8, fig.height=6.5}
+correlation_df <- summary_merged %>%
+  ungroup() %>%
+  group_by(func.type) %>%
+  slice(1) %>%  
+  ungroup() %>%
+  select(func.type, mean_prob_true_monkey, mean_prob_true_adult, 
+         mean_prob_true_3yo, mean_prob_true_4yo, mean_prob_true_5yo, 
+         mean_prob_true_6yo, mean_prob_true_7yo) %>%
+  # Rename columns for cleaner labels
+  rename(
+    "Monkeys" = mean_prob_true_monkey,
+    "Adults" = mean_prob_true_adult,
+    "3yo" = mean_prob_true_3yo,
+    "4yo" = mean_prob_true_4yo,
+    "5yo" = mean_prob_true_5yo,
+    "6yo" = mean_prob_true_6yo,
+    "7yo" = mean_prob_true_7yo
+  ) %>%
+  mutate(across(-func.type, as.numeric)) %>%
+  filter(complete.cases(.))
+
+cor_matrix <- cor(correlation_df %>% select(-func.type), use = "complete.obs")
+
+# Convert to long format for ggplot
+cor_long_all <- as.data.frame(cor_matrix) %>%
+  mutate(group1 = rownames(cor_matrix)) %>%
+  pivot_longer(
+    cols = -group1,
+    names_to = "group2",
+    values_to = "correlation"
+  )
+
+group_levels <- c("Monkeys", "3yo", "4yo", "5yo", "6yo", "7yo", "Adults")
+
+cor_long_filtered <- cor_long_all %>%
+  mutate(
+    group1 = factor(group1, levels = group_levels),
+    group2 = factor(group2, levels = rev(group_levels))
+  )
+
+ggplot(cor_long_filtered, aes(x = group2, y = group1, fill = correlation)) +
+  geom_tile() +
+  geom_text(aes(label = sprintf("%.2f", correlation)),
+            color = "black", size = 3.5, family = "Georgia") +
+  scale_fill_gradientn(colors=c("white", "#f0e3e1", "#c40222", "darkred"), 
+                       limits=c(0,1), breaks=c(0,0.5,1)) +
+  scale_x_discrete(limits = group_levels, drop = FALSE) +
+  scale_y_discrete(limits = rev(group_levels), drop = FALSE) +
+  labs(x = "", y = "", fill = "Correlation", 
+       title = expression("Pairwise correlations of " * hat(theta)[t] * " across groups")) +
+  paper_theme + 
+  theme(
+    axis.title.x=element_blank(), 
+    axis.title.y=element_blank(), 
+    axis.line.x=element_blank(),
+    axis.line.y=element_blank(),
+    axis.line=element_blank(),
+    legend.title=element_text(vjust=1, size=15),
+    legend.text=element_text(size=12),
+    panel.grid = element_blank(),
+    panel.border = element_blank(),
+    axis.text.x = element_text(size = 16, color="black", family="Georgia", angle=45, hjust=0.9),
+    axis.text.y = element_text(size = 16, color="black", family="Georgia"),
+    plot.title = element_text(size = 18, family="Georgia", hjust = 0.5)
+  )
+
+#ggsave("../figs/all_groups_ptrue_correlation_matrix.png", width = 8, height = 6.5, dpi = 400)
+
+
+
+```
+
+```{r, fig.width=15, fig.height=14}
+library(patchwork)
+
+groups <- c("Monkeys", "3yo", "4yo", "5yo", "6yo", "7yo", "Adults")
+group_labels <- c(expression(hat(theta)[t] ~ "Monkeys"), 
+                  expression(hat(theta)[t] ~ "3yo"), 
+                  expression(hat(theta)[t] ~ "4yo"),
+                  expression(hat(theta)[t] ~ "5yo"), 
+                  expression(hat(theta)[t] ~ "6yo"), 
+                  expression(hat(theta)[t] ~ "7yo"),
+                  expression(hat(theta)[t] ~ "Adults"))
+group_cols <- c("mean_prob_true_monkey", "mean_prob_true_3yo", "mean_prob_true_4yo", 
+                "mean_prob_true_5yo", "mean_prob_true_6yo", "mean_prob_true_7yo", "mean_prob_true_adult")
+
+plot_list <- list()
+scale_fn <- 0.06
+aspect_ratio <- 1
+
+for(i in 1:length(groups)) {
+  for(j in 1:length(groups)) {
+    
+    if(i == j) {
+      p <- ggplot() + 
+        theme_void() +
+        theme(panel.border = element_rect(color="black", fill=NA, size=0.5))
+    } else {
+      x_col <- group_cols[j]
+      y_col <- group_cols[i]
+      
+      plot_data <- summary_merged %>%
+        select(func.type, true_x, true_y, all_of(c(x_col, y_col))) %>%
+        rename(x_val = !!sym(x_col), y_val = !!sym(y_col))
+      
+      r_val <- cor(plot_data$x_val, plot_data$y_val, use="complete.obs")
+      
+      p <- ggplot(data=plot_data) +
+        geom_abline(color="grey70") +
+        geom_path(aes(x=x_val + true_x*scale_fn, 
+                      y=y_val + true_y*scale_fn*aspect_ratio, 
+                      group=func.type, color=func.type), 
+                 alpha=0.7, size=0.3) +
+        geom_point(aes(x=x_val + true_x*scale_fn, 
+                       y=y_val + true_y*scale_fn*aspect_ratio, 
+                       group=func.type, color=func.type), 
+                   alpha=0.8, size=0.2) +
+        geom_point(aes(x=x_val + true_x*scale_fn, 
+                       y=y_val + true_y*scale_fn*aspect_ratio, 
+                       group=func.type), 
+                   color="black", alpha=0.05, size=0.1) +
+        annotate("text", x=0.15, y=0.97, 
+                 label=paste("R^2 == ", sprintf("%.2f", r_val^2)), 
+                 size=3.5, family="Georgia", parse=TRUE) +
+        coord_cartesian(xlim=c(-0.02, 1.02), ylim=c(-0.02, 1.02)) +
+        scale_x_continuous(breaks=c(0, 0.5, 1)) +
+        scale_y_continuous(breaks=c(0, 0.5, 1)) +
+        guides(color="none") +
+        theme_light() + 
+        theme(
+          axis.text.x = element_text(colour="#292929", size=10, family="Georgia"), 
+          axis.text.y = element_text(colour="#292929", size=10, family="Georgia"),
+          axis.title = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.ticks.y = element_blank(),
+          axis.line.x = element_line(colour="black", size=0.3), 
+          axis.line.y = element_line(colour="black", size=0.3),
+          panel.background = element_rect(fill="white", colour="grey50"),
+          panel.border = element_rect(color="black", fill=NA, size=0.5),
+          panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank()
+        )
+    }
+    
+    if(i == 1) {
+      p <- p + labs(title = group_labels[j]) + 
+        theme(plot.title = element_text(size=12, family="Georgia", hjust=0.5))
+    }
+    if(j == 1) {
+      p <- p + labs(y = group_labels[i]) + 
+        theme(axis.title.y = element_text(size=12, family="Georgia", angle=90, vjust=0.5))
+    }
+    
+    plot_list[[(i-1)*length(groups) + j]] <- p
+  }
+}
+
+final_plot <- wrap_plots(plot_list, ncol = length(groups), nrow = length(groups))
+final_plot
+# 
+# ggsave("../figs/all_pairwise_ptrue_correlations.png", final_plot,
+#        width=15, height=14, dpi=400)
+
+```

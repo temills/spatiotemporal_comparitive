@@ -1,0 +1,133 @@
+---
+title: "plot_monkey_funcs"
+output: html_document
+---
+
+```{r, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.width=4, fig.height=3,fig.align = "center",cache=TRUE)
+library(ggplot2)
+library(reshape)
+library(grid)
+library(dplyr)
+library(gridExtra)
+library(lme4)
+library(reghelper)
+library(RColorBrewer)
+library(robustbase)
+library(tidylog)
+library(tidyr)
+library(hash)
+library(rstan)
+library(png)
+library(gtable)
+library(ggimage)
+library(hash)
+library(purrr)
+library(stringr)
+library(ggforce)
+
+paper_theme <- theme_light() + theme(
+  axis.text.x=element_text(colour="#292929",
+                           size = 14), 
+axis.title.x = element_text(size=18, family="Georgia"),
+  axis.title.y = element_text(size = 18, vjust = 1,  family="Georgia"),
+  axis.text.y  = element_text(size = 14, colour="#292929", family="Georgia"),
+  strip.text=element_text(size=16,color="black", family="Georgia"),
+strip.background = element_rect(colour = "grey50", fill = "white"),
+panel.background = element_rect(fill = "white", colour = "grey50"),
+  axis.ticks.x=element_blank(),axis.ticks.y=element_blank(),
+  axis.line.x = element_line(colour = "black"), 
+  axis.line.y = element_line(colour = "black"),
+  legend.title=element_text(size=18, family="Georgia"),
+  legend.text=element_text(size=15, family="Georgia"),
+  panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+
+preprocess_df_monkey <- function(df) {
+  df$attempt = 1
+  df$id <- seq_len(nrow(df))
+  df <- df[order(df$n),] %>%
+      rename(true_x=x_next, true_y=y_next, prev_x=x_curr, prev_y=y_curr, pred_x=x_pred, subj_id = monkey_name, pred_y=y_pred, func.name=func_id) %>%
+      rename(tpt = n) %>%
+      mutate(func.name=ifelse(func.name=="example_line", "line", func.name)) %>%
+      group_by(r_id, game_n, tpt) %>%
+      mutate(true_dist=((true_x-prev_x)**2. + (true_y-prev_y)**2.)**0.5) %>%
+      mutate(err_x=pred_x-true_x) %>%
+      mutate(err_y=pred_y-true_y) %>%
+      mutate(abs_err = ((err_x**2)+(err_y**2)) **0.5) %>%  
+      mutate(abs_rel_err = abs_err/(true_dist)) %>%
+      mutate(dist_from_prev = (((pred_x-true_x)**2)+((pred_y-true_y)**2)) **0.5) %>%
+      ungroup() %>%
+      mutate(n=tpt)
+  return(df)
+}
+
+```
+
+
+```{r}
+
+df_monkey_train <- preprocess_df_monkey(read.csv("analyses/data/participants/all_monkey_data/train.csv"))
+
+df_monkey_train$id <- seq.int(1, nrow(df_monkey_train))
+
+```
+
+
+```{r}
+df_unique_funcs <- df_monkey_train %>%
+                    group_by(func.name, tpt) %>%
+                    top_n(n=1, wt=id) %>%
+                    ungroup() %>%
+                    group_by(func.name) %>%
+                    mutate(range_x = max(true_x) - min(true_x), range_y = max(true_y) - min(true_y)) %>%
+                    mutate(range_xy = max(range_x, range_y)) %>%
+                    mutate(true_x = ifelse(range_x > 0, (true_x - min(true_x))/(range_x), 0.5),
+                          true_y = ifelse(range_y > 0, (true_y - min(true_y))/(range_y), 0.5)) 
+```
+
+
+```{r}
+
+df_seq <- df_unique_funcs %>% filter(func.name == "zigzag.21")
+
+ggplot(data=df_seq, aes(x=true_x, y=true_y)) +
+        geom_point(aes(alpha=-tpt), size=4) +
+        geom_path() +
+        guides(alpha="none") +
+        theme_void()
+
+
+          
+  
+
+
+```
+
+
+```{r}
+
+
+output_base <- "figs/monkey_func_ims"
+
+unique_funcs <- unique(df_unique_funcs$func.name)
+
+for (func in unique_funcs) {
+  df_seq <- df_unique_funcs %>% filter(func.name == func)
+  func_type <- unique(df_seq$func.type)
+  output_dir <- file.path(output_base, func_type)
+  if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+  
+  p <- ggplot(data = df_seq, aes(x = true_x, y = true_y)) +
+    geom_path(size=1) +
+    geom_point(aes(alpha = tpt), size = 8) +
+
+    guides(alpha = "none") +
+    theme_void() +
+    theme(plot.background = element_rect(fill = "white", color = NA))
+  
+  output_file <- file.path(output_dir, paste0(func, ".png"))
+  ggsave(output_file, plot = p, width = 4, height = 4, dpi = 300, bg = "white") 
+}
+
+```

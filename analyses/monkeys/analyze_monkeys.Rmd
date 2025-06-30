@@ -144,7 +144,7 @@ unique_sequences_df <- df %>%
     x_lin = x_curr + delta_x,
     y_lin = y_curr + delta_y
   ) %>%
-  select(func.name, n, x_lin, y_lin) %>%  # Only keep necessary columns
+  select(func.name, n, x_lin, y_lin) %>%  
   ungroup()
 # 
 
@@ -259,38 +259,18 @@ ggplot(data=df, aes(x=scaled_func_examples, y=correct_120, group=monkey_name, co
 
 ggsave("figs/monkey_training.png",width=8, height=5, dpi=500)
 
+```
 
 
+```{r}
+
+ggplot(data=df, aes(x=round(lin_dist/100)*100, y=correct_120)) +
+        stat_summary() +
+          paper_theme 
 
 ```
 
 
-```{r, fig.width=10, fig.height=5}
-
-ggplot(data=df, aes(x=func.type, y=lin_correct_120)) +
-        stat_summary() +
-        paper_theme + 
-        theme( axis.text.x = element_text(angle=45)
-          
-        )
-
-
-ggplot(data=df, aes(x=func.type, y=guess_dist_from_linear - guess_dist_from_curr)) +
-        stat_summary() +
-          paper_theme + 
-          theme( axis.text.x = element_text(angle=45)
-          )
-          
-  
-        
-ggplot(data=df, aes(x=round(lin_dist/25)*25, y=correct_120)) +
-              stat_summary() +
-              paper_theme +
-              facet_wrap(~func.type)
-
-
-
-```
 
 ```{r, fig.width=10, fig.height=5}
 

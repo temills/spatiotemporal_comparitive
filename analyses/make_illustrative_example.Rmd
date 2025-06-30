@@ -170,7 +170,7 @@ ggplot(data=df_stimuli, aes(x=true_x, y=true_y)) +
         theme(strip.text=element_blank())
 
 
-ggsave("figs/stimuli.png", width=8, height=3, dpi=400)
+#ggsave("figs/stimuli.png", width=8, height=3, dpi=400)
 
 ```
 
