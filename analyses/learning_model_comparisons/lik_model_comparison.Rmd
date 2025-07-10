@@ -656,6 +656,278 @@ ggsave("../crossval_monkey_sep.png", width=12, height=5)
 ```
 
 
+
+# ```{r}
+# ggplot(data=df_participant_model%>%filter(func.name=="line.20")) +
+#   geom_point(aes(x=true_x, y=true_y)) +
+#   geom_point(aes(x=model_pred_x, y=model_pred_y, color=n)) + 
+#   facet_wrap(~func.name)
+# ```
+
+
+
+
+# LOO Crossvalidation
+```{r}
+read_cv_model_fit_data <- function(participant) {
+  path <- "model_fits/crossval/"
+  models = c("lot", "gpnc", "gpsl", "ridge", "lin", "lin_prev", "lot_no_recursion", "transformer_2", "transformer_3", "transformer_13")
+  df <- data.frame()
+  for (i in seq_along(models)) {
+    model_name <- models[i]
+    file <- paste(path, model_name, "_", participant, ".csv", sep="")
+    df <- bind_rows(df, read.csv(file)%>%mutate(model=model_name)) %>% select(c("model", "subj_id", "n", "func.name", "LL", "r_id", "seed"))
+  }
+  return(df)
+}
+
+cv_kid_chs <- read_cv_model_fit_data("kid_chs")
+cv_adult <- read_cv_model_fit_data("adult")
+cv_monkey <- read_cv_model_fit_data("monkey")
+
+cv_all <- cv_kid_chs %>% mutate(agent=paste0(age, " y/o")) %>%
+          bind_rows(cv_adult %>% mutate(agent="Adults")) %>%
+          bind_rows(cv_monkey %>% mutate(agent="Monkeys")%>%mutate(r_id=as.character(r_id)))
+
+cv_summ1 <- cv_all %>%
+           # group by r_id then subj
+           group_by(seed, agent, subj_id, model, func.name, r_id) %>%
+           summarize(LL=sum(LL, na.rm=T), .groups="drop") %>%
+           group_by(seed, agent, model, subj_id, func.name) %>%
+           summarize(LL=mean(LL), .groups="drop")
+write.csv(cv_summ1, "cross_val_summ1.csv")
+
+cv_summ <- cv_summ1 %>%
+           # group by func
+           group_by(seed, agent, model, func.name) %>%
+           summarize(LL=mean(LL), .groups="drop") %>%
+           # group by seed
+           group_by(seed, agent, model) %>%
+           summarize(LL=mean(LL), .groups="drop") 
+
+write.csv(cv_summ, "cross_val_summ.csv")
+```
+
+
+```{r}
+
+cv_diff <- cv_all %>%
+           group_by(seed, agent, subj_id, func.name, r_id, n) %>%
+           mutate(max_LL=max(LL)) %>%
+            group_by(seed, agent, subj_id, func.name, model, r_id, n) %>%
+           summarize(LL_diff = LL-max_LL, .groups="drop") %>%
+           group_by(seed, agent, subj_id, model, func.name, r_id) %>%
+           summarize(LL_diff=mean(LL_diff, na.rm=T), .groups="drop") %>%
+           group_by(seed, agent, model, subj_id, func.name) %>%
+           summarize(LL_diff=mean(LL_diff), .groups="drop") %>%
+           group_by(seed, agent, model, func.name) %>%
+           summarize(LL_diff=mean(LL_diff), .groups="drop") %>%
+           # group by seed
+           group_by(seed, agent, model) %>%
+           summarize(LL_diff=mean(LL_diff), .groups="drop") 
+
+
+cv_diff_summ <- cv_diff %>%
+          mutate(model = ifelse(model=="gpsl", "Comp. GP", model),
+                      model = ifelse(model=="gpnc", "GP", model),
+                      model = ifelse(model=="lin", "Linear", model),
+                      model = ifelse(model=="ridge", "Ridge", model),
+                      model = ifelse(model=="lot", "LoT", model),
+                      model = ifelse(model=="lin_prev", "Linear + Prev.", model),
+                      model = ifelse(model=="lot_no_recursion", "Nonrecursive LoT", model)
+                    )  %>%
+                    filter(model != "Nonrecursive LoT")
+cv_diff_summ$model = factor(cv_diff_summ$model, levels = c("LoT",  "Comp. GP", "GP", "Ridge", "Linear + Prev.", "Linear",  "transformer_2", "transformer_3", "transformer_13"))#, "Nonrecursive LoT"))
+
+cv_diff_summ$agent = factor(cv_diff_summ$agent, levels=c("Monkeys", "3 y/o", "4 y/o", "5 y/o", "6 y/o", "7 y/o", "Adults")) 
+
+ggplot(data=cv_diff_summ) +
+      #geom_beeswarm(aes(x=model, y=LL_diff, group=model, color=model), alpha=0.7, size=0.5) +
+      stat_summary(
+              geom = "errorbar",
+              aes(x = model, y = LL_diff, color=model, group=model),
+              fun.data = function(x) {
+                data.frame(
+                  y = median(x),
+                  ymin = quantile(x, 0.075),
+                  ymax = quantile(x, 0.925)
+                )
+              },
+              width = 0.2
+       ) +
+      stat_summary(geom="point", aes(x=model, y=LL_diff, color=model, group=model), size=1) +
+      #geom_errorbar(aes(x=model, ymin=low_LL, ymax=high_LL, color=model)) +
+      #palette("Set2") +
+      paper_theme +
+      #scale_x_discrete(expand = expansion(mult = c(0.01, 0.01))) +
+    theme(
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        legend.title = element_blank(),
+        legend.position = "inside",
+        legend.position.inside = c(1, 0),         # (x, y) in [0, 1] relative to plot area
+        legend.justification = c(1, 0),           # anchor legend corner
+        legend.box.margin = margin(10, 10, 10, 10)
+    ) +
+      facet_wrap(~agent, nrow=2)
+  
+```
+
+
+
+```{r, fig.width=10, fig.height=4}
+
+cv_summ <- read.csv("cross_val_summ.csv") %>%
+          mutate(model = ifelse(model=="gpsl", "Comp. GP", model),
+                      model = ifelse(model=="gpnc", "GP", model),
+                      model = ifelse(model=="lin", "Linear", model),
+                      model = ifelse(model=="ridge", "Ridge", model),
+                      model = ifelse(model=="lot", "LoT", model),
+                      model = ifelse(model=="lin_prev", "Linear + Prev.", model),
+                      model = ifelse(model=="lot_no_recursion", "Nonrecursive LoT", model)
+                    )  %>%
+                    filter(model != "Nonrecursive LoT")
+cv_summ$model = factor(cv_summ$model, levels = c("LoT",  "Comp. GP", "GP", "Ridge", "Linear + Prev.", "Linear",  "transformer_2", "transformer_3", "transformer_13"))#, "Nonrecursive LoT"))
+
+cv_summ$agent = factor(cv_summ$agent, levels=c("Monkeys", "3 y/o", "4 y/o", "5 y/o", "6 y/o", "7 y/o", "Adults")) 
+
+ 
+cv_summ_comp <- cv_summ %>%
+                group_by(agent, model) %>%
+                summarize(mean_LL=mean(LL),
+                         low_LL=quantile(LL, 0.025),
+                         high_LL=quantile(LL, 0.975))
+
+```
+
+# Visualize CV results for each group
+```{r}
+
+ggplot(data=cv_summ) +
+  geom_beeswarm(aes(x=model, y=LL, group=model, color=model), alpha=0.7, size=0.5) +
+  stat_summary(geom="point", aes(x=model, y=LL), shape="*", size=6) +
+  #geom_errorbar(aes(x=model, ymin=low_LL, ymax=high_LL, color=model)) +
+  #palette("Set2") +
+  paper_theme +
+  #scale_x_discrete(expand = expansion(mult = c(0.01, 0.01))) +
+theme(
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    legend.position = "inside",
+    legend.position.inside = c(1, 0),         # (x, y) in [0, 1] relative to plot area
+    legend.justification = c(1, 0),           # anchor legend corner
+    legend.box.margin = margin(10, 10, 10, 10)
+) +
+  facet_wrap(~agent, nrow=2)
+  
+ggsave("../crossval.png", width=12, height=5)
+
+ggplot(data=cv_summ) +
+  geom_point(aes(x=model, y=LL, color=model)) +
+  geom_boxplot(aes(x=model, y=LL, group=model, color=model)) +
+  #geom_errorbar(aes(x=model, ymin=low_LL, ymax=high_LL, color=model)) +
+  #palette("Set2") +
+  paper_theme +
+  theme(axis.text.x=element_blank(),
+        axis.title.x=element_blank()) +
+  facet_wrap(~agent, nrow=2)
+# ggsave("../crossval.png", width=12, height=5)
+
+ggplot(data=cv_summ_comp) +
+  geom_point(aes(x=model, y=mean_LL, color=model)) +
+  geom_errorbar(aes(x=model, ymin=low_LL, ymax=high_LL, color=model)) +
+  #palette("Set2") +
+  paper_theme +
+  theme(axis.text.x=element_blank(),
+        axis.title.x=element_blank()) +
+  facet_wrap(~agent, nrow=1)
+
+#ggsave("../crossval.png", width=12, height=2)
+```
+
+# Visualize cross val differences by seed
+```{r}
+cv_seed_diff <- cv_summ %>%
+                group_by(agent, seed) %>%
+                mutate(max_LL = max(LL)) %>%
+                group_by(agent, model, seed) %>%
+                summarize(LL_diff = LL-max_LL)
+
+ggplot(data=cv_seed_diff) +
+  stat_summary(
+              geom = "errorbar",
+              aes(x = model, y = LL_diff, color=model, group=model),
+              fun.data = function(x) {
+                data.frame(
+                  y = median(x),
+                  ymin = quantile(x, 0.075),
+                  ymax = quantile(x, 0.925)
+                )
+              },
+              width = 0.2
+       ) +
+      stat_summary(geom="point", aes(x=model, y=LL_diff, color=model, group=model), size=1) +
+  paper_theme +
+  #scale_x_discrete(expand = expansion(mult = c(0.01, 0.01))) +
+theme(
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    legend.position = "inside",
+    legend.position.inside = c(1, 0),         # (x, y) in [0, 1] relative to plot area
+    legend.justification = c(1, 0),           # anchor legend corner
+    legend.box.margin = margin(10, 10, 10, 10)
+) +
+  facet_wrap(~agent, nrow=2)
+ggsave("../crossval_diff.png", width=12, height=5)
+```
+
+# Monkey CV results
+```{r}
+
+cv_monkey_diff <- read.csv("cross_val_summ1.csv") %>%
+                filter(agent=="Monkeys") %>%
+                group_by(agent, subj_id, model, seed) %>%
+                summarize(LL=mean(LL), .groups="drop") %>%
+                group_by(agent, subj_id, seed) %>%
+                mutate(max_LL = max(LL)) %>%
+                group_by(agent, subj_id, model, seed) %>%
+                summarize(LL_diff = LL-max_LL,
+                          LL=mean(LL))
+```
+```{r}
+ggplot(data=cv_monkey_diff) +
+  stat_summary(
+              geom = "errorbar",
+              aes(x = model, y = LL, color=model, group=model),
+              fun.data = function(x) {
+                data.frame(
+                  y = median(x),
+                  ymin = quantile(x, 0.075),
+                  ymax = quantile(x, 0.925)
+                )
+              },
+              width = 0.2
+       ) +
+      stat_summary(geom="point", aes(x=model, y=LL, color=model, group=model), size=1) +
+  #geom_boxplot(aes(x=model, y=LL_diff, group=model, color=model), alpha=0.7, size=0.5) +
+  #geom_beeswarm(aes(x=model, y=LL_diff, group=model, color=model), alpha=0.7, size=0.5) +
+  #stat_summary(geom="point", aes(x=model, y=LL_diff), shape="*", size=6) +
+  #geom_errorbar(aes(x=model, ymin=low_LL, ymax=high_LL, color=model)) +
+  #palette("Set2") +
+  paper_theme +
+  #scale_x_discrete(expand = expansion(mult = c(0.01, 0.01))) +
+theme(
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+) +
+  facet_wrap(~subj_id)
+ggsave("../crossval_monkey_sep.png", width=12, height=5)
+```
+
+
 # Analyze fits
 ```{r}
 read_model_fit_data <- function(participant) {
