@@ -155,7 +155,7 @@ df <- df %>%
         left_join(ranked_days, by = c("monkey_name", "ranked_day")) %>%
         rowwise() %>%
         mutate(func.type = gsub("\\.\\d+$", "", func.name)) %>%
-        mutate(nonparametric_seq = (func.type %in% nonparametric_seqs)) %>%
+        #mutate(nonparametric_seq = (func.type %in% nonparametric_seqs)) %>%
         #mutate(func.type = gsub("line2", "line", func.type)) %>%
         mutate(t_id = paste(r_id, func.name, game_n)) %>%
         group_by(monkey_name) %>%
@@ -185,7 +185,7 @@ df <- df %>%
         mutate(x_err=x_pred-x_next) %>%
         mutate(y_err=y_pred-y_next) %>%
         mutate(abs_err = ((x_err**2)+(y_err)*2.)**0.5) %>%  
-        mutate(abs_rel_err = abs_err/(true_dist+0.01)) %>%
+        mutate(abs_rel_err = abs_err/(true_dist)) %>%
         ungroup() %>%
         arrange(rank_day, game_n, n) %>%
         group_by(monkey_name, func.type) %>%
@@ -236,12 +236,14 @@ xmax <- max(df$scaled_func_examples)
 xscale <- xmax - xmin
 
 
-ggplot(data=df, aes(x=scaled_func_examples, y=correct_120, group=monkey_name, color=monkey_name)) +
+ggplot(data=df %>% filter(attempt_number == 1), aes(x=scaled_func_examples, y=correct_120, group=monkey_name, color=monkey_name)) +
+
+        stat_summary(fun="mean", geom="line", size=0.5, alpha=0.9) +
+        stat_summary(fun="mean", geom="point", size=1) +
+        stat_summary(fun="mean", geom="point", color="white", size=0.25) +
+
         stat_summary(fun.data="mean_se", geom="errorbar", width=1) +
 
-        stat_summary(fun="mean", geom="line", size=1) +
-       # stat_summary(fun="mean", geom="point") +
-        
         geom_path(data=df_canonical_seqs, aes(x=0+true_x*xscale*0.22, y= 0.8 + true_y * 0.3), size=0.8, color="black", alpha=0.5) +
         geom_point(data=df_canonical_seqs, aes(x=0+true_x*xscale*0.22, y= 0.8 + true_y * 0.3, alpha=n), color="black", size=0.9) +
         scale_color_manual(values = c("dodgerblue", "orange"), labels=c("Monkey 1", "Monkey 2")) +
@@ -257,30 +259,145 @@ ggplot(data=df, aes(x=scaled_func_examples, y=correct_120, group=monkey_name, co
                      strip.background = element_blank(),
                      strip.text = element_blank()) 
 
-ggsave("figs/monkey_training.png",width=8, height=5, dpi=500)
+        
+
+
+#ggsave("figs/monkey_training.png",width=8, height=5, dpi=500)
+
+```
+
+```{r}
+# BASIC ACCURACY ANALYSES
+# =======================
+
+# Overall accuracy summary by monkey
+overall_accuracy <- df %>%
+  filter(attempt_number == 1) %>%
+  group_by(monkey_name) %>%
+  summarise(
+    n_trials = n(),
+    mean_accuracy_80 = mean(correct_80, na.rm = TRUE),
+    mean_accuracy_120 = mean(correct_120, na.rm = TRUE),
+    mean_distance_error = mean(dist_from_true, na.rm = TRUE),
+    median_distance_error = median(dist_from_true, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+cat("OVERALL ACCURACY SUMMARY\n")
+cat("========================\n")
+for(i in 1:nrow(overall_accuracy)) {
+  monkey <- ifelse(overall_accuracy$monkey_name[i] == "BP22", "Monkey 1", "Monkey 2")
+  cat(sprintf("%s:\n", monkey))
+  cat(sprintf("  Total trials: %d\n", overall_accuracy$n_trials[i]))
+  cat(sprintf("  Accuracy (80px): %.1f%%\n", overall_accuracy$mean_accuracy_80[i] * 100))
+  cat(sprintf("  Accuracy (120px): %.1f%%\n", overall_accuracy$mean_accuracy_120[i] * 100))
+  cat(sprintf("  Mean error: %.1f pixels\n", overall_accuracy$mean_distance_error[i]))
+  cat(sprintf("  Median error: %.1f pixels\n\n", overall_accuracy$median_distance_error[i]))
+}
+
+# Accuracy by pattern type
+pattern_accuracy <- df %>%
+  filter(attempt_number == 1) %>%
+  group_by(monkey_name, func.type) %>%
+  summarise(
+    n_trials = n(),
+    mean_accuracy_80 = mean(correct_80, na.rm = TRUE),
+    mean_accuracy_120 = mean(correct_120, na.rm = TRUE),
+    mean_distance_error = mean(dist_from_true, na.rm = TRUE),
+    final_accuracy = mean(correct_120[func_examples >= quantile(func_examples, 0.8)], na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  arrange(monkey_name, desc(mean_accuracy_120))
+
+cat("ACCURACY BY PATTERN TYPE\n")
+cat("========================\n")
+for(monkey in c("BP22", "BP24")) {
+  monkey_name <- ifelse(monkey == "BP22", "Monkey 1", "Monkey 2")
+  cat(sprintf("\n%s (sorted by 120px accuracy):\n", monkey_name))
+  cat("Pattern Type                | Trials | 80px Acc | 120px Acc | Final Acc | Mean Error\n")
+  cat("---------------------------|--------|----------|-----------|-----------|----------\n")
+  
+  monkey_data <- pattern_accuracy %>% filter(monkey_name == monkey)
+  for(i in 1:nrow(monkey_data)) {
+    pattern <- gsub("_", " ", monkey_data$func.type[i])
+    pattern <- str_to_title(pattern)
+    cat(sprintf("%-26s | %6d | %7.1f%% | %8.1f%% | %8.1f%% | %7.1f px\n",
+                pattern,
+                monkey_data$n_trials[i],
+                monkey_data$mean_accuracy_80[i] * 100,
+                monkey_data$mean_accuracy_120[i] * 100,
+                monkey_data$final_accuracy[i] * 100,
+                monkey_data$mean_distance_error[i]))
+  }
+}
 
 ```
 
 
 ```{r}
+# EARLY VS LATE PERFORMANCE
+# =========================
 
-ggplot(data=df, aes(x=round(lin_dist/100)*100, y=correct_120)) +
-        stat_summary() +
-          paper_theme 
+# Compare first 25% vs last 25% of training for each pattern
+early_late_comparison <- df %>%
+  filter(attempt_number == 1) %>%
+  group_by(monkey_name, func.type) %>%
+  filter(n() >= 20) %>%  # Only patterns with sufficient data
+  mutate(
+    quartile = ntile(func_examples, 4),
+    phase = case_when(
+      quartile == 1 ~ "Early",
+      quartile == 4 ~ "Late",
+      TRUE ~ "Middle"
+    )
+  ) %>%
+  filter(phase %in% c("Early", "Late")) %>%
+  group_by(monkey_name, func.type, phase) %>%
+  summarise(
+    mean_accuracy = mean(correct_120, na.rm = TRUE),
+    n_trials = n(),
+    .groups = 'drop'
+  ) %>%
+  pivot_wider(names_from = phase, values_from = c(mean_accuracy, n_trials)) %>%
+  mutate(
+    improvement = mean_accuracy_Late - mean_accuracy_Early,
+    relative_improvement = improvement / (mean_accuracy_Early + 0.01)
+  ) %>%
+  arrange(monkey_name, desc(improvement))
 
-```
+cat("\nEARLY VS LATE PERFORMANCE (First 25% vs Last 25%)\n")
+cat("================================================\n")
+for(monkey in c("BP22", "BP24")) {
+  monkey_name <- ifelse(monkey == "BP22", "Monkey 1", "Monkey 2")
+  cat(sprintf("\n%s:\n", monkey_name))
+  cat("Pattern Type                | Early | Late  | Improvement | Relative\n")
+  cat("---------------------------|-------|-------|-------------|----------\n")
+  
+  monkey_data <- early_late_comparison %>% filter(monkey_name == monkey)
+  for(i in 1:nrow(monkey_data)) {
+    pattern <- gsub("_", " ", monkey_data$func.type[i])
+    pattern <- str_to_title(pattern)
+    cat(sprintf("%-26s | %4.1f%% | %4.1f%% | %10.1f%% | %7.1f%%\n",
+                pattern,
+                monkey_data$mean_accuracy_Early[i] * 100,
+                monkey_data$mean_accuracy_Late[i] * 100,
+                monkey_data$improvement[i] * 100,
+                monkey_data$relative_improvement[i] * 100))
+  }
+}
 
-
-
-```{r, fig.width=10, fig.height=5}
-
-bs <- 5
-df$scaled_rank_day <- floor((df$rank_day - df$min_rank_day)/bs)*bs
-
-ggplot(data=df, aes(x=scaled_rank_day, y=correct_80, color=nonparametric_seq)) +
-        stat_summary(fun="mean", geom="line") +
-        paper_theme 
-
-
+# Summary statistics
+cat("\nIMPROVEMENT SUMMARY:\n")
+for(monkey in c("BP22", "BP24")) {
+  monkey_name <- ifelse(monkey == "BP22", "Monkey 1", "Monkey 2")
+  monkey_data <- early_late_comparison %>% filter(monkey_name == monkey)
+  
+  positive_improvements <- sum(monkey_data$improvement > 0, na.rm = TRUE)
+  total_patterns <- nrow(monkey_data)
+  mean_improvement <- mean(monkey_data$improvement, na.rm = TRUE) * 100
+  
+  cat(sprintf("%s: %d/%d patterns improved, average improvement: %.1f%%\n",
+              monkey_name, positive_improvements, total_patterns, mean_improvement))
+}
 
 ```

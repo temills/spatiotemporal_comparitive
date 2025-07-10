@@ -86,7 +86,6 @@ add_rank_time_column <- function(dataframe) {
   }
 
   # Join the unique_dates dataframe with the original dataframe to add the 'rank_time' column
- # dataframe <- left_join(dataframe, unique_dates, by = "date")
   dataframe <- dataframe %>%
                 rowwise() %>%
                 mutate(ranked_day = h[[as.character(date)]])
@@ -99,7 +98,7 @@ capitalize_words <- function(s) {
   words <- str_split(s, " ")[[1]]
   words <- ifelse(words == "to", "to", str_to_title(words))
   paste(words, collapse = " ")
-}
+} 
 
 ```
 
@@ -136,31 +135,23 @@ unique_sequences_df <- df %>%
   group_by(func.name) %>%
   arrange(n) %>%
   mutate(
-    # Calculate deltas for x
     delta_x = x_curr - lag(x_curr),
     delta_x_2 = lag(x_curr) - lag(x_curr, 2),
 
-    # Calculate deltas for y
     delta_y = y_curr - lag(y_curr),
     delta_y_2 = lag(y_curr) - lag(y_curr, 2),
 
-    # Handle NA values for deltas
     delta_x = ifelse(is.na(delta_x), 0, delta_x),
     delta_y = ifelse(is.na(delta_y), 0, delta_y),
     delta_x_2 = ifelse(is.na(delta_x_2), delta_x, delta_x_2),
     delta_y_2 = ifelse(is.na(delta_y_2), delta_y, delta_y_2),
 
-    # Calculate x_lin and y_lin
-    #x_lin = x_curr + 0.5 * delta_x + 0.5 * delta_x_2,
-    #y_lin = y_curr + 0.5 * delta_y + 0.5 * delta_y_2
-    
+
     x_lin = x_curr + delta_x,
     y_lin = y_curr + delta_y
   ) %>%
   select(func.name, n, x_lin, y_lin) %>%  # Only keep necessary columns
   ungroup()
-# 
-# # Step 2: Merge x_lin and y_lin back into df
 df <- df %>%
   left_join(unique_sequences_df, by = c("func.name", "n"))
 
@@ -223,6 +214,22 @@ df_seqs <- df %>%
            mutate(x_lin = x_lin * (x_lin > 0) * (x_lin <= 1) + 1* (x_lin > 1)) %>%
             mutate(y_lin = y_lin * (y_lin > 0) * (y_lin <= 1) + 1* (y_lin > 1)) 
 
+
+
+canonical_seqs <- c("alternating_diffs.21", "changing_sine.5", "circle.1", "curly.0", "left_to_right.0", "right_to_left.0", "line.0", "line2.0", "polygon.3", "polygon_spiral.14", "polynomial.37", "radial.49", 
+                    "repeat_pts.0", "repeat_line.4", "sine.0", "spiky_circle.49", "spiral_in.2", "spiral_out.6", "zigzag.10", "zigzag_increasing.27")
+
+
+df_canonical_seqs <- df_seqs %>% rowwise() %>% filter(func.name %in% canonical_seqs) %>%
+                      ungroup() %>%
+                      group_by(func.name) %>%
+
+                      mutate(
+                            xrng = max(x_curr, na.rm=TRUE) - min(x_curr, na.rm=TRUE),
+                           yrng = max(y_curr, na.rm=TRUE) - min(y_curr, na.rm=TRUE)) %>%
+                    mutate(true_x = ifelse(xrng > 0, (x_curr - min(x_curr))/xrng, 0.5),
+                           true_y = ifelse(yrng > 0, (y_curr - min(y_curr))/yrng, 0.5)) 
+                                        
 
 
 
@@ -301,14 +308,17 @@ stan_data.24 <- list(
 
 ```{r}
 
-# Modified f_get_func_effect
 f_get_func_effect <- function(pm, func_type_numeric, which_effect) {
   if (which_effect == "icpt") {
     return(pm[[paste0("beta_func_type.", func_type_numeric[1])]])
   } else if (which_effect == "slope") {
     return(pm[[paste0("beta_func_type_seen.", func_type_numeric[1])]])
-  } else {
-    stop("Unknown effect requested")
+  } else if (which_effect == "asymptote") {
+    return(pm[[paste0("max_p.", func_type_numeric[1])]])
+  }
+  
+  else {
+    stop("Unknown effect...")
   }
 }
 
@@ -322,6 +332,7 @@ posterior_sample_means.22 <- summarize(posterior_samples.22)
 posterior_means.22 <- posterior_samples.22 %>%
     summarize(across(everything(), mean))
 
+
 stan_df.22$use_true_icpt <- posterior_means.22$use_true_icpt
 stan_df.22$beta_seen <- posterior_means.22$beta_seen
 stan_df.22$p_prev <- posterior_means.22$p_rand_strategy.1
@@ -329,17 +340,16 @@ stan_df.22$p_rand <- posterior_means.22$p_rand_strategy.2
 #stan_df.22$p_lin <- posterior_means.22$p_rand_strategy.3
 stan_df.22$sd_motor <- posterior_means.22$sd_motor
 
-# Modify the mutate logic
 stan_df.22 <- stan_df.22 %>%
   group_by(func.type) %>%
   mutate(
     beta_func_type = f_get_func_effect(posterior_means.22, func_type_numeric, "icpt"),
     beta_func_type_seen = f_get_func_effect(posterior_means.22, func_type_numeric, "slope"),
-    p_true = inv_logit(beta_func_type_seen * func_examples_std + beta_func_type),
+    max_p =  f_get_func_effect(posterior_means.22, func_type_numeric, "asymptote"),
+    p_true =  max_p*inv_logit(beta_func_type_seen * func_examples_std + beta_func_type),
     p_prev = (1 - p_true) * posterior_means.22[[paste0("p_rand_strategy.", func_type_numeric[1], ".1")]],
-    p_rand = (1 - p_true) * posterior_means.22[[paste0("p_rand_strategy.", func_type_numeric[1], ".2")]],
-   # p_lin = (1 - p_true) * posterior_means.22[[paste0("p_rand_strategy.", func_type_numeric[1], ".3")]]
-  )
+    p_rand = (1 - p_true) * posterior_means.22[[paste0("p_rand_strategy.", func_type_numeric[1], ".2")]]
+)
 
 
 
@@ -352,12 +362,10 @@ posterior_sample_means.24 <- summarize(posterior_samples.24)
 posterior_means.24 <- posterior_samples.24 %>%
   summarize(across(everything(), mean))
 
-# Extract the relevant parameters from posterior means for BP24
 stan_df.24$use_true_icpt <- posterior_means.24$use_true_icpt
 stan_df.24$beta_seen <- posterior_means.24$beta_seen
 stan_df.24$p_prev <- posterior_means.24$p_rand_strategy.1
 stan_df.24$p_rand <- posterior_means.24$p_rand_strategy.2
-#stan_df.24$p_lin <- posterior_means.24$p_rand_strategy.3
 stan_df.24$sd_motor <- posterior_means.24$sd_motor
 
 stan_df.24 <- stan_df.24 %>%
@@ -365,40 +373,11 @@ stan_df.24 <- stan_df.24 %>%
   mutate(
     beta_func_type = f_get_func_effect(posterior_means.24, func_type_numeric, "icpt"),
     beta_func_type_seen = f_get_func_effect(posterior_means.24, func_type_numeric, "slope"),
-    p_true = inv_logit(beta_func_type_seen * func_examples_std + beta_func_type),
+    max_p =  f_get_func_effect(posterior_means.24, func_type_numeric, "asymptote"),
+    p_true = max_p * inv_logit(beta_func_type_seen * func_examples_std + beta_func_type),
     p_prev = (1 - p_true) * posterior_means.24[[paste0("p_rand_strategy.", func_type_numeric[1], ".1")]],
     p_rand = (1 - p_true) * posterior_means.24[[paste0("p_rand_strategy.", func_type_numeric[1], ".2")]],
-   #p_lin = (1 - p_true) * posterior_means.24[[paste0("p_rand_strategy.", func_type_numeric[1], ".3")]]
   )
-
-posterior_samples.22 <- posterior_samples.22 %>%
-  rename_with(~gsub("p_rand_strategy\\.(\\d+)\\.(\\d+)", "p_rand_strategy_\\2.\\1", .), 
-              starts_with("p_rand_strategy"))
-
-posterior_samples.24 <- posterior_samples.24 %>%
-  rename_with(~gsub("p_rand_strategy\\.(\\d+)\\.(\\d+)", "p_rand_strategy_\\2.\\1", .), 
-              starts_with("p_rand_strategy"))
-
-
-posterior_samples.22.long <- posterior_samples.22 %>%
-  pivot_longer(
-    cols = c(starts_with("beta_func_type"), starts_with("beta_func_type_seen"), 
-             starts_with("p_rand_strategy_1"), starts_with("p_rand_strategy_2")),
-    names_to = c(".value", "func_type"),
-    names_pattern = "(.*)\\.(\\d+)"
-  )
-
-posterior_samples.24.long <- posterior_samples.24 %>%
-  pivot_longer(
-    cols = c(starts_with("beta_func_type"), starts_with("beta_func_type_seen"), 
-             starts_with("p_rand_strategy_1"), starts_with("p_rand_strategy_2")),
-    names_to = c(".value", "func_type"),
-    names_pattern = "(.*)\\.(\\d+)"
-  )
-
-posterior_samples.22.long$func.type <- unique(df$func.type)[as.numeric(posterior_samples.22.long$func_type)]
-posterior_samples.24.long$func.type <- unique(df$func.type)[as.numeric(posterior_samples.24.long$func_type)]
-
 
 
 
@@ -422,49 +401,113 @@ labels <- sapply(labels, capitalize_words)
 ```{r, fig.width=14,fig.height=7}
 
 
+# Fix the pivot_longer operation to handle the correct naming pattern
+posterior_samples.22.long <- posterior_samples.22 %>%
+  # First pivot the main parameters
+  pivot_longer(
+    cols = c(starts_with("beta_func_type"), starts_with("max_p")),
+    names_to = c(".value", "func_type"),
+    names_pattern = "(.*)\\.(\\d+)"
+  ) %>%
+  # Then add the p_rand_strategy columns manually
+  bind_cols(
+    # Extract p_rand_strategy.X.1 columns (strategy 1)
+    posterior_samples.22 %>%
+      select(matches("p_rand_strategy\\.\\d+\\.1")) %>%
+      pivot_longer(
+        cols = everything(),
+        names_to = "func_type_temp",
+        values_to = "p_rand_strategy_1",
+        names_pattern = "p_rand_strategy\\.(\\d+)\\.1"
+      ) %>%
+      select(p_rand_strategy_1),
+    
+    # Extract p_rand_strategy.X.2 columns (strategy 2)  
+    posterior_samples.22 %>%
+      select(matches("p_rand_strategy\\.\\d+\\.2")) %>%
+      pivot_longer(
+        cols = everything(),
+        names_to = "func_type_temp",
+        values_to = "p_rand_strategy_2", 
+        names_pattern = "p_rand_strategy\\.(\\d+)\\.2"
+      ) %>%
+      select(p_rand_strategy_2)
+  )
+
+posterior_samples.24.long <- posterior_samples.24 %>%
+  # First pivot the main parameters
+  pivot_longer(
+    cols = c(starts_with("beta_func_type"), starts_with("max_p")),
+    names_to = c(".value", "func_type"),
+    names_pattern = "(.*)\\.(\\d+)"
+  ) %>%
+  # Then add the p_rand_strategy columns manually
+  bind_cols(
+    # Extract p_rand_strategy.X.1 columns (strategy 1)
+    posterior_samples.24 %>%
+      select(matches("p_rand_strategy\\.\\d+\\.1")) %>%
+      pivot_longer(
+        cols = everything(),
+        names_to = "func_type_temp",
+        values_to = "p_rand_strategy_1",
+        names_pattern = "p_rand_strategy\\.(\\d+)\\.1"
+      ) %>%
+      select(p_rand_strategy_1),
+    
+    # Extract p_rand_strategy.X.2 columns (strategy 2)  
+    posterior_samples.24 %>%
+      select(matches("p_rand_strategy\\.\\d+\\.2")) %>%
+      pivot_longer(
+        cols = everything(),
+        names_to = "func_type_temp",
+        values_to = "p_rand_strategy_2", 
+        names_pattern = "p_rand_strategy\\.(\\d+)\\.2"
+      ) %>%
+      select(p_rand_strategy_2)
+  )
+
+posterior_samples.22.long$func.type <- unique(df$func.type)[as.numeric(posterior_samples.22.long$func_type)]
+posterior_samples.24.long$func.type <- unique(df$func.type)[as.numeric(posterior_samples.24.long$func_type)]
+
+# Now the rest of your code should work
 slope <- sd(df$func_examples)
 intercept <- mean(df$func_examples)
 func_examples_std_vals <- seq(min(df$func_examples_std), max(df$func_examples_std), length.out=50)
 
-# Step 2: Expand func.examples for BP22
 expanded_func_examples_22 <- expand.grid(
   func_examples_std = func_examples_std_vals,
   sample = 1:nrow(posterior_samples.22.long)
 ) %>%
   mutate(beta_func_type = posterior_samples.22.long$beta_func_type[sample],
          beta_func_type_seen = posterior_samples.22.long$beta_func_type_seen[sample],
+         max_p = posterior_samples.22.long$max_p[sample],
          p_prev = posterior_samples.22.long$p_rand_strategy_1[sample],  
          p_rand = posterior_samples.22.long$p_rand_strategy_2[sample],  
          func.type = posterior_samples.22.long$func.type[sample]) %>%
   
-  # Compute p_true
-  mutate(p_true = plogis(beta_func_type_seen * func_examples_std + beta_func_type)) %>%
+  mutate(p_true = max_p * plogis(beta_func_type_seen * func_examples_std + beta_func_type)) %>%
   mutate(p_prev=(1-p_true)*p_prev, p_rand = (1-p_true)*p_rand) %>%
   mutate(func_examples = func_examples_std * slope + intercept) %>%
   
-  # Merge with stan_df.22 to get linear_func status
   left_join(stan_df.22 %>% select(func.type, linear_func, p_func_linear) %>% distinct(), by = "func.type")
 
-# Step 3: Expand func.examples for BP24
 expanded_func_examples_24 <- expand.grid(
   func_examples_std = func_examples_std_vals,
   sample = 1:nrow(posterior_samples.24.long)
 ) %>%
   mutate(beta_func_type = posterior_samples.24.long$beta_func_type[sample],
          beta_func_type_seen = posterior_samples.24.long$beta_func_type_seen[sample],
+         max_p = posterior_samples.24.long$max_p[sample],  # Added max_p
          p_prev = posterior_samples.24.long$p_rand_strategy_1[sample],  
          p_rand = posterior_samples.24.long$p_rand_strategy_2[sample],  
          func.type = posterior_samples.24.long$func.type[sample]) %>%
   
-  # Compute p_true
-  mutate(p_true = plogis(beta_func_type_seen * func_examples_std + beta_func_type)) %>%
+  mutate(p_true = max_p * plogis(beta_func_type_seen * func_examples_std + beta_func_type)) %>%
   mutate(p_prev=(1-p_true)*p_prev, p_rand = (1-p_true)*p_rand) %>%
   mutate(func_examples = func_examples_std * slope + intercept) %>%
   
-  # Merge with stan_df.24 to get linear_func status
   left_join(stan_df.24 %>% select(func.type, linear_func, p_func_linear) %>% distinct(), by = "func.type")
 
-# Step 4: Summarize posterior predictions
 posterior_summary_22 <- expanded_func_examples_22 %>%
   group_by(func.type, func_examples_std, func_examples) %>%
   summarize(p_true_mean = mean(p_true),
@@ -481,52 +524,298 @@ posterior_summary_24 <- expanded_func_examples_24 %>%
 ```
 
 
-```{r, fig.width=14,fig.height=7}
-
-bs <- 8
 
 
-ggplot() +
-      stat_summary(data=subset(stan_df.22, stan_df.22$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_120, color="Monkey A"), fun="mean",geom="line", alpha=0.5, size=0.9) +
 
-      stat_summary(data=subset(stan_df.22, stan_df.22$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_120, color="Monkey A"), fun="mean",geom="point", alpha=0.9, size=0.8) +
-      stat_summary(data=subset(stan_df.22, stan_df.22$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_120, color="Monkey A"), fun.data="mean_se",geom="errorbar", width=0.1, alpha=0.5) +
-      
-   stat_summary(data=subset(stan_df.24, stan_df.24$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_120, color="Monkey B"), fun="mean",geom="line", alpha=0.5, size=0.9) +
-    stat_summary(data=subset(stan_df.24, stan_df.24$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_120, color="Monkey B"), fun="mean",geom="point", alpha=0.9, size=0.8) +
-    stat_summary(data=subset(stan_df.24, stan_df.24$attempt_number == 1), aes(x=floor(func_examples/bs)*bs, y=correct_120, color="Monkey B"), fun.data="mean_se",geom="errorbar", width=0.1, alpha=0.5) +
-  scale_color_manual(values = c("dodgerblue", "orange")) +
-  scale_fill_manual(values = c("dodgerblue", "orange")) +
-  guides(fill="none") +
-
-  facet_wrap(~func.type, nrow = 4, labeller = function(x) lapply(x, function(y) "X")) +
-  paper_theme + theme(legend.title = element_blank(),
-                      strip.background = element_rect(fill = "white", color = "black"),
-                      strip.text = element_text(color="white", size=40)) +
-  labs(x = "Trial number (by pattern)", y = "P(correct)")
-
-
-ggsave("figs/raw_accuracy.png", width=13,height=8.5, dpi=400)
+```{r, fig.width=9, fig.height=6}
+xmin <- min(df$func_examples)
+xmax <- max(df$func_examples)
+xscale <- xmax - xmin
 
 ggplot() +
+  
+  geom_hline(aes(x=))
 
   geom_line(data = posterior_summary_22, aes(x = func_examples, y = p_true_mean, color = "Monkey A")) +
   geom_ribbon(data = posterior_summary_22, aes(x = func_examples, ymin = p_true_lower, ymax = p_true_upper, fill= "Monkey A"), alpha = 0.2) +
   geom_line(data = posterior_summary_24, aes(x = func_examples, y = p_true_mean, color = "Monkey B")) +
   geom_ribbon(data = posterior_summary_24, aes(x = func_examples, ymin = p_true_lower, ymax = p_true_upper, fill="Monkey B"), alpha = 0.2) +
 
+          
+    geom_path(data=df_canonical_seqs, aes(x=true_x*xscale*0.2, y= 0.8 + true_y * 0.3), size=0.8, color="black", alpha=0.5) +
+    geom_point(data=df_canonical_seqs, aes(x=true_x*xscale*0.2, y= 0.8 + true_y * 0.3, alpha=n), color="black", size=0.9) +
 
-  scale_color_manual(values = c("dodgerblue", "orange")) +
-  scale_fill_manual(values = c("dodgerblue", "orange")) +
-  guides(fill="none") +
+    scale_color_manual(values = c("dodgerblue", "orange"), labels=c("Monkey 1", "Monkey 2")) +
+    scale_fill_manual(values = c("dodgerblue", "orange")) +
+    scale_x_continuous(breaks=c(0,100, 200)) +
+    scale_y_continuous(breaks=c(0,0.5,1)) +
+    guides(alpha="none", fill="none") +
+    coord_cartesian(xlim=c(xmin, xmax+10), ylim=c(0,1.08)) +
 
   facet_wrap(~func.type, nrow = 4, labeller = labeller(func.type = labels)) +
-  paper_theme + theme(legend.title = element_blank(),
-                      strip.background = element_rect(fill = "white", color = "white"),
-                      strip.text = element_text(color = "black")) +
+  paper_theme +         
+    paper_theme+ theme(legend.title = element_blank(),
+                 strip.background = element_blank(),
+                 strip.text = element_blank(), legend.position="top") +
+
   labs(x = "Pattern examples", y = "Modeled accuracy")
 
-ggsave("figs/modeled_accuracy.png", width=14, height=7, dpi=400)
+ggsave("figs/modeled_accuracy.png", width=9,height=6, dpi=400)
+
+
+```
+
+```{r, fig.width=5, fig.height=4}
+
+pattern_overlay_data <- df_canonical_seqs %>%
+  group_by(func.name) %>%
+  mutate(
+    func.type = str_replace(func.name, "\\.\\d+$", "")
+  ) %>%
+  select(func.name, func.type, n, true_x, true_y)
+
+linear_monkey_comparison <- rbind(
+  stan_df.22 %>%
+    mutate(lin_dist = sqrt((x_lin - x_next)^2 + (y_lin - y_next)^2) * screen_w) %>%
+    mutate(linear_success_120 = as.numeric(lin_dist < 120)) %>%
+    group_by(func.type) %>%
+    summarise(
+      p_linear_success = mean(linear_success_120, na.rm = TRUE),
+      p_monkey_success = mean(correct_120, na.rm = TRUE),
+      max_p = mean(max_p, na.rm=TRUE),
+      monkey = "BP22",
+      .groups = 'drop'
+    ),
+  
+  stan_df.24 %>%
+    mutate(lin_dist = sqrt((x_lin - x_next)^2 + (y_lin - y_next)^2) * screen_w) %>%
+    mutate(linear_success_120 = as.numeric(lin_dist < 120)) %>%
+    group_by(func.type) %>%
+    summarise(
+      p_linear_success = mean(linear_success_120, na.rm = TRUE),
+      p_monkey_success = mean(correct_120, na.rm = TRUE),
+      max_p = mean(max_p, na.rm=TRUE),
+
+      monkey = "BP24",
+      .groups = 'drop'
+    )
+)
+
+
+pattern_shapes <- pattern_overlay_data %>%
+  filter(func.name %in% canonical_seqs) %>%
+  group_by(func.type) %>%
+  slice(1) %>%
+  select(func.type, func.name) %>%
+  left_join(pattern_overlay_data, by = c("func.type", "func.name"))
+
+plot_data <- linear_monkey_comparison %>%
+  left_join(pattern_shapes, by = "func.type")
+
+scale_fn <- 0.07 
+aspect_ratio <- 1.2  
+
+bp22_data <- plot_data[plot_data$monkey == "BP22" & !is.na(plot_data$p_linear_success), ]
+bp24_data <- plot_data[plot_data$monkey == "BP24" & !is.na(plot_data$p_linear_success), ]
+
+r_bp22 <- cor(bp22_data$p_linear_success, bp22_data$p_monkey_success, use = "complete.obs")
+r_bp24 <- cor(bp24_data$p_linear_success, bp24_data$p_monkey_success, use = "complete.obs")
+
+ggplot(data = bp22_data) + 
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", alpha = 0.5) +
+  geom_path(aes(x = p_linear_success + true_x * scale_fn, 
+                y = p_monkey_success + true_y * scale_fn * aspect_ratio, 
+                group = func.name, color = func.type), 
+            alpha = 0.7, size = 0.4) +
+  geom_point(aes(x = p_linear_success + true_x * scale_fn, 
+                 y = p_monkey_success + true_y * scale_fn * aspect_ratio, 
+                 group = func.name, color = func.type), 
+             alpha = 0.8, size = 0.3) +
+  geom_point(aes(x = p_linear_success + true_x * scale_fn, 
+                 y = p_monkey_success + true_y * scale_fn * aspect_ratio, 
+                 group = func.name), 
+             color = "black", alpha = 0.05, size = 0.1) +
+  annotate("text", x = 0.12, y = 0.9, 
+           label = paste("R^2 == ", sprintf("%.2f", r_bp22^2)), 
+           size = 6, family = "Georgia", parse = TRUE) +
+  labs(x = "P(approximately linear)", 
+       y = "Modeled accuracy",
+       title = "Monkey 1") +
+  coord_cartesian(xlim = c(-0.02, 1.03), ylim = c(-0.02, 1.02)) +
+  guides(color = "none") +
+paper_theme + theme(plot.title = element_text(hjust = 0.5, size=16))
+
+ggsave("figs/bp22_lin_acc.png", width=5, height=4, dpi=400)
+
+ggplot(data = bp24_data) + 
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", alpha = 0.5) +
+  geom_path(aes(x = p_linear_success + true_x * scale_fn, 
+                y = p_monkey_success + true_y * scale_fn * aspect_ratio, 
+                group = func.name, color = func.type), 
+            alpha = 0.7, size = 0.4) +
+  geom_point(aes(x = p_linear_success + true_x * scale_fn, 
+                 y = p_monkey_success + true_y * scale_fn * aspect_ratio, 
+                 group = func.name, color = func.type), 
+             alpha = 0.8, size = 0.3) +
+  geom_point(aes(x = p_linear_success + true_x * scale_fn, 
+                 y = p_monkey_success + true_y * scale_fn * aspect_ratio, 
+                 group = func.name), 
+             color = "black", alpha = 0.05, size = 0.1) +
+
+  annotate("text", x = 0.12, y = 0.9, 
+           label = paste("R^2 == ", sprintf("%.2f", r_bp24^2)), 
+           size = 6, family = "Georgia", parse = TRUE) +
+  labs(x = "P(approximately linear)", 
+       y = "Modeled accuracy",
+       title = "Monkey 2") +
+  coord_cartesian(xlim = c(-0.02, 1.03), ylim = c(-0.02, 1.02)) +
+  guides(color = "none") +
+paper_theme + theme(plot.title = element_text(hjust = 0.5, size=16))
+
+ggsave("figs/bp24_lin_acc.png", width=5, height=4, dpi=400)
+
+
+```
+
+```{r, fig.width=5, fig.height = 4}
+
+end_training_posterior <- rbind(
+  stan_df.22 %>%
+    group_by(func.type) %>%
+    filter(func_examples == max(func_examples)) %>%
+    slice(1) %>%
+    select(func.type, p_true, max_p) %>%
+    mutate(monkey = "BP22"),
+  
+  stan_df.24 %>%
+    group_by(func.type) %>%
+    filter(func_examples == max(func_examples)) %>%
+    slice(1) %>%
+    select(func.type, p_true, max_p) %>%
+    mutate(monkey = "BP24")
+) %>%
+  ungroup()
+
+posterior_plot_data <- linear_monkey_comparison %>%
+  select(func.type, p_linear_success, monkey) %>%
+  left_join(end_training_posterior, by = c("func.type", "monkey")) %>%
+  left_join(pattern_shapes, by = "func.type")
+
+bp22_posterior_data <- posterior_plot_data[posterior_plot_data$monkey == "BP22" & !is.na(posterior_plot_data$p_linear_success), ]
+bp24_posterior_data <- posterior_plot_data[posterior_plot_data$monkey == "BP24" & !is.na(posterior_plot_data$p_linear_success), ]
+
+r_bp22_posterior <- cor(bp22_posterior_data$p_linear_success, bp22_posterior_data$p_true, use = "complete.obs")
+r_bp24_posterior <- cor(bp24_posterior_data$p_linear_success, bp24_posterior_data$p_true, use = "complete.obs")
+
+ggplot(data = bp22_posterior_data) + 
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", alpha = 0.5) +
+  geom_path(aes(x = p_linear_success + true_x * scale_fn, 
+                y = p_true + true_y * scale_fn * aspect_ratio, 
+                group = func.name, color = func.type), 
+            alpha = 0.7, size = 0.4) +
+  geom_point(aes(x = p_linear_success + true_x * scale_fn, 
+                 y = p_true + true_y * scale_fn * aspect_ratio, 
+                 group = func.name, color = func.type), 
+             alpha = 0.8, size = 0.3) +
+  geom_point(aes(x = p_linear_success + true_x * scale_fn, 
+                 y = p_true + true_y * scale_fn * aspect_ratio, 
+                 group = func.name), 
+             color = "black", alpha = 0.05, size = 0.1) +
+  annotate("text", x = 0.12, y = 0.9, 
+           label = paste("R^2 == ", sprintf("%.2f", r_bp22_posterior^2)), 
+           size = 6, family = "Georgia", parse = TRUE) +
+  labs(x =  "P(approximately linear)",  
+       y = "Final accuracy (inferred)",
+       title = "Monkey 1") +
+  coord_cartesian(xlim = c(-0.02, 1.03), ylim = c(-0.02, 1.02)) +
+  guides(color = "none") +
+  paper_theme + theme(plot.title = element_text(hjust = 0.5, size=16))
+
+#ggsave("figs/bp22_lin_posterior.png", width=5, height=4, dpi=400)
+
+ggplot(data = bp24_posterior_data) + 
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", alpha = 0.5) +
+  geom_path(aes(x = p_linear_success + true_x * scale_fn, 
+                y = p_true + true_y * scale_fn * aspect_ratio, 
+                group = func.name, color = func.type), 
+            alpha = 0.7, size = 0.4) +
+  geom_point(aes(x = p_linear_success + true_x * scale_fn, 
+                 y = p_true + true_y * scale_fn * aspect_ratio, 
+                 group = func.name, color = func.type), 
+             alpha = 0.8, size = 0.3) +
+  geom_point(aes(x = p_linear_success + true_x * scale_fn, 
+                 y = p_true + true_y * scale_fn * aspect_ratio, 
+                 group = func.name), 
+             color = "black", alpha = 0.05, size = 0.1) +
+  annotate("text", x = 0.12, y = 0.9, 
+           label = paste("R^2 == ", sprintf("%.2f", r_bp24_posterior^2)), 
+           size = 6, family = "Georgia", parse = TRUE) +
+  labs(x = "P(approximately linear)", 
+       y = "Final accuracy (inferred)",
+       title = "Monkey 2") +
+  coord_cartesian(xlim = c(-0.02, 1.03), ylim = c(-0.02, 1.02)) +
+  guides(color = "none") +
+  paper_theme + theme(plot.title = element_text(hjust = 0.5, size=16))
+
+#ggsave("figs/bp24_lin_posterior.png", width=5, height=4, dpi=400)
+
+
+
+r_bp22_maxp <- cor(bp22_posterior_data$p_linear_success, bp22_posterior_data$max_p, use = "complete.obs")
+r_bp24_maxp <- cor(bp24_posterior_data$p_linear_success, bp24_posterior_data$max_p, use = "complete.obs")
+
+
+ 
+ 
+ggplot(data = bp22_posterior_data) + 
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", alpha = 0.5) +
+  geom_path(aes(x = p_linear_success + true_x * scale_fn, 
+                y = max_p + true_y * scale_fn * aspect_ratio, 
+                group = func.name, color = func.type), 
+            alpha = 0.7, size = 0.4) +
+  geom_point(aes(x = p_linear_success + true_x * scale_fn, 
+                 y = max_p + true_y * scale_fn * aspect_ratio, 
+                 group = func.name, color = func.type), 
+             alpha = 0.8, size = 0.3) +
+  geom_point(aes(x = p_linear_success + true_x * scale_fn, 
+                 y = max_p + true_y * scale_fn * aspect_ratio, 
+                 group = func.name), 
+             color = "black", alpha = 0.05, size = 0.1) +
+  annotate("text", x = 0.12, y = 0.9, 
+           label = paste("R^2 == ", sprintf("%.2f", r_bp22_maxp^2)), 
+           size = 6, family = "Georgia", parse = TRUE) +
+  labs(x = "P(approximately linear)", 
+       y = "Inferred asymptote",
+       title = "Monkey 1") +
+  coord_cartesian(xlim = c(-0.02, 1.03), ylim = c(-0.02, 1.02)) +
+  guides(color = "none") +
+  paper_theme + theme(plot.title = element_text(hjust = 0.5, size=16))
+
+
+
+ggplot(data = bp24_posterior_data) + 
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", alpha = 0.5) +
+  geom_path(aes(x = p_linear_success + true_x * scale_fn, 
+                y = max_p + true_y * scale_fn * aspect_ratio, 
+                group = func.name, color = func.type), 
+            alpha = 0.7, size = 0.4) +
+  geom_point(aes(x = p_linear_success + true_x * scale_fn, 
+                 y = max_p + true_y * scale_fn * aspect_ratio, 
+                 group = func.name, color = func.type), 
+             alpha = 0.8, size = 0.3) +
+  geom_point(aes(x = p_linear_success + true_x * scale_fn, 
+                 y = max_p + true_y * scale_fn * aspect_ratio, 
+                 group = func.name), 
+             color = "black", alpha = 0.05, size = 0.1) +
+  annotate("text", x = 0.12, y = 0.9, 
+           label = paste("R^2 == ", sprintf("%.2f", r_bp24_maxp^2)), 
+           size = 6, family = "Georgia", parse = TRUE) +
+  labs(x = "P(approximately linear)", 
+       y = "Inferred asymptote",
+       title = "Monkey 2") +
+  coord_cartesian(xlim = c(-0.02, 1.03), ylim = c(-0.02, 1.02)) +
+  guides(color = "none") +
+  paper_theme + theme(plot.title = element_text(hjust = 0.5, size=16))
 
 
 ```
@@ -535,60 +824,164 @@ ggsave("figs/modeled_accuracy.png", width=14, height=7, dpi=400)
 
 ```{r}
 
+monkey_final_performance <- rbind(
+  stan_df.22 %>%
+    group_by(func.type) %>%
+    filter(func_examples == max(func_examples)) %>%
+    slice(1) %>%
+    select(func.type, p_true) %>%
+    mutate(monkey = "BP22"),
+  
+  stan_df.24 %>%
+    group_by(func.type) %>%
+    filter(func_examples == max(func_examples)) %>%
+    slice(1) %>%
+    select(func.type, p_true) %>%
+    mutate(monkey = "BP24")
+) %>%
+  ungroup()
 
-
-add_png_to_facet <- function(ggplot_object, data, facet_var, x_loc,y_loc, width, height, out_file) {
-  # Get the ggplotGrob
-  gtable <- ggplotGrob(ggplot_object)
-  # Get the unique facet labels in the order they appear in the data
-  facet_labels <- rev(unique(data[[facet_var]]))
-  # Extract panel positions from the layout
-  panel_positions <- subset(gtable$layout, grepl("panel", name))
-  # Order the panels by their left (l) and top (t) positions
-  ordered_panel_positions <- with(panel_positions, order(t, l))
-  # Ensure the facet labels order matches the plot
-  # For each ordered panel position, add the PNG
-  for (i in seq_along(ordered_panel_positions)) {
-    panel_index <- ordered_panel_positions[i]
-    facet_label <- facet_labels[i]
-    if (!is.na(facet_label)) {
-      img <- readPNG(paste0("../../figs/monkey_func_ims/all/", facet_label, ".png"))
-      # Convert to raster and add it to the gtable
-      g <- rasterGrob(img, interpolate = TRUE, width = unit(0.24, "npc"), height = unit(0.35, "npc"))
-      g <- editGrob(g, vp = viewport(x = x_loc, y = y_loc, just = c("right", "top")))
-      gtable <- gtable_add_grob(gtable, g, t = panel_positions$t[panel_index], l = panel_positions$l[panel_index])
-    }
-  }
-  png(filename = out_file, width = width, height = height, units = 'mm', res = 400)
-  grid.draw(gtable)
-  dev.off()
-}
-
-# Create the base plot and save it to a variable
-p <- ggplot() +
-  geom_line(data = posterior_summary_22, aes(x = func_examples, y = p_true_mean, color = "Monkey A")) +
-  geom_ribbon(data = posterior_summary_22, aes(x = func_examples, ymin = p_true_lower, ymax = p_true_upper, fill= "Monkey A"), alpha = 0.2) +
-  geom_line(data = posterior_summary_24, aes(x = func_examples, y = p_true_mean, color = "Monkey B")) +
-  geom_ribbon(data = posterior_summary_24, aes(x = func_examples, ymin = p_true_lower, ymax = p_true_upper, fill="Monkey B"), alpha = 0.2) +
-  scale_color_manual(values = c("dodgerblue", "orange")) +
-  scale_fill_manual(values = c("dodgerblue", "orange")) +
-  guides(fill="none") +
-  facet_wrap(~func.type, nrow = 4, labeller = labeller(func.type = labels)) +
-  paper_theme + theme(legend.title = element_blank(),
-                     strip.background = element_rect(fill = "white", color = "white"),
-                     strip.text = element_text(color = "black")) +
-  labs(x = "Pattern examples", y = "Modeled accuracy")
-
-# Call add_png_to_facet with the plot
-add_png_to_facet(
-  ggplot_object = p,
-  data = posterior_summary_22,  # Using posterior_summary_22 as the data source
-  facet_var = "func.type",     # The variable used for faceting
-  x_loc = 0.7,                # Position the image near the right side
-  y_loc =1.4,                # Position the image near the top
-  width = 280,                 # Width in mm (14 inches ≈ 280mm)
-  height = 140,                # Height in mm (7 inches ≈ 140mm)
-  out_file = "figs/modeled_accuracy_with_images.png"  # Output file path
+monkey_observed_performance <- rbind(
+  stan_df.22 %>%
+    group_by(func.type) %>%
+    summarise(
+      observed_accuracy = mean(correct_120, na.rm = TRUE),
+      monkey = "BP22",
+      .groups = 'drop'
+    ),
+  
+  stan_df.24 %>%
+    group_by(func.type) %>%
+    summarise(
+      observed_accuracy = mean(correct_120, na.rm = TRUE),
+      monkey = "BP24", 
+      .groups = 'drop'
+    )
 )
 
+linear_success <- linear_monkey_comparison %>%
+  select(func.type, p_linear_success, monkey)
+
+performance_comparison <- monkey_final_performance %>%
+  left_join(monkey_observed_performance, by = c("func.type", "monkey")) %>%
+  left_join(linear_success, by = c("func.type", "monkey")) %>%
+  mutate(
+    modeled_advantage = p_true - p_linear_success,
+    observed_advantage = observed_accuracy - p_linear_success,
+    
+    modeled_effect_size = modeled_advantage / sqrt(p_linear_success * (1 - p_linear_success)),
+    observed_effect_size = observed_advantage / sqrt(p_linear_success * (1 - p_linear_success))
+  )
+
+end_training_posterior_samples <- rbind(
+  # For BP22
+  expanded_func_examples_22 %>%
+    filter(abs(func_examples_std - max(df$func_examples_std)) < 0.01) %>%  # End of training
+    group_by(func.type) %>%
+    slice(1:min(1000, n())) %>%  # Sample up to 1000 for each pattern
+    select(func.type, p_true) %>%
+    mutate(monkey = "BP22"),
+  
+  expanded_func_examples_24 %>%
+    filter(abs(func_examples_std - max(df$func_examples_std)) < 0.01) %>%  
+    group_by(func.type) %>%
+    slice(1:min(1000, n())) %>%  
+    select(func.type, p_true) %>%
+    mutate(monkey = "BP24")
+)
+
+advantage_probabilities <- end_training_posterior_samples %>%
+  left_join(linear_success, by = c("func.type", "monkey")) %>%
+  mutate(exceeds_linear = p_true > p_linear_success) %>%
+  group_by(func.type, monkey, p_linear_success) %>%
+  summarise(
+    prob_exceeds_linear = mean(exceeds_linear),
+    mean_p_true = mean(p_true),
+    .groups = 'drop'
+  )
+
+cat("MONKEY PERFORMANCE vs LINEAR EXTRAPOLATION STRATEGY\n")
+cat("===================================================\n\n")
+
+cat("Testing whether monkeys performed better than pure linear extrapolation...\n\n")
+
+# Test each monkey
+for(m in c("BP22", "BP24")) {
+  monkey_name <- ifelse(m == "BP22", "Monkey A (BP22)", "Monkey B (BP24)")
+  cat(paste(monkey_name, "\n"))
+  cat(paste(rep("=", nchar(monkey_name)), collapse = ""), "\n")
+  
+  monkey_data <- performance_comparison[performance_comparison$monkey == m, ]
+  monkey_probs <- advantage_probabilities[advantage_probabilities$monkey == m, ]
+  
+  monkey_analysis <- monkey_data %>%
+    left_join(monkey_probs, by = c("func.type", "monkey", "p_linear_success"))
+  
+  
+  monkey_analysis <- monkey_analysis %>%
+    arrange(desc(prob_exceeds_linear))
+  
+  for(i in 1:nrow(monkey_analysis)) {
+    pattern <- monkey_analysis$func.type[i]
+    linear_perf <- monkey_analysis$p_linear_success[i]
+    modeled_perf <- monkey_analysis$p_true[i]
+    observed_perf <- monkey_analysis$observed_accuracy[i]
+    prob_better <- monkey_analysis$prob_exceeds_linear[i]
+    
+    significance <- ifelse(prob_better > 0.95, "***", 
+                          ifelse(prob_better > 0.90, "**", 
+                                ifelse(prob_better > 0.80, "*", "")))
+    
+    cat(sprintf("%-20s: Linear=%.3f, Modeled=%.3f, Observed=%.3f, P(better)=%.3f %s\n",
+                pattern, linear_perf, modeled_perf, observed_perf, prob_better, significance))
+  }
+  cat("\n")
+}
+
+cat("SUMMARY ANALYSIS\n")
+cat("================\n\n")
+
+summary_by_monkey <- performance_comparison %>%
+  left_join(advantage_probabilities, by = c("func.type", "monkey", "p_linear_success")) %>%
+  group_by(monkey) %>%
+  summarise(
+    n_patterns = n(),
+    
+    n_prob_better_80 = sum(prob_exceeds_linear > 0.80, na.rm = TRUE),
+    n_prob_better_90 = sum(prob_exceeds_linear > 0.90, na.rm = TRUE), 
+    n_prob_better_95 = sum(prob_exceeds_linear > 0.95, na.rm = TRUE),
+    
+    mean_modeled_advantage = mean(modeled_advantage, na.rm = TRUE),
+    mean_observed_advantage = mean(observed_advantage, na.rm = TRUE),
+    
+    mean_modeled_effect_size = mean(modeled_effect_size, na.rm = TRUE),
+    mean_observed_effect_size = mean(observed_effect_size, na.rm = TRUE),
+    
+    .groups = 'drop'
+  )
+
+for(i in 1:nrow(summary_by_monkey)) {
+  m <- summary_by_monkey$monkey[i]
+  monkey_name <- ifelse(m == "BP22", "Monkey A (BP22)", "Monkey B (BP24)")
+  
+  cat(monkey_name, ":\n")
+  cat(sprintf("  Total patterns analyzed: %d\n", summary_by_monkey$n_patterns[i]))
+  cat(sprintf("  Patterns likely better than linear (P>0.80): %d (%.1f%%)\n", 
+              summary_by_monkey$n_prob_better_80[i],
+              100 * summary_by_monkey$n_prob_better_80[i] / summary_by_monkey$n_patterns[i]))
+  cat(sprintf("  Patterns strongly better than linear (P>0.90): %d (%.1f%%)\n", 
+              summary_by_monkey$n_prob_better_90[i],
+              100 * summary_by_monkey$n_prob_better_90[i] / summary_by_monkey$n_patterns[i]))
+  cat(sprintf("  Patterns very strongly better than linear (P>0.95): %d (%.1f%%)\n", 
+              summary_by_monkey$n_prob_better_95[i],
+              100 * summary_by_monkey$n_prob_better_95[i] / summary_by_monkey$n_patterns[i]))
+  cat(sprintf("  Average modeled advantage over linear: %.3f\n", summary_by_monkey$mean_modeled_advantage[i]))
+  cat(sprintf("  Average observed advantage over linear: %.3f\n", summary_by_monkey$mean_observed_advantage[i]))
+  cat(sprintf("  Average modeled effect size: %.3f\n", summary_by_monkey$mean_modeled_effect_size[i]))
+  cat("\n")
+}
+
+
+
 ```
+

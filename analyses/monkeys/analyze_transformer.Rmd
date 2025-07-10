@@ -1,0 +1,787 @@
+---
+title: "transformer_analysis"
+author: "Sam"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.width=4, fig.height=3,fig.align = "center",cache=TRUE)
+```
+
+```{r, include=FALSE, echo=FALSE}
+
+library(ggplot2)
+library(reshape)
+library(grid)
+library(dplyr)
+library(gridExtra)
+library(lme4)
+library(reghelper)
+library(RColorBrewer)
+library(robustbase)
+library(tidylog)
+library(hash)
+library(rstan)
+library(png)
+library(gtable)
+library(latex2exp)
+library(purrr)
+library(stringr)
+
+
+
+paper_theme <- theme_light() + theme(
+  axis.text.x=element_text(colour="#292929",
+                           size = 14), 
+axis.title.x = element_text(size=18, family="Georgia"),
+  axis.title.y = element_text(size = 18, vjust = 1,  family="Georgia"),
+  axis.text.y  = element_text(size = 14, colour="#292929", family="Georgia"),
+  strip.text=element_text(size=16,color="black", family="Georgia"),
+strip.background = element_rect(colour = "grey50", fill = "white"),
+panel.background = element_rect(fill = "white", colour = "grey50"),
+  axis.ticks.x=element_blank(),axis.ticks.y=element_blank(),
+  axis.line.x = element_line(colour = "black"), 
+  axis.line.y = element_line(colour = "black"),
+  legend.title=element_text(size=18, family="Georgia"),
+  legend.text=element_text(size=15, family="Georgia"),
+  panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+add_rank_time_column <- function(dataframe) {
+  # Convert 'time' column to a date format, ignoring the clock time information
+  dataframe$date <- as.Date(dataframe$Current_time, format = "%a %b %d %H:%M:%S %Y")
+  
+  # Create a dataframe with unique dates and their corresponding rank order
+  unique_dates <- dataframe %>%
+    distinct(date) %>%
+    arrange(date) %>%
+    mutate(rank_time = row_number())
+  
+  h <- hash()
+  for (i in 1:nrow(unique_dates)) {
+    date <- unique_dates$date[i]
+    rank_time <- unique_dates$rank_time[i]
+    h[date] = rank_time
+  }
+
+  # Join the unique_dates dataframe with the original dataframe to add the 'rank_time' column
+ # dataframe <- left_join(dataframe, unique_dates, by = "date")
+  dataframe <- dataframe %>%
+                rowwise() %>%
+                mutate(ranked_day = h[[as.character(date)]])
+  
+  return(dataframe)
+}
+
+
+capitalize_words <- function(s) {
+  words <- str_split(s, " ")[[1]]
+  words <- ifelse(words == "to", "to", str_to_title(words))
+  paste(words, collapse = " ")
+}
+
+
+
+```
+
+
+```{r}
+
+# df_train <- read.csv("transformer/monkey_model_train_limited.csv")
+# df_test <- read.csv("transformer/monkey_model_test_limited.csv")
+# 
+# df_adult <- read.csv("transformer/adults_model_limited.csv")
+# df_kid <- read.csv("transformer/kids_model_limited.csv")
+
+
+df_train <- read.csv("transformer/monkey_model_train.csv")
+df_test <- read.csv("transformer/monkey_model_test.csv")
+
+df_adult <- read.csv("transformer/adults_model.csv")
+df_kid <- read.csv("transformer/kids_model.csv")
+
+df_adult$id <- seq_len(nrow(df_adult))
+df_adult$n <- df_adult$tpt
+df_adult <- df_adult[order(df_adult$tpt),] %>%
+    rename(pred_x = response_x, pred_y = response_y, func.name = seq_id,func.type=seq_id, subj_id = subject_id) %>%
+    group_by(subj_id, trial_idx, tpt, model_type, context_len) %>%
+    mutate(r_id = subj_id) %>%
+    mutate(true_dist=((true_x-prev_x)**2. + (true_y-prev_y)**2.)**0.5) %>%
+    mutate(err_x=pred_x-true_x) %>%
+    mutate(err_y=pred_y-true_y) %>%
+    mutate(abs_err = ((err_x**2)+(err_y**2)) **0.5) 
+
+
+df_kid$id <- seq_len(nrow(df_kid))
+df_kid$n <- df_kid$tpt
+df_kid <- df_kid[order(df_kid$tpt),] %>%
+    rename(pred_x = response_x, pred_y = response_y, func.name = seq_id,func.type=seq_id, subj_id = subject_id) %>%
+    group_by(subj_id, trial_idx, tpt, model_type, context_len) %>%
+    mutate(r_id = subj_id) %>%
+    mutate(true_dist=((true_x-prev_x)**2. + (true_y-prev_y)**2.)**0.5) %>%
+    mutate(err_x=pred_x-true_x) %>%
+    mutate(err_y=pred_y-true_y) %>%
+    mutate(abs_err = ((err_x**2)+(err_y**2)) **0.5) 
+
+df_test_stimuli <- read.csv("../data/stimuli.csv") %>% 
+              rename(func.type=seq_id) %>%
+              group_by(func.type) %>%
+
+              filter(tpt < 15) %>%
+              mutate(
+              xrng = max(true_x) - min(true_x),
+              yrng = max(true_y) - min(true_y),
+              n = tpt,
+              true_x = ifelse(xrng > 0, (true_x - min(true_x))/xrng, 0.5),
+              true_y = ifelse(yrng > 0, (true_y - min(true_y))/yrng, 0.5))
+
+
+
+df_train$id <- seq.int(1,nrow(df_train))
+df_train$func.name <- df_train$func_id
+
+df_train <- df_train %>%
+  mutate(func.type = str_replace(func_id, "\\.\\d+$", "")) %>%
+  mutate(pred_x = x_pred, pred_y = y_pred, correct = acc) %>%
+  mutate(err_x = pred_x - x_next) %>%
+  mutate(err_y = pred_y - y_next) %>%
+  mutate(abs_err = sqrt(err_x^2 + err_y^2)) 
+
+
+
+df_test$id <- seq.int(1,nrow(df_test))
+df_test$func.name <- df_test$func_id
+
+df_test <- df_test %>%
+
+  mutate(func.type = str_replace(func_id, "\\.\\d+$", "")) %>%
+  mutate(func.type = ifelse(func.type == "example_line", "line", func.type))  %>%
+  mutate(pred_x = x_pred, pred_y = y_pred, correct = acc) %>%
+  mutate(err_x = pred_x - x_next) %>%
+  mutate(err_y = pred_y - y_next) %>%
+  mutate(abs_err = sqrt(err_x^2 + err_y^2)) 
+
+
+```
+
+
+```{r}
+
+df_train_2 <- df_train %>% filter((model_type == "transformer") & (context_len == 2))
+df_train_3 <- df_train %>% filter((model_type == "transformer") & (context_len == 3))
+df_train_13 <- df_train %>% filter((model_type == "transformer") & (context_len == 13))
+
+
+df_test_2 <- df_test %>% filter((model_type == "transformer") & (context_len == 2))
+df_test_3 <- df_test %>% filter((model_type == "transformer") & (context_len == 3))
+df_test_13 <- df_test %>% filter((model_type == "transformer") & (context_len == 13))
+
+df_adult_2 <- df_adult %>% filter((model_type == "transformer") & (context_len == 2))
+df_adult_3 <- df_adult %>% filter((model_type == "transformer") & (context_len == 3))
+df_adult_13 <- df_adult %>% filter((model_type == "transformer") & (context_len == 13))
+
+df_kid_2 <- df_kid %>% filter((model_type == "transformer") & (context_len == 2))
+df_kid_3 <- df_kid %>% filter((model_type == "transformer") & (context_len == 3))
+df_kid_13 <- df_kid %>% filter((model_type == "transformer") & (context_len == 13))
+
+
+
+df_train_linear <- df_train %>% filter((model_type == "linear"))
+df_test_linear <- df_test %>% filter((model_type == "linear"))
+
+
+
+df_train_seqs <- df_train %>%
+           group_by(func.name, n)# %>%
+          # top_n(n=1, wt=id) %>%
+          #  mutate(x_curr = x_curr/screen_w,  x_next = x_next/screen_w,
+          #         y_curr = y_curr/screen_h,  y_next = y_next/screen_h) 
+
+
+
+canonical_seqs <- c("alternating_diffs.21", "changing_sine.5", "circle.1", "curly.0", "left_to_right.0", "right_to_left.0", "line.1", "line2.0", "polygon.3", "polygon_spiral.14", "polynomial.37", "radial.49", 
+                    "repeat_pts.0", "repeat_line.4", "sine.0", "spiky_circle.49", "spiral_in.2", "spiral_out.6", "zigzag.10", "zigzag_increasing.27")
+
+
+df_canonical_seqs <- df_train_seqs %>% rowwise() %>% filter(func.name %in% canonical_seqs) %>%
+                      ungroup() %>%
+                      filter(model_type == "transformer", context_len == 2) %>%
+                      group_by(func.name) %>%
+                      mutate(
+                            xrng = max(x_curr, na.rm=TRUE) - min(x_curr, na.rm=TRUE),
+                           yrng = max(y_curr, na.rm=TRUE) - min(y_curr, na.rm=TRUE)) %>%
+                    mutate(true_x = ifelse(xrng > 0, (x_curr - min(x_curr))/xrng, 0.5),
+                           true_y = ifelse(yrng > 0, (y_curr - min(y_curr))/yrng, 0.5)) %>%
+                      arrange(n)
+                                        
+
+
+
+
+
+
+```
+
+```{r}
+ggplot(data = df_train_linear, aes(x=model_x_pred-x_next, y=x_pred-x_next)) +
+     #     geom_abline(size=0.2, alpha=0.5) +
+
+          geom_point(alpha=0.05, shape=1) +
+
+          #stat_smooth(method="lm") +
+          coord_cartesian(xlim=c(-1,1), ylim=c(-1,1)) +
+          paper_theme  +
+            labs(x=expression("Linear " * hat(x)[t] - x[t]), y =expression("Monkey " * hat(x)[t] - x[t]) )
+
+
+ggplot(data = df_train_linear, aes(x=model_y_pred-y_next, y= y_pred-y_next)) +
+         # geom_abline() +
+
+          geom_point(alpha=0.05, shape=1) +
+          stat_smooth(se=FALSE) +
+          #stat_smooth(method="lm") +
+          coord_cartesian(xlim=c(-0.6,0.6), ylim=c(-0.6,0.6)) +
+            # stat_smooth(method="lm") +
+          paper_theme +
+            labs(x=expression("Linear " * hat(y)[t] - y[t]), y=expression("Monkey " * hat(y)[t] - y[t]) ) 
+
+
+ggplot(data = df_test_linear, aes(x=model_x_pred-x_next, y=x_pred-x_next)) +
+     #     geom_abline(size=0.2, alpha=0.5) +
+
+          geom_point(alpha=0.05, shape=1) +
+          #stat_smooth(method="lm") +
+          coord_cartesian(xlim=c(-0.6,0.6), ylim=c(-0.6,0.6)) +
+          paper_theme  +
+            labs(x=expression("Linear " * hat(x)[t] - x[t]), y =expression("Monkey " * hat(x)[t] - x[t]) )
+
+
+ggplot(data = df_test_linear, aes(x=model_y_pred-y_next, y= y_pred-y_next)) +
+         #geom_abline() +
+
+          geom_point(alpha=0.05, shape=1) +
+          #stat_smooth(method="lm") +
+          coord_cartesian(xlim=c(-0.5,0.5), ylim=c(-0.5,0.5)) +
+            # stat_smooth(method="lm") +
+          paper_theme +
+            labs(x=expression("Linear " * hat(y)[t] - y[t]), y=expression("Monkey " * hat(y)[t] - y[t]) ) 
+
+
+
+```
+
+
+```{r}
+
+
+
+ggplot(data = df_train_2, aes(x=model_x_pred-x_next, y=x_pred-x_next)) +
+          geom_point(alpha=0.01) +
+          stat_smooth(method="lm") +
+          labs(x=expression("Transformer " * hat(x)[t] - x[t]), y =expression("Monkey " * hat(x)[t] - x[t]) ) +
+
+          paper_theme 
+
+ggplot(data = df_train_2, aes(x=model_y_pred-y_next, y=y_pred-y_next)) +
+          geom_point(alpha=0.01) +
+          stat_smooth(method="lm") +
+          labs(x=expression("Transformer " * hat(y)[t] - y[t]), y=expression("Monkey " * hat(y)[t] - y[t]) ) +
+
+          paper_theme 
+
+
+
+ggplot(data = df_train_2, aes(x=model_error, y=error)) +
+          
+          geom_point(alpha=0.01) +
+          stat_smooth(method="lm") +
+          labs(x="Model error", y="Monkey error") +
+          paper_theme 
+
+
+ggplot(data = df_train_13, aes(x=model_error, y=((model_x_pred - x_next)**2 + (model_y_pred - y_next)**2.)**0.5)) +
+          
+          geom_point(alpha=0.01) +
+          stat_smooth(method="lm") +
+         # labs(x="Model error", y="Monkey error") +
+          paper_theme 
+
+
+
+
+ggplot(data = df_train_2, aes(x=round(model_acc, 2), y=acc)) +
+          geom_abline() +
+          stat_summary() +
+          paper_theme +
+          labs(x="Model acccuracy", y="Monkey accuracy")  +
+          coord_cartesian(xlim=c(0,1), ylim=c(0,1))
+
+
+
+
+```
+
+```{r}
+ggplot(data = df_test_2, aes(x=model_error, y=error)) +
+          
+          geom_point(alpha=0.1) +
+          stat_smooth(method="lm") +
+          labs(x="Model error", y="Monkey error") +
+          paper_theme 
+
+ggplot(data = df_adult_2, aes(x=model_error, y=abs_err)) +
+          
+          geom_point(alpha=0.1) +
+          stat_smooth(method="lm") +
+          labs(x="Model error", y="Adult error") +
+          paper_theme 
+
+
+
+
+```
+
+```{r, fig.width=12, fig.height=5}
+xscale <- max(df_train_2$n) - min(df_train_2$n)
+y_scale <- 1
+
+ggplot(data=df_train_2) +
+          
+    geom_path(data=df_canonical_seqs, aes(x=true_x*xscale, y= 0.8 + true_y * 0.3), size=0.8, color="black", alpha=0.5) +
+    geom_point(data=df_canonical_seqs, aes(x=true_x*xscale, y= 0.8 + true_y * 0.3, alpha=n), color="black", size=0.9) +
+    facet_wrap(~func.type)
+
+ggplot(data = df_train_2, aes(x=model_error, y=error)) +
+          geom_abline() +
+          geom_point(alpha=0.01) +
+          stat_smooth(method="lm") +
+          labs(x="Model error", y="Monkey error")  +
+           facet_wrap(~func.type) +
+           paper_theme 
+
+
+
+
+ggplot(data = df_train_2) +
+          stat_summary( aes(x=n, y=model_acc), fun="mean", geom="line", color="darkblue", size=1) +
+
+          stat_summary( aes(x=n, y=acc), fun="mean", geom="line", alpha=0.2) +
+
+          stat_summary( aes(x=n, y=acc), fun.data="mean_cl_boot", geom="errorbar", width=0.05) +
+          stat_summary( aes(x=n, y=acc), fun="mean", geom="point") +
+
+
+          
+          geom_path(data=df_canonical_seqs, aes(x=true_x*xscale*0.15, y= 0.8 + true_y * 0.25), size=0.8, color="black", alpha=0.5) +
+          geom_point(data=df_canonical_seqs, aes(x=true_x*xscale*0.15, y= 0.8 + true_y * 0.25, alpha=n), color="black", size=0.9) +
+  facet_wrap(~func.type, nrow = 4, labeller = labeller(func.type = labels)) +
+            coord_cartesian(ylim=c(0,1.03)) +
+            guides(alpha="none")  +
+        labs(x="Timepoint", y="Accuracy") +
+    paper_theme+ theme(legend.title = element_blank(),
+                 strip.background = element_blank(),
+                 strip.text = element_blank(), legend.position="top") 
+
+
+xscale <- max(df_train_2$n) - min(df_train_2$n)
+yscale <- max(df_train_2$error, na.rm=TRUE) - min(df_train_2$error, na.rm=TRUE)
+
+ggplot(data = df_train_2) +
+          stat_summary( aes(x=n, y=model_error), fun="mean", geom="line", color="darkblue", size=1) +
+          stat_summary( aes(x=n, y=error), fun="mean", geom="line", alpha=0.2) +
+          stat_summary( aes(x=n, y=error), fun.data="mean_cl_boot", geom="errorbar", width=0.05) +
+          stat_summary( aes(x=n, y=error), fun="mean", geom="point") +
+          geom_path(data=df_canonical_seqs, aes(x=true_x*xscale*0.2, y= 0.4 * yscale + true_y * 0.25 * yscale), size=0.8, color="black", alpha=0.5) +
+          geom_point(data=df_canonical_seqs, aes(x=true_x*xscale*0.2, y= 0.4 * yscale + true_y * 0.25 * yscale, alpha=n), color="black", size=0.9) +
+  facet_wrap(~func.type, nrow = 4, labeller = labeller(func.type = labels)) +
+            coord_cartesian(ylim=c(0,0.7)) +
+            guides(alpha="none")  +
+        labs(x="Timepoint", y="Error") +
+    paper_theme+ theme(legend.title = element_blank(),
+                 strip.background = element_blank(),
+                 strip.text = element_blank(), legend.position="top") 
+
+
+```
+
+```{r, fig.width=12, fig.height=5}
+          
+
+xscale <- max(df_test_2$n) - min(df_test_2$n)
+yscale <- 1
+
+ggplot(data = df_test_2) +
+          stat_summary( aes(x=n, y=model_acc), fun="mean", geom="line", color="darkblue", size=1) +
+
+          stat_summary( aes(x=n, y=acc), fun="mean", geom="line", alpha=0.2) +
+
+          stat_summary( aes(x=n, y=acc), fun.data="mean_cl_boot", geom="errorbar", width=0.05) +
+          stat_summary( aes(x=n, y=acc), fun="mean", geom="point") +
+
+
+          
+          geom_path(data=df_test_stimuli, aes(x=true_x*xscale*0.2, y= 0.8 * yscale + true_y * 0.25 * yscale), size=0.8, color="black", alpha=0.5) +
+          geom_point(data=df_test_stimuli, aes(x=true_x*xscale*0.2, y= 0.8 * yscale + true_y * 0.25 * yscale, alpha=n), color="black", size=0.9) +
+          facet_wrap(~func.type, nrow = 3, labeller = labeller(func.type = labels)) +
+          coord_cartesian(ylim=c(0,1.03)) +
+            guides(alpha="none")  +
+        labs(x="Timepoint", y="Accuracy") +
+    paper_theme+ theme(legend.title = element_blank(),
+                 strip.background = element_blank(),
+                 strip.text = element_blank(), legend.position="top") 
+
+
+
+ggplot(data = df_test_13) +
+          stat_summary( aes(x=n, y=model_acc), fun="mean", geom="line", color="darkblue", size=1) +
+
+          stat_summary( aes(x=n, y=acc), fun="mean", geom="line", alpha=0.2) +
+
+          stat_summary( aes(x=n, y=acc), fun.data="mean_cl_boot", geom="errorbar", width=0.05) +
+          stat_summary( aes(x=n, y=acc), fun="mean", geom="point") +
+          
+          geom_path(data=df_test_stimuli, aes(x=true_x*xscale*0.2, y= 0.8 * yscale + true_y * 0.25 * yscale), size=0.8, color="black", alpha=0.5) +
+          geom_point(data=df_test_stimuli, aes(x=true_x*xscale*0.2, y= 0.8 * yscale + true_y * 0.25 * yscale, alpha=n), color="black", size=0.9) +
+  facet_wrap(~func.type, nrow = 3, labeller = labeller(func.type = labels)) +
+            coord_cartesian(ylim=c(0,1.03)) +
+            guides(alpha="none")  +
+        labs(x="Timepoint", y="Accuracy") +
+    paper_theme+ theme(legend.title = element_blank(),
+                 strip.background = element_blank(),
+                 strip.text = element_blank(), legend.position="top") 
+
+ggplot() +
+          stat_summary(data = df_adult_13, aes(x=n, y=model_acc), fun="mean", geom="line", color="darkblue", size=1) +
+          stat_summary(data = df_adult_13, aes(x=n, y=correct), fun="mean", geom="line", alpha=0.2) +
+          stat_summary( data = df_adult_13, aes(x=n, y=correct), fun.data="mean_cl_boot", geom="errorbar", width=0.05) +
+          stat_summary( data = df_adult_13, aes(x=n, y=correct), fun="mean", geom="point") +
+          geom_path(data=df_test_stimuli, aes(x=true_x*xscale*0.2, y= 0.8 * yscale + true_y * 0.25 * yscale), size=0.8, color="black", alpha=0.5) +
+          geom_point(data=df_test_stimuli, aes(x=true_x*xscale*0.2, y= 0.8 * yscale + true_y * 0.25 * yscale, alpha=n), color="black", size=0.9) +
+  facet_wrap(~func.type, nrow = 3, labeller = labeller(func.type = labels)) +
+           # coord_cartesian(ylim=c(0,1.03)) +
+            guides(alpha="none")  +
+        labs(x="Timepoint", y="Correct") +
+    paper_theme+ theme(legend.title = element_blank(),
+                 strip.background = element_blank(),
+                 strip.text = element_blank(), legend.position="top") 
+
+
+
+xscale <- max(df_test_2$n) - min(df_test_2$n)
+yscale <- 5*(median(df_test_2$error, na.rm=TRUE) - min(df_test_2$error, na.rm=TRUE))
+
+ggplot(data = df_test_2) +
+          stat_summary( aes(x=n, y=model_error), fun="mean", geom="line", color="darkblue", size=1) +
+          stat_summary( aes(x=n, y=error), fun="mean", geom="line", alpha=0.2) +
+          stat_summary( aes(x=n, y=error), fun.data="mean_cl_boot", geom="errorbar", width=0.05) +
+          stat_summary( aes(x=n, y=error), fun="mean", geom="point") +
+          geom_path(data=df_test_stimuli, aes(x=true_x*xscale*0.2, y= 0.8 * yscale + true_y * 0.25 * yscale), size=0.8, color="black", alpha=0.5) +
+          geom_point(data=df_test_stimuli, aes(x=true_x*xscale*0.2, y= 0.8 * yscale + true_y * 0.25 * yscale, alpha=n), color="black", size=0.9) +
+  facet_wrap(~func.type, nrow = 3, labeller = labeller(func.type = labels)) +
+           # coord_cartesian(ylim=c(0,1.03)) +
+            guides(alpha="none")  +
+        labs(x="Timepoint", y="Error") +
+    paper_theme+ theme(legend.title = element_blank(),
+                 strip.background = element_blank(),
+                 strip.text = element_blank(), legend.position="top") 
+
+
+
+
+ggplot(data = df_test_13) +
+          stat_summary( aes(x=n, y=model_error), fun="mean", geom="line", color="darkblue", size=1) +
+          stat_summary( aes(x=n, y=error), fun="mean", geom="line", alpha=0.2) +
+          stat_summary( aes(x=n, y=error), fun.data="mean_cl_boot", geom="errorbar", width=0.05) +
+          stat_summary( aes(x=n, y=error), fun="mean", geom="point") +
+          geom_path(data=df_test_stimuli, aes(x=true_x*xscale*0.2, y= 0.8 * yscale + true_y * 0.25 * yscale), size=0.8, color="black", alpha=0.5) +
+          geom_point(data=df_test_stimuli, aes(x=true_x*xscale*0.2, y= 0.8 * yscale + true_y * 0.25 * yscale, alpha=n), color="black", size=0.9) +
+  facet_wrap(~func.type, nrow = 3, labeller = labeller(func.type = labels)) +
+           # coord_cartesian(ylim=c(0,1.03)) +
+            guides(alpha="none")  +
+        labs(x="Timepoint", y="Error") +
+    paper_theme+ theme(legend.title = element_blank(),
+                 strip.background = element_blank(),
+                 strip.text = element_blank(), legend.position="top") 
+
+
+ggplot() +
+          stat_summary(data = df_adult_13, aes(x=n, y=model_error), fun="mean", geom="line", color="darkblue", size=1) +
+          stat_summary(data = df_adult_13, aes(x=n, y=abs_err), fun="mean", geom="line", alpha=0.2) +
+          stat_summary( data = df_adult_13, aes(x=n, y=abs_err), fun.data="mean_cl_boot", geom="errorbar", width=0.05) +
+          stat_summary( data = df_adult_13, aes(x=n, y=abs_err), fun="mean", geom="point") +
+          geom_path(data=df_test_stimuli, aes(x=true_x*xscale*0.2, y= 0.8 * yscale + true_y * 0.25 * yscale), size=0.8, color="black", alpha=0.5) +
+          geom_point(data=df_test_stimuli, aes(x=true_x*xscale*0.2, y= 0.8 * yscale + true_y * 0.25 * yscale, alpha=n), color="black", size=0.9) +
+  facet_wrap(~func.type, nrow = 3, labeller = labeller(func.type = labels)) +
+           # coord_cartesian(ylim=c(0,1.03)) +
+            guides(alpha="none")  +
+        labs(x="Timepoint", y="Error") +
+    paper_theme+ theme(legend.title = element_blank(),
+                 strip.background = element_blank(),
+                 strip.text = element_blank(), legend.position="top") 
+
+
+
+
+ggplot() +
+          stat_summary(data = df_kid_13, aes(x=n, y=model_error), fun="mean", geom="line", color="darkblue", size=1) +
+          stat_summary(data = df_kid_13, aes(x=n, y=abs_err), fun="mean", geom="line", alpha=0.2) +
+          stat_summary( data = df_kid_13, aes(x=n, y=abs_err), fun.data="mean_cl_boot", geom="errorbar", width=0.05) +
+          stat_summary( data = df_kid_13, aes(x=n, y=abs_err), fun="mean", geom="point") +
+          geom_path(data=df_test_stimuli, aes(x=true_x*xscale*0.2, y= 0.8 * yscale + true_y * 0.25 * yscale), size=0.8, color="black", alpha=0.5) +
+          geom_point(data=df_test_stimuli, aes(x=true_x*xscale*0.2, y= 0.8 * yscale + true_y * 0.25 * yscale, alpha=n), color="black", size=0.9) +
+  facet_wrap(~func.type, nrow = 3, labeller = labeller(func.type = labels)) +
+           # coord_cartesian(ylim=c(0,1.03)) +
+            guides(alpha="none")  +
+        labs(x="Timepoint", y="Error") +
+    paper_theme+ theme(legend.title = element_blank(),
+                 strip.background = element_blank(),
+                 strip.text = element_blank(), legend.position="top") 
+
+
+
+
+```
+
+
+```{r, fig.width=15, fig.height=2.5}
+
+bs <- 25
+
+ggplot(data = df_train %>% filter(!is.na(context_len)), aes(x=floor(model_acc*bs)/bs, y=acc)) +
+          geom_abline() +
+          stat_summary() +
+          paper_theme +
+          labs(x="Model acccuracy", y="Monkey accuracy")  +
+          coord_cartesian(xlim=c(0,1), ylim=c(0,1)) +
+          facet_wrap(~context_len, nrow=1)
+
+ggplot(data = df_train %>% filter(!is.na(context_len)), aes(x=floor(model_error*100)/100, y=error)) +
+          geom_abline() +
+          #geom_point(alpha=0.01) +
+          stat_summary() +
+
+          stat_smooth(method="lm") +
+          paper_theme +
+          labs(x="Model error", y="Monkey error")  +
+          coord_cartesian(xlim=c(0,0.4), ylim=c(0,0.4)) +
+
+          facet_wrap(~context_len, nrow=1)
+
+
+
+```
+
+
+```{r}
+
+ggplot(data = df_test %>% filter(!is.na(context_len)), aes(x=floor(model_error*100)/100, y=error)) +
+          geom_abline() +
+          #geom_point(alpha=0.01) +
+          stat_summary() +
+
+          stat_smooth(method="lm") +
+          paper_theme +
+          labs(x="Model error", y="Monkey error")  +
+          coord_cartesian(xlim=c(0,0.4), ylim=c(0,0.4)) +
+
+          facet_wrap(~context_len, nrow=1)
+
+
+
+
+ggplot(data = df_test %>% filter(!is.na(context_len)), aes(x=floor(model_acc*bs)/bs, y=acc)) +
+          geom_abline() +
+
+          stat_summary() +
+          stat_smooth(method="lm") +
+          paper_theme +
+          labs(x="Model error", y="Monkey error")  +
+            coord_cartesian(xlim=c(0,1), ylim=c(0,1)) +
+
+          facet_wrap(~context_len, nrow=1)
+
+
+```
+
+
+```{r, fig.width=15, fig.height=2.5}
+
+
+ggplot(data = df_adult %>% filter(!is.na(context_len)), aes(x=floor(model_error*50)/50, y=abs_err)) +
+          geom_abline() +
+
+          stat_summary() +
+          stat_smooth(method="lm") +
+          paper_theme +
+          coord_cartesian(xlim=c(0,0.5), ylim=c(0,0.5)) +
+          labs(x="Model error", y="Adult error")  +
+
+          facet_wrap(~context_len, nrow=1)
+
+
+ggplot(data = df_kid %>% filter(!is.na(context_len)), aes(x=floor(model_error*50)/50, y=abs_err)) +
+          geom_abline() +
+          #geom_point(alpha=0.01) +
+          stat_summary() +
+          stat_smooth(method="lm") +
+          paper_theme +
+         # coord_cartesian(xlim=c(0,0.5), ylim=c(0,0.5)) +
+          labs(x="Model error", y="Children error")  +
+
+          facet_wrap(~context_len, nrow=1)
+
+
+ggplot(data = df_adult %>% filter(!is.na(context_len)), aes(x=floor(model_acc*bs)/bs, y=correct)) +
+          geom_abline() +
+
+          stat_summary() +
+          stat_smooth(method="lm") +
+          paper_theme +
+          labs(x="Model accuracy", y="Adult accuracy")  +
+            coord_cartesian(xlim=c(0,1), ylim=c(0,1)) +
+
+          facet_wrap(~context_len, nrow=1)
+
+
+ggplot(data = df_kid %>% filter(!is.na(context_len)), aes(x=floor(model_acc*bs)/bs, y=correct)) +
+          geom_abline() +
+
+          stat_summary() +
+          stat_smooth(method="lm") +
+          paper_theme +
+          labs(x="Model accuracy", y="Children accuracy")  +
+            coord_cartesian(xlim=c(0,1), ylim=c(0,1)) +
+
+          facet_wrap(~context_len, nrow=1)
+
+```
+
+
+
+
+```{r, fig.width=6,fig.height=3.75}
+calculate_performance <- function(df, group_name, accuracy_col) {
+  df %>%
+    group_by(func.type, model_type, context_len, n) %>%
+    summarise(
+      mean_accuracy = mean(.data[[accuracy_col]], na.rm = TRUE),
+      mean_error = mean(abs_err, na.rm = TRUE),
+      mean_model_accuracy = mean(model_acc, na.rm = TRUE),
+      mean_model_error = mean(model_error, na.rm = TRUE),
+      .groups = 'drop'
+    ) %>%
+    mutate(subject_group = group_name)
+}
+
+adult_performance <- calculate_performance(df_adult, "Adults", "correct")
+kid_performance <- calculate_performance(df_kid, "Kids", "correct")
+monkey_train_performance <- calculate_performance(df_train, "Monkeys (Train)", "acc")
+monkey_test_performance <- calculate_performance(df_test, "Monkeys (Test)", "acc")
+
+all_performance <- bind_rows(adult_performance, kid_performance, monkey_train_performance, monkey_test_performance)
+
+plot_correlations <- function(correlations, metric = "accuracy") {
+  
+  if (metric == "accuracy") {
+    plot_data <- correlations %>%
+      select(subject_group, model_type, context_len, correlation = acc_correlation, p_value = acc_correlation_p)
+    y_label <- "Accuracy Correlation (r)"
+  } else {
+    plot_data <- correlations %>%
+      select(subject_group, model_type, context_len, correlation = error_correlation, p_value = error_correlation_p)
+    y_label <- "Error Correlation (r)" 
+  }
+
+  custom_colors <- c("Adults" = "#ad9e26", "Kids" = "#75073c", "Monkeys (Train)" = "#59ab9d", "Monkeys (Test)" = "#04594b")
+  
+  ggplot(plot_data, aes(x = context_len, y = correlation, color = subject_group)) +
+    geom_point(size = 3, alpha = 0.8) +
+    geom_line(aes(group = subject_group), alpha = 0.6) +
+    scale_color_manual(values = custom_colors) +
+    labs(
+      x = "Context length",
+      y = y_label
+    ) +
+    paper_theme +
+    theme(legend.title=element_blank(), legend.position=c(0.8, 0.3)) +
+    geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5)
+}
+
+correlations <- calculate_correlations(all_performance)
+
+accuracy_plot <- plot_correlations(correlations, "accuracy")
+error_plot <- plot_correlations(correlations, "error")
+
+print(accuracy_plot)
+print(error_plot)
+```
+
+```{r, fig.width=6, fig.height=3.75}
+calculate_performance_by_age <- function(df, accuracy_col) {
+  df %>%
+    group_by(func.type, model_type, context_len, age, n) %>%
+    summarise(
+      mean_accuracy = mean(.data[[accuracy_col]], na.rm = TRUE),
+      mean_error = mean(abs_err, na.rm = TRUE),
+      mean_model_accuracy = mean(model_acc, na.rm = TRUE),
+      mean_model_error = mean(model_error, na.rm = TRUE),
+      .groups = 'drop'
+    ) %>%
+    mutate(subject_group = "Kids")
+}
+
+kid_performance_by_age <- calculate_performance_by_age(df_kid, "correct")
+
+calculate_correlations_by_age <- function(perf_data) {
+  
+  correlation_results <- perf_data %>%
+    filter(model_type == "transformer") %>%
+    group_by(subject_group, model_type, context_len, age) %>%
+    summarise(
+      acc_correlation = cor(mean_accuracy, mean_model_accuracy, use = "complete.obs"),
+      acc_correlation_p = cor.test(mean_accuracy, mean_model_accuracy)$p.value,
+      error_correlation = cor(mean_error, mean_model_error, use = "complete.obs"),
+      error_correlation_p = cor.test(mean_error, mean_model_error)$p.value,
+      
+      n_points = sum(!is.na(mean_accuracy) & !is.na(mean_model_accuracy)),
+      
+      .groups = 'drop'
+    )
+  
+  return(correlation_results)
+}
+
+correlations_by_age <- calculate_correlations_by_age(kid_performance_by_age)
+
+plot_correlations_by_age <- function(correlations, metric = "accuracy") {
+  
+  if (metric == "accuracy") {
+    plot_data <- correlations %>%
+      select(age, model_type, context_len, correlation = acc_correlation, p_value = acc_correlation_p)
+    y_label <- "Accuracy Correlation (r)"
+  } else {
+    plot_data <- correlations %>%
+      select(age, model_type, context_len, correlation = error_correlation, p_value = error_correlation_p)
+    y_label <- "Error Correlation (r)" 
+  }
+
+  ggplot(plot_data, aes(x = context_len, y = correlation, color = as.factor(paste0(age, " yo")))) +
+    geom_point(size = 3, alpha = 0.8) +
+    geom_line(aes(group = age), alpha = 0.6) +
+  #  scale_color_manual(breaks=c(3,4,5,6,7), labels=c("3yo", "4yo", "5yo", "6yo", "7yo")) + 
+    labs(
+      x = "Context length",
+      y = y_label,
+      color = "Age"
+    ) +
+    paper_theme +
+    theme(legend.title=element_blank(), legend.position=c(0.8, 0.3)) +
+    geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) 
+}
+
+accuracy_plot_by_age <- plot_correlations_by_age(correlations_by_age, "accuracy")
+error_plot_by_age <- plot_correlations_by_age(correlations_by_age, "error")
+
+print(accuracy_plot_by_age)
+print(error_plot_by_age)
+
+```

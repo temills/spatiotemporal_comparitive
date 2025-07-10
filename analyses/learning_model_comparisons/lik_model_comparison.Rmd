@@ -11,18 +11,17 @@ library(grid)
 library(dplyr)
 library(RColorBrewer)
 library(robustbase)
-library(tidylog)
 library(tidyr)
-```
+library(ggstar)
+library(patchwork)
+library(ggbeeswarm)
 
-
-```{r}
 preprocess_df_human <- function(df) {
   sm <- 1e-10
   df$id <- seq_len(nrow(df))
   df <- df[order(df$tpt),] %>%
       rename(pred_x = response_x, pred_y = response_y, func.name = seq_id, subj_id = subject_id) %>%
-      mutate(r_id = subj_id, n=tpt) %>%
+      mutate(r_id = subj_id) %>%
       group_by(subj_id, trial_idx, tpt) %>%
       mutate(true_dist=((true_x-prev_x)**2. + (true_y-prev_y)**2.)**0.5) %>%
       mutate(err_x=pred_x-true_x) %>%
@@ -33,7 +32,8 @@ preprocess_df_human <- function(df) {
       mutate(abs_rel_err = abs_err/(true_dist)) %>%
       mutate(dist_from_prev = (((pred_x-true_x)**2)+((pred_y-true_y)**2)) **0.5) %>%
       ungroup() %>%
-      mutate(scaled_err = scale(abs_rel_err)[,1])
+      mutate(scaled_err = scale(abs_rel_err)[,1]) %>%
+      rename(n=tpt)
   return(df)
 }
 
@@ -171,6 +171,70 @@ preprocess_model_ss <- function(df_model) {
   return(df_model)
 }
 
+
+# For each function, compute the mapping from transformer coords to reference coords
+# Given ref points at r1 and r2, and og points at t1 and t2, r1-r2
+# r1 = m(t1) + b
+# r2 = m(t2) + b
+# r1 - m(t1) = r2 - m(t2)
+# r1 - r2 = m(t1) - m(t2)
+# m = (r1-r2)/(t1-t2)
+# b = r1 - m(t1)
+scale_transformer <- function(df_transformer) {
+  df_ref <- preprocess_df_human(read.csv("../data/participants/adults.csv")) %>%
+          group_by(func.name, n) %>%
+          summarize(ref_true_x = mean(true_x),
+                    ref_true_y = mean(true_y),
+                    .groups="drop")
+
+  df_transformer <- df_transformer %>%
+        mutate(n = n+1) %>%
+        merge(df_ref, by=c("func.name", "n")) %>%
+        group_by(func.name) %>%
+        mutate(
+          t1x = min(true_x),
+          t2x = max(true_x),
+          r1x = min(ref_true_x),
+          r2x = max(ref_true_x),
+          mx = ifelse(t2x==t1x, 1, (r2x-r1x)/(t2x-t1x)),
+          bx = r1x - mx*t1x,
+          t1y = min(true_y),
+          t2y = max(true_y),
+          r1y = min(ref_true_y),
+          r2y = max(ref_true_y),
+          # assumes t1x != t2x
+          my = ifelse(t2y==t1y, mx, (r2y-r1y)/(t2y-t1y)),
+          by = r1y - my*t1y
+        ) %>%
+        rowwise() %>%
+        mutate(true_x = true_x * mx + bx,
+               pred_x = pred_x * mx + bx,
+               std_x = std_x * mx,
+               true_y = true_y * my + by,
+               pred_y = pred_y * my + by,
+               std_y = std_y * my, # when dy is 0, this will not be scaled 
+               )
+  return(df_transformer)
+}
+
+paper_theme <- theme_light() + theme(
+  axis.text.x=element_text(colour="#292929",
+                           size = 14), 
+axis.title.x = element_text(size=18, family="Georgia"),
+  axis.title.y = element_text(size = 18, vjust = 1,  family="Georgia"),
+  axis.text.y  = element_text(size = 14, colour="#292929", family="Georgia"),
+  strip.text=element_text(size=16,color="black", family="Georgia"),
+strip.background = element_rect(colour = "grey50", fill = "white"),
+panel.background = element_rect(fill = "white", colour = "grey50"),
+  axis.ticks.x=element_blank(),axis.ticks.y=element_blank(),
+  axis.line.x = element_line(colour = "black"), 
+  axis.line.y = element_line(colour = "black"),
+  legend.title=element_text(size=18, family="Georgia"),
+  legend.text=element_text(size=15, family="Georgia"),
+  panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+
+
 ```
 
 # Load participant data
@@ -186,14 +250,28 @@ df_kid_chs <- preprocess_df_human(read.csv("../data/participants/kids_chs.csv"))
 lot_path <- '../data/models/lot.csv'
 lot_no_recursion_path <- '../data/models/lot_no_recursion.csv'
 gpnc_path <- '../data/models/gpnc.csv'
+gpnc_fixed_path <- '../data/models/gpnc_fixed.csv'
 gpsl_path <- '../data/models/gpsl.csv'
 ridge_path <- '../data/models/ridge.csv'
 lin_path <- '../data/models/linear.csv'
 lin_prev_path <- '../data/models/lin_or_prev.csv'
+transformer_1_path <- '../data/models/transformer_1.csv'
+transformer_2_path <- '../data/models/transformer_2.csv'
+transformer_3_path <- '../data/models/transformer_3.csv'
+transformer_4_path <- '../data/models/transformer_4.csv'
+transformer_5_path <- '../data/models/transformer_5.csv'
+transformer_6_path <- '../data/models/transformer_6.csv'
+transformer_8_path <- '../data/models/transformer_8.csv'
+transformer_10_path <- '../data/models/transformer_10.csv'
+transformer_13_path <- '../data/models/transformer_13.csv'
 ```
 
+
+
 # Likelihood based analyses
-```{r}
+
+# Save preprocessed data for use in lik_model_comparison.py
+```{r, message = False}
 get_model_data <- function(df_model, s_id, t,  model_type) {
   s_id <- as.character(s_id[1])
   t <- t[1]
@@ -233,6 +311,11 @@ get_df_participant_model <- function(df_participant, df_model) {
                           group_by(func.name) %>%
                           mutate(min_x = mean(min_x, na.rm=T), min_y = mean(min_y, na.rm=T),
                                  max_x = mean(max_x, na.rm=T), max_y = mean(max_y, na.rm=T)) %>%
+                          rowwise() %>%
+                          mutate(model_pred_x = ifelse(is.na(model_pred_x), NA,
+                                                       max(min(model_pred_x, max_x, na.rm=T), min_x, na.rm=T))) %>%
+                          mutate(model_pred_y = ifelse(is.na(model_pred_y), NA,
+                                                       max(min(model_pred_y, max_y, na.rm=T), min_y, na.rm=T))) %>% 
                           ungroup() %>%
                           mutate(scale_by = (max_x-min_x)) %>%
                           mutate(pred_x = (pred_x-min_x)/scale_by) %>%
@@ -254,64 +337,1122 @@ get_df_participant_model <- function(df_participant, df_model) {
                           mutate(max_x=max_x_tmp, min_x=min_x_tmp, max_y=max_y_tmp, min_y=min_y_tmp)
   return (df_participant_model)
 }
-```
 
-
-```{r message=FALSE}
 write_preprocessed_data <- function() {
   path <- "preprocessed_data/"
-  model_paths = c(lin_prev_path, lot_path, lot_no_recursion_path, gpnc_path, gpsl_path, ridge_path, lin_path)
-  models = c("lin_prev", "lot", "gpnc", "gpsl", "ridge", "lin", "lot_no_recursion")
-  participants = c('kid_chs')#, 'adult', "kid", "monkey")
+  model_paths <- list("lot"=lot_path, "lot_no_recursion"=lot_no_recursion_path, "gpnc_fixed"=gpnc_fixed_path, "gpnc"=gpnc_path, "gpsl"=gpsl_path, "ridge"=ridge_path, "lin"=lin_path, "lot_no_recursion"=lot_no_recursion_path, "lin_prev"=lin_prev_path, "transformer_1"=transformer_1_path,  "transformer_2"=transformer_2_path, "transformer_3"=transformer_3_path, "transformer_4"=transformer_4_path, "transformer_5"=transformer_5_path, "transformer_6"=transformer_6_path, "transformer_8"=transformer_8_path, "transformer_10"=transformer_10_path, "transformer_13"=transformer_13_path)
+  models = c("transformer_1", "transformer_4", "transformer_5", "transformer_6", "transformer_8", "transformer_10")#"transformer_2", "transformer_3", "transformer_13", "lot", "lot_no_recursion", "lin_prev", "gpnc", "gpsl", "ridge", "lin")
+  participants = c('monkey')#'kid_chs', 'adult', #, "kid", "monkey")
   for (i in seq_along(models)) {
     model_name <- models[i]
+    model_path <- model_paths[[model_name]]
     if (model_name == "lin_prev") {
-      df_model <- preprocess_model_ss(read.csv(model_paths[i]))
+      df_model <- preprocess_model_ss(read.csv(model_path))
+    } else if (model_name %in% c("transformer_1", "transformer_4", "transformer_5", "transformer_6", "transformer_8", "transformer_10", "transformer_2", "transformer_3", "transformer_13")) {
+      print("here")
+      print(model_path)
+      df_model <- preprocess_model(read.csv(model_path)) %>%
+                  scale_transformer()
     } else {
-      df_model <- preprocess_model(read.csv(model_paths[i]))
+      df_model <- preprocess_model(read.csv(model_path))
     }
     for (j in seq_along(participants)) {
       if (participants[j] == 'adult') {
-         df_participant <- df_adult
+         df_participant <- preprocess_df_human(read.csv("../data/participants/adults.csv"))
       } else if (participants[j] == 'kid') {
-         df_participant <- df_kid
+         df_participant <- preprocess_df_human(read.csv("../data/participants/kid.csv"))
       } else if (participants[j] == 'monkey') {
-         df_participant <- df_monkey
+          print("monkeys")
+         df_participant <- preprocess_df_monkey(read.csv("../data/participants/monkeys_all.csv"))
       } else if (participants[j] == 'kid_chs') {
-         df_participant <- df_kid_chs
+         df_participant <- preprocess_df_human(read.csv("../data/participants/kid_chs.csv")) %>%
+                            filter(!(func.name %in% c("123", "decreasing_y", "radial_increasing")))
       }
       print(model_name)
       print(participants[j])
-      df_participant <- df_participant
+      
       df_participant_model <- get_df_participant_model(df_participant, df_model)
+      print(length(unique(df_participant_model$func.name)))
       out_file <- paste(path, model_name, "_", participants[j], ".csv", sep="")
       write.csv(df_participant_model, out_file)
     }
   }
 }
+
 write_preprocessed_data()
+
 ```
 
-# Analyze fits
+
+# ```{r}
+# ggplot(data=df_participant_model%>%filter(func.name=="line.20")) +
+#   geom_point(aes(x=true_x, y=true_y)) +
+#   geom_point(aes(x=model_pred_x, y=model_pred_y, color=n)) + 
+#   facet_wrap(~func.name)
+# ```
+
+
+
+
+# LOO Crossvalidation
 ```{r}
-read_model_fit_data <- function(participant) {
-  path <- "model_fits/LLs/"
-  models = c("lot", "lin_prev", "gpnc", "gpsl", "ridge", "lin")#,, "prev")#, "true")
+read_cv_model_fit_data <- function(participant) {
+  path <- "model_fits/crossval/"
+  models = c("lot", "gpnc", "gpsl", "ridge", "lin", "lin_prev", "lot_no_recursion", "transformer_2", "transformer_3", "transformer_13")
   df <- data.frame()
   for (i in seq_along(models)) {
     model_name <- models[i]
     file <- paste(path, model_name, "_", participant, ".csv", sep="")
-    df <- bind_rows(df, read.csv(file)%>%mutate(model=model_name))
+    df <- bind_rows(df, read.csv(file)%>%mutate(model=model_name)) %>% select(c("model", "subj_id", "n", "func.name", "LL", "r_id", "seed"))
   }
   return(df)
 }
 
-df_kid_chs <- read_model_fit_data("kid_chs")
-# df_adult <- read_model_fit_data("adult")
-# df_kid <- read_model_fit_data("kid")
-# df_monkey <- read_model_fit_data("monkey")
+cv_kid_chs <- read_cv_model_fit_data("kid_chs")
+cv_adult <- read_cv_model_fit_data("adult")
+cv_monkey <- read_cv_model_fit_data("monkey")
+
+cv_all <- cv_kid_chs %>% mutate(agent=paste0(age, " y/o")) %>%
+          bind_rows(cv_adult %>% mutate(agent="Adults")) %>%
+          bind_rows(cv_monkey %>% mutate(agent="Monkeys")%>%mutate(r_id=as.character(r_id)))
+
+cv_summ1 <- cv_all %>%
+           # group by r_id then subj
+           group_by(seed, agent, subj_id, model, func.name, r_id) %>%
+           summarize(LL=sum(LL, na.rm=T), .groups="drop") %>%
+           group_by(seed, agent, model, subj_id, func.name) %>%
+           summarize(LL=mean(LL), .groups="drop")
+write.csv(cv_summ1, "cross_val_summ1.csv")
+
+cv_summ <- cv_summ1 %>%
+           # group by func
+           group_by(seed, agent, model, func.name) %>%
+           summarize(LL=mean(LL), .groups="drop") %>%
+           # group by seed
+           group_by(seed, agent, model) %>%
+           summarize(LL=mean(LL), .groups="drop") 
+
+write.csv(cv_summ, "cross_val_summ.csv")
+```
+
+
+```{r}
+
+cv_diff <- cv_all %>%
+           group_by(seed, agent, subj_id, func.name, r_id, n) %>%
+           mutate(max_LL=max(LL)) %>%
+            group_by(seed, agent, subj_id, func.name, model, r_id, n) %>%
+           summarize(LL_diff = LL-max_LL, .groups="drop") %>%
+           group_by(seed, agent, subj_id, model, func.name, r_id) %>%
+           summarize(LL_diff=mean(LL_diff, na.rm=T), .groups="drop") %>%
+           group_by(seed, agent, model, subj_id, func.name) %>%
+           summarize(LL_diff=mean(LL_diff), .groups="drop") %>%
+           group_by(seed, agent, model, func.name) %>%
+           summarize(LL_diff=mean(LL_diff), .groups="drop") %>%
+           # group by seed
+           group_by(seed, agent, model) %>%
+           summarize(LL_diff=mean(LL_diff), .groups="drop") 
+
+
+cv_diff_summ <- cv_diff %>%
+          mutate(model = ifelse(model=="gpsl", "Comp. GP", model),
+                      model = ifelse(model=="gpnc", "GP", model),
+                      model = ifelse(model=="lin", "Linear", model),
+                      model = ifelse(model=="ridge", "Ridge", model),
+                      model = ifelse(model=="lot", "LoT", model),
+                      model = ifelse(model=="lin_prev", "Linear + Prev.", model),
+                      model = ifelse(model=="lot_no_recursion", "Nonrecursive LoT", model)
+                    )  %>%
+                    filter(model != "Nonrecursive LoT")
+cv_diff_summ$model = factor(cv_diff_summ$model, levels = c("LoT",  "Comp. GP", "GP", "Ridge", "Linear + Prev.", "Linear",  "transformer_2", "transformer_3", "transformer_13"))#, "Nonrecursive LoT"))
+
+cv_diff_summ$agent = factor(cv_diff_summ$agent, levels=c("Monkeys", "3 y/o", "4 y/o", "5 y/o", "6 y/o", "7 y/o", "Adults")) 
+
+ggplot(data=cv_diff_summ) +
+      #geom_beeswarm(aes(x=model, y=LL_diff, group=model, color=model), alpha=0.7, size=0.5) +
+      stat_summary(
+              geom = "errorbar",
+              aes(x = model, y = LL_diff, color=model, group=model),
+              fun.data = function(x) {
+                data.frame(
+                  y = median(x),
+                  ymin = quantile(x, 0.075),
+                  ymax = quantile(x, 0.925)
+                )
+              },
+              width = 0.2
+       ) +
+      stat_summary(geom="point", aes(x=model, y=LL_diff, color=model, group=model), size=1) +
+      #geom_errorbar(aes(x=model, ymin=low_LL, ymax=high_LL, color=model)) +
+      #palette("Set2") +
+      paper_theme +
+      #scale_x_discrete(expand = expansion(mult = c(0.01, 0.01))) +
+    theme(
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        legend.title = element_blank(),
+        legend.position = "inside",
+        legend.position.inside = c(1, 0),         # (x, y) in [0, 1] relative to plot area
+        legend.justification = c(1, 0),           # anchor legend corner
+        legend.box.margin = margin(10, 10, 10, 10)
+    ) +
+      facet_wrap(~agent, nrow=2)
+  
+```
+
+
+
+```{r, fig.width=10, fig.height=4}
+
+cv_summ <- read.csv("cross_val_summ.csv") %>%
+          mutate(model = ifelse(model=="gpsl", "Comp. GP", model),
+                      model = ifelse(model=="gpnc", "GP", model),
+                      model = ifelse(model=="lin", "Linear", model),
+                      model = ifelse(model=="ridge", "Ridge", model),
+                      model = ifelse(model=="lot", "LoT", model),
+                      model = ifelse(model=="lin_prev", "Linear + Prev.", model),
+                      model = ifelse(model=="lot_no_recursion", "Nonrecursive LoT", model)
+                    )  %>%
+                    filter(model != "Nonrecursive LoT")
+cv_summ$model = factor(cv_summ$model, levels = c("LoT",  "Comp. GP", "GP", "Ridge", "Linear + Prev.", "Linear",  "transformer_2", "transformer_3", "transformer_13"))#, "Nonrecursive LoT"))
+
+cv_summ$agent = factor(cv_summ$agent, levels=c("Monkeys", "3 y/o", "4 y/o", "5 y/o", "6 y/o", "7 y/o", "Adults")) 
+
+ 
+cv_summ_comp <- cv_summ %>%
+                group_by(agent, model) %>%
+                summarize(mean_LL=mean(LL),
+                         low_LL=quantile(LL, 0.025),
+                         high_LL=quantile(LL, 0.975))
 
 ```
+
+# Visualize CV results for each group
+```{r}
+
+ggplot(data=cv_summ) +
+  geom_beeswarm(aes(x=model, y=LL, group=model, color=model), alpha=0.7, size=0.5) +
+  stat_summary(geom="point", aes(x=model, y=LL), shape="*", size=6) +
+  #geom_errorbar(aes(x=model, ymin=low_LL, ymax=high_LL, color=model)) +
+  #palette("Set2") +
+  paper_theme +
+  #scale_x_discrete(expand = expansion(mult = c(0.01, 0.01))) +
+theme(
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    legend.position = "inside",
+    legend.position.inside = c(1, 0),         # (x, y) in [0, 1] relative to plot area
+    legend.justification = c(1, 0),           # anchor legend corner
+    legend.box.margin = margin(10, 10, 10, 10)
+) +
+  facet_wrap(~agent, nrow=2)
+  
+ggsave("../crossval.png", width=12, height=5)
+
+ggplot(data=cv_summ) +
+  geom_point(aes(x=model, y=LL, color=model)) +
+  geom_boxplot(aes(x=model, y=LL, group=model, color=model)) +
+  #geom_errorbar(aes(x=model, ymin=low_LL, ymax=high_LL, color=model)) +
+  #palette("Set2") +
+  paper_theme +
+  theme(axis.text.x=element_blank(),
+        axis.title.x=element_blank()) +
+  facet_wrap(~agent, nrow=2)
+# ggsave("../crossval.png", width=12, height=5)
+
+ggplot(data=cv_summ_comp) +
+  geom_point(aes(x=model, y=mean_LL, color=model)) +
+  geom_errorbar(aes(x=model, ymin=low_LL, ymax=high_LL, color=model)) +
+  #palette("Set2") +
+  paper_theme +
+  theme(axis.text.x=element_blank(),
+        axis.title.x=element_blank()) +
+  facet_wrap(~agent, nrow=1)
+
+#ggsave("../crossval.png", width=12, height=2)
+```
+
+# Visualize cross val differences by seed
+```{r}
+cv_seed_diff <- cv_summ %>%
+                group_by(agent, seed) %>%
+                mutate(max_LL = max(LL)) %>%
+                group_by(agent, model, seed) %>%
+                summarize(LL_diff = LL-max_LL)
+
+ggplot(data=cv_seed_diff) +
+  stat_summary(
+              geom = "errorbar",
+              aes(x = model, y = LL_diff, color=model, group=model),
+              fun.data = function(x) {
+                data.frame(
+                  y = median(x),
+                  ymin = quantile(x, 0.075),
+                  ymax = quantile(x, 0.925)
+                )
+              },
+              width = 0.2
+       ) +
+      stat_summary(geom="point", aes(x=model, y=LL_diff, color=model, group=model), size=1) +
+  paper_theme +
+  #scale_x_discrete(expand = expansion(mult = c(0.01, 0.01))) +
+theme(
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    legend.position = "inside",
+    legend.position.inside = c(1, 0),         # (x, y) in [0, 1] relative to plot area
+    legend.justification = c(1, 0),           # anchor legend corner
+    legend.box.margin = margin(10, 10, 10, 10)
+) +
+  facet_wrap(~agent, nrow=2)
+
+ggsave("../crossval_diff.png", width=12, height=5)
+```
+
+# Monkey CV results
+```{r}
+
+cv_monkey_diff <- read.csv("cross_val_summ1.csv") %>%
+                filter(agent=="Monkeys") %>%
+                group_by(agent, subj_id, model, seed) %>%
+                summarize(LL=mean(LL), .groups="drop") %>%
+                group_by(agent, subj_id, seed) %>%
+                mutate(max_LL = max(LL)) %>%
+                group_by(agent, subj_id, model, seed) %>%
+                summarize(LL_diff = LL-max_LL,
+                          LL=mean(LL))
+```
+```{r}
+ggplot(data=cv_monkey_diff) +
+  stat_summary(
+              geom = "errorbar",
+              aes(x = model, y = LL, color=model, group=model),
+              fun.data = function(x) {
+                data.frame(
+                  y = median(x),
+                  ymin = quantile(x, 0.075),
+                  ymax = quantile(x, 0.925)
+                )
+              },
+              width = 0.2
+       ) +
+      stat_summary(geom="point", aes(x=model, y=LL, color=model, group=model), size=1) +
+  #geom_boxplot(aes(x=model, y=LL_diff, group=model, color=model), alpha=0.7, size=0.5) +
+  #geom_beeswarm(aes(x=model, y=LL_diff, group=model, color=model), alpha=0.7, size=0.5) +
+  #stat_summary(geom="point", aes(x=model, y=LL_diff), shape="*", size=6) +
+  #geom_errorbar(aes(x=model, ymin=low_LL, ymax=high_LL, color=model)) +
+  #palette("Set2") +
+  paper_theme +
+  #scale_x_discrete(expand = expansion(mult = c(0.01, 0.01))) +
+theme(
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+) +
+  facet_wrap(~subj_id)
+ggsave("../crossval_monkey_sep.png", width=12, height=5)
+```
+
+
+# Analyze fits
+```{r}
+read_model_fit_data <- function(participant) {
+  path <- "model_fits/"
+  models = c("lot", "gpnc", "gpsl", "ridge", "lin", "lin_prev", "lot_no_recursion", "transformer_2", "transformer_3", "transformer_13") 
+  df <- data.frame()
+  for (i in seq_along(models)) {
+    model_name <- models[i]
+    file <- paste(path, model_name, "_", participant, ".csv", sep="")
+    if (file.exists(file)) {
+        df <- bind_rows(df, read.csv(file)%>%mutate(model=model_name))
+    }
+  }
+  return(df)
+}
+
+df_kid_chs <- read_model_fit_data("kid_chs")  %>%
+              group_by(subj_id) %>%
+              mutate(n_func = length(unique(func.name)))
+df_adult <- read_model_fit_data("adult")
+#df_kid <- read_model_fit_data("kid")
+df_monkey <- read_model_fit_data("monkey")
+
+```
+
+# Monkey LLs
+```{r}
+# t-test between models
+df_monkey1 <- df_monkey %>% filter(subj_id=="BP22")
+df_monkey2 <- df_monkey %>% filter(subj_id=="BP24")
+
+tmp <- df_monkey2 %>%
+       filter(!is.na(LL)) %>%
+       pivot_wider(names_from="model", values_from="LL")
+
+t.test(tmp$lin, tmp$lot)
+
+ggplot(tmp) +
+  geom_histogram(aes(x=lin), alpha=0.5, fill="purple") +
+  geom_histogram(aes(x=lot),alpha=0.5, fill="gold")
+
+```
+```{r}
+# Params
+param_df <- df_monkey %>%
+            distinct(subj_id, sd_motor, sd_prev, p_lapse, p_prev, p_rand, model)
+```
+
+
+
+
+
+# Combine data
+```{r}
+df_all <- bind_rows(df_adult %>% mutate(agent="Adults", r_id=as.character(r_id)),
+            df_kid_chs %>% mutate(agent=paste0(as.character(age), " y/o"), r_id=as.character(r_id)),
+            df_monkey %>% mutate(agent="Monkeys", r_id=as.character(r_id)))
+df_all <- df_all %>%
+          mutate(model = ifelse(model=="gpsl", "Comp. GP", model),
+              model = ifelse(model=="gpnc", "GP", model),
+              model = ifelse(model=="lin", "Linear", model),
+              model = ifelse(model=="ridge", "Ridge", model),
+              model = ifelse(model=="lot", "LoT", model),
+              model = ifelse(model=="lin_prev", "Linear + Prev.", model),
+              model = ifelse(model=="lot_no_recursion", "Nonrecursive LoT", model),
+              model = ifelse(model=="transformer_2", "Transformer (2)", model),
+              model = ifelse(model=="transformer_3", "Transformer (3)", model),
+              model = ifelse(model=="transformer_13", "Transformer (13)", model)
+            ) %>%
+            filter(model != "Nonrecursive LoT")# %>%
+            #filter(!(model %in% c("transformer_2", "transformer_3", "transformer_13")))
+
+
+df_all <- df_all %>% mutate(subj_func = paste0(subj_id, func.name))
+subj_func_list <- unique((df_all %>% filter(model=="GP"))$subj_func)
+df_all <- df_all %>% filter(subj_func %in% subj_func_list)
+
+
+df_all$model = factor(df_all$model, levels = c("LoT",  "Comp. GP", "GP", "Ridge", "Linear + Prev.", "Linear",  "Transformer (2)", "Transformer (3)", "Transformer (13)")) #"Nonrecursive LoT", s
+
+df_all$agent = factor(df_all$agent, levels=c("Monkeys", "3 y/o", "4 y/o", "5 y/o", "6 y/o", "7 y/o", "Adults")) 
+# LL by model by subj, mean across functions
+df_LL <- df_all %>%
+          group_by(agent, model, subj_id, r_id,func.name) %>%
+          summarize(func_LL = sum(LL, na.rm = TRUE), .groups="drop") %>%
+          group_by(agent, model, subj_id, func.name) %>%
+          summarize(LL = mean(func_LL), .groups="drop") %>%
+          group_by(agent, model, func.name) %>%
+          summarize(LL = mean(LL), .groups="drop") #%>% group_by(agent, subj_id) %>% mutate(LL_z = scale(LL))
+
+# top models by subj
+df_top <- df_all %>%
+  group_by(agent, model, subj_id, r_id, func.name) %>%
+  summarize(func_LL = sum(LL, na.rm = TRUE), .groups="drop") %>%
+  group_by(agent, model, subj_id) %>%
+  summarize(LL = mean(func_LL, na.rm=TRUE), .groups="drop") %>%
+  group_by(agent, subj_id) %>%
+  slice_max(LL) %>%
+  ungroup() %>%
+  group_by(agent, model) %>%
+  summarize(model_count=n()) %>%
+  ungroup() %>%
+  #count(agent, model, name = "model_count") %>%
+  complete(agent, model, fill = list(model_count = 0)) %>%
+  group_by(agent) %>%
+  mutate(tot = sum(model_count),
+         model_prop = model_count / tot) %>%
+  ungroup()
+
+
+```
+
+# Exploratory analyses
+```{r, fig.width=10, fig.height=4}
+df_LL$agent <- factor(df_LL$agent, levels=c("Monkeys", "3 y/o", "4 y/o", "5 y/o", "6 y/o", "7 y/o", "Adults"))
+p2 <- ggplot(data=df_LL%>%filter(agent=="Adults")) +
+  geom_point(aes(x=model, y=LL, color=model), outliers=F) +
+  #geom_point(aes(x=model, y=LL, color=model), alpha=0.3) +
+  #geom_line(aes(x=model, y=LL, group=r_id), alpha=0.5) +
+  #scale_color_brewer(palette = "Set2") +
+  ylab("Log likelihood") +
+  paper_theme + 
+  theme(
+    axis.title.x = element_blank(),
+    legend.title=element_blank()
+    #strip.text = element_text(size = 12)
+  ) +
+  facet_wrap(~func.name, nrow=3)
+p2
+```
+# Bootstrapping over subjects
+```{r}
+# for each group, get mean LL per func per subj, resample subjects, compute means per func, 
+# this doesn't rly make sense for monkeys
+
+df_boot <- df_all %>%
+           group_by(agent, model, subj_id, r_id,func.name) %>%
+           summarize(subj_func_LL = sum(LL, na.rm = TRUE), .groups="drop") %>%
+           group_by(agent, model, subj_id, func.name) %>%
+           summarize(subj_func_LL = mean(subj_func_LL), .groups="drop")
+
+n_boot <- 1000
+
+# make df with boot, agent, model, subj_id, func.name, mean_LL
+df_bootstrap <- map_dfr(1:n_boot, function(b) {
+  sampled_ids <- df_boot %>%
+    distinct(agent, subj_id) %>%
+    group_by(agent) %>%
+    summarize(subj_id = sample(subj_id, replace = TRUE), .groups = "drop") %>%
+    mutate(boot = b, sample_idx = row_number())
+  df_boot %>% inner_join(sampled_ids, by = c("agent", "subj_id")) %>%
+              group_by(boot, agent, model, func.name) %>%
+              summarize(mean_func_LL = mean(subj_func_LL), .groups = "drop")
+})      
+```
+
+
+# split into train and test
+# fit params on train, compute LL on test
+
+```{r, fig.width=10, fig.height=4}
+# What is distribution of means across subjects?
+df_bootstrap_summ <- df_bootstrap %>%
+                     group_by(boot, agent, model) %>%
+                     summarize(mean_LL = mean(mean_func_LL)) %>%
+                     group_by(agent, model) %>%
+                     summarize(LL_mean = mean(mean_LL),
+                               LL_low = quantile(mean_LL, 0.025),
+                               LL_high = quantile(mean_LL, 0.975))
+
+ggplot(data=df_bootstrap_summ ) +
+  geom_point(aes(x=model, y=LL_mean, color=model)) +
+  geom_errorbar(aes(x=model, ymin=LL_low, ymax=LL_high, color=model)) +
+  theme_light() +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.x=element_blank()) +
+  facet_wrap(~agent, nrow=2)
+
+```
+
+# Bootstrapping over functions
+```{r}
+path <- "model_fits/bootstrapping"
+models = c("lot", "gpnc", "gpsl", "ridge", "lin", "lin_prev", "lot_no_recursion", "transformer_2", "transformer_3", "transformer_13") 
+get_bootstrap_df <- function(participant_name, subj) {
+  subj_df <- data.frame()
+  for (model_name in models) {
+    for (seed in (0:99)) {
+      file <- paste(path, model_name, "_", participant_name, "_", seed, "_", subj, ".csv", sep="")
+      tmp <- read.csv(file) %>% 
+             # compute mean LL across funcs
+             group_by(model, func.name, subj_id, r_id) %>%
+             summarize(subj_func_LL = sum(LL, na.rm=T), .groups="drop") %>%
+             group_by(model, subj_id, func.name) %>%
+             summarize(subj_func_LL = mean(subj_func_LL), .groups="drop") %>%
+             #group_by(func.name) %>%
+             #summarize(func_LL = mean(subj_func_LL), .groups="drop") %>%
+             #summarize(mean_LL = mean(func_LL)) %>%
+             mutate(model=model_name,
+                    agent=participant_name,
+                    boot=seed)
+      subj_df <- subj_df %>%
+                 bind_rows(tmp)
+    }
+  }
+  return(subj_df)
+}
+
+# this has agent, model, boot, mean_LL
+df_bootstrap <- df_bootstrap <- map_df(unique(df_kid_chs$subj_id), function(subj) get_bootstrap_df("kid_chs", subj)) %>%
+                bind_rows(map_df(unique(df_adult$subj_id), function(subj) get_bootstrap_df("adults", subj))) %>%
+                bind_rows(map_df(unique(df_monkey$subj_id), function(subj) get_bootstrap_df("monkeys", subj)))
+```
+
+```{r}
+df_bootstrap_summ <- df_bootstrap %>%
+                     group_by(agent, model) %>%
+                     summarize(LL_mean = mean(mean_LL),
+                               LL_low = quantile(mean_LL, 0.025),
+                               LL_high = quantile(mean_LL, 0.975))
+
+ggplot(data=df_bootstrap_summ ) +
+  geom_point(aes(x=model, y=LL_mean, color=model)) +
+  geom_errorbar(aes(x=model, ymin=LL_low, ymax=LL_high, color=model)) +
+  theme_light() +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.x=element_blank()) +
+  facet_wrap(~agent, nrow=2)
+
+```
+
+
+## Paper figs
+# LL boxplots
+```{r, fig.width=10, fig.height=4}
+df_LL <- df_all %>%
+          group_by(agent, model, subj_id, r_id,func.name) %>%
+          summarize(func_LL = sum(LL, na.rm = TRUE), .groups="drop") %>%
+          group_by(agent, model, subj_id, func.name) %>%
+          summarize(LL = mean(func_LL), .groups="drop") %>%
+          group_by(agent, model, func.name) %>%
+          summarize(LL = mean(LL), .groups="drop") #%>% group_by(agent, subj_id) %>% mutate(LL_z = scale(LL))
+
+
+
+df_LL$agent <- factor(df_LL$agent, levels=c("Monkeys", "3 y/o", "4 y/o", "5 y/o", "6 y/o", "7 y/o", "Adults"))
+p2 <- ggplot(data=df_LL) +
+  geom_boxplot(aes(x=agent, y=LL, fill=model), outliers=F) +
+  #geom_point(aes(x=model, y=LL, color=model), alpha=1) +
+  #geom_line(aes(x=model, y=LL, group=subj_id), alpha=0.5) +
+  scale_fill_brewer(palette = "Set2") +
+  ylab("Log likelihood") +
+  paper_theme + 
+  theme(
+    axis.title.x = element_blank(),
+    legend.title=element_blank()
+    #strip.text = element_text(size = 12)
+  )
+p2
+```
+
+# top model histograms
+```{r}
+p3 <- ggplot(data=df_top) +
+  geom_bar(aes(x=agent, y = model_prop, fill=model), color="black", stat="identity") +
+  scale_fill_brewer(palette = "Set2") +
+  paper_theme +
+  ylab("Prop. subjects best fit") +
+  #ggtitle("C) Best fitting models") +
+  theme(#plot.title = element_text(size = 24, family="Georgia",  hjust = -0.1,  margin = margin(b = 10)),
+        axis.title.x = element_blank(),
+        legend.title=element_blank()) #+
+  #guides(fill="none")
+
+p3
+```
+# Extended predictions
+```{r, fig.height=3}
+preprocess_model_extended <- function(df) {
+  logsumexp <- function(x) {
+    max_x <- max(x)
+    max_x + log(sum(exp(x - max_x)))
+  }
+  df <- df %>%
+        group_by(curr_tpt, prediction_tpt, seq_id) %>%
+        mutate(norm = logsumexp(score)) %>%
+        ungroup() %>%
+        mutate(posterior = exp(score - norm))  %>%
+        group_by(curr_tpt, prediction_tpt, seq_id) %>%
+        mutate(r = rank(desc(posterior))) %>%
+        ungroup() %>%
+        rename(func.name=seq_id)
+}
+df_gpnc <- preprocess_model_extended(read.csv('../data/models/gpnc_extended.csv')) %>%
+           mutate(model="GP") %>%
+           mutate(func=paste0(func_x, "\n", func_y))
+df_lot <- preprocess_model_extended(read.csv('../data/models/lot_extended.csv')) %>% mutate(model="LoT")
+df_lin <- preprocess_model_extended(read.csv('../data/models/lin_extended.csv')) %>% mutate(model="Linear")
+df_stimuli <- read.csv('../data/stimuli.csv') %>% rename(func.name=seq_id)
+
+bounds_df <- preprocess_df_human(read.csv('../data/participants/adults.csv')) %>%
+             group_by(func.name) %>%
+             summarize(min_x=mean(min_x, na.rm=T),
+                       max_x=mean(max_x, na.rm=T),
+                       min_y=mean(min_y, na.rm=T),
+                       max_y=mean(max_y, na.rm=T),
+                       .groups="drop")
+
+df_stim <- df_stimuli %>%
+           merge(bounds_df, by="func.name") %>%
+           mutate(scale_by = (max_x-min_x)) %>%
+           mutate(true_x = (true_x-min_x)/scale_by) %>%
+           mutate(true_y = (true_y-min_y)/scale_by)
+
+df_model <- bind_rows(bind_rows(df_lot, df_gpnc), df_lin) %>%
+            mutate(hyp=func) %>%
+            merge(bounds_df, by="func.name") %>%
+            mutate(scale_by = (max_x-min_x)) %>%
+            mutate(pred_x = (pred_x-min_x)/scale_by) %>%
+            mutate(pred_y = (pred_y-min_y)/scale_by) %>%
+            mutate(true_x = (true_x-min_x)/scale_by) %>%
+            mutate(true_y = (true_y-min_y)/scale_by)
+
+# custom shift and scale
+s <- 0.85
+df_model <- df_model %>%
+            mutate(pred_y = ifelse(func.name=="zigzag_1", pred_y-0.1, pred_y),
+                   true_y = ifelse(func.name=="zigzag_1", true_y-0.1, true_y),
+                   pred_x = ifelse(func.name=="zigzag_1", pred_x-.1, pred_x),
+                   true_x = ifelse(func.name=="zigzag_1", true_x-.1, true_x),
+                   pred_x = ifelse(func.name=="stairs_2", pred_x+0.1, pred_x),
+                   true_x = ifelse(func.name=="stairs_2", true_x+0.1, true_x),
+                   pred_y = ifelse(func.name=="plus", pred_y*s, pred_y),
+                   true_y = ifelse(func.name=="plus", true_y*s, true_y),
+                   pred_x = ifelse(func.name=="plus", pred_x*s, pred_x),
+                   true_x = ifelse(func.name=="plus", true_x*s, true_x))
+df_stim <- df_stim %>%
+           mutate(true_y = ifelse(func.name=="zigzag_1", true_y-0.1, true_y),
+                  true_x = ifelse(func.name=="zigzag_1", true_x-0.1, true_x),
+                  true_x = ifelse(func.name=="stairs_2", true_x+0.1, true_x),
+                  true_y = ifelse(func.name=="plus", true_y*s, true_y),
+                  true_x = ifelse(func.name=="plus", true_x*s, true_x))
+
+
+
+df_model <- df_model %>%
+            mutate(hyp = ifelse(func.name=="zigzag_1",
+                                ifelse(model=="LoT", "repeat(move(s=1), 2);\nturn(-1.49)\n",
+                                       ifelse(model=="GP",
+                                              "kₓ=Linear(0.47, 1)\nkᵧ=Periodic(0.93, 0.48, 1)\n",
+                                              ifelse(model=="Linear", "move(θ=1.24, s=1.02)\n\n", NA))), hyp)) %>%
+            mutate(hyp = ifelse(func.name=="plus",
+                                ifelse(model=="LoT", "turn(1);\nsubprogram(repeat(move( ), 2));\nstay( )",
+                                       ifelse(model=="GP",
+                                              "kₓ=Periodic(0.78, 0.84, 1)\nkᵧ=Periodic(0.5, 0.15, 1)\n",
+                                              ifelse(model=="Linear", "move(θ=4.0, s=0.64)\n\n", NA))), hyp)) %>%
+            mutate(hyp = ifelse(func.name=="stairs_2",
+                                ifelse(model=="LoT", "repeat(move(θ=0), 2);\nmove(y=1.55)\n",
+                                       ifelse(model=="GP",
+                                              "kₓ=Periodic(0.97, 0.96, 1)\nkᵧ=RBF(0.37, 1)\n",
+                                              ifelse(model=="Linear", "move(θ=0.16, s=0.63)\n\n", NA))), hyp))
+           
+        
+n_extended = 10
+get_df_path <- function(seq, t, selected_particles) {
+    df_model_path <- df_model %>%
+              group_by(func.name, curr_tpt, model) %>%
+              mutate(selected_particle = ifelse(model=="GP", selected_particles[1],
+                                                ifelse(model=="Linear", selected_particles[2],
+                                                       selected_particles[3]))) %>%
+              filter(r==selected_particle) %>%
+              filter(func.name==seq)  %>% 
+              filter(curr_tpt == t) %>%
+              filter(prediction_tpt >= curr_tpt-1) %>%
+              filter(prediction_tpt <= curr_tpt+n_extended) %>%
+              group_by(model) %>%
+              mutate(pred_x = ifelse(prediction_tpt==curr_tpt-1, true_x, pred_x)) %>%
+              mutate(pred_y = ifelse(prediction_tpt==curr_tpt-1, true_y, pred_y))  %>%
+              ungroup()
+    
+    return(df_model_path)
+}
+
+get_df_points <- function(seq, t, selected_particles) {
+    df_model_points <- df_model %>%
+              group_by(func.name, curr_tpt, model) %>%
+              mutate(selected_particle = ifelse(model=="GP", selected_particles[1],
+                                                ifelse(model=="Linear", selected_particles[2],
+                                                       selected_particles[3]))) %>%
+              filter(r==selected_particle) %>%
+              mutate(model = factor(model, levels=c("Linear", "GP", "LoT"))) %>%
+              filter(func.name==seq) %>% 
+              filter(curr_tpt == t) %>%
+              filter(prediction_tpt >= curr_tpt) %>%
+              filter(prediction_tpt <= curr_tpt+n_extended) 
+    
+    return(df_model_points)
+}
+
+get_df_true <- function(seq, t, selected_particles) {
+  df_true <- df_stim %>%
+             filter(func.name==seq) %>%
+             filter(tpt<t) %>%
+             mutate(max_tpt=t-1)
+  return (df_true)
+} 
+    
+
+plot_tpt <- function(df_model_path, df_model_points, df_true) {
+    x_min = min(min(df_true$true_x), min(df_model_points$pred_x))
+    y_min = min(min(df_true$true_y), min(df_model_points$pred_y))
+
+    p <- ggplot() +
+        # True pattern
+        geom_path(data=df_true, aes(x=true_x, y=true_y), linetype="dotted", linewidth=0.8) +
+        geom_point(data=df_true %>% filter(tpt < max_tpt), aes(x=true_x, y=true_y, alpha=tpt), size=2.5) +
+        geom_star(data=df_true %>% filter(tpt == max_tpt), aes(x=true_x, y=true_y),size = 2.5,starshape = 1, fill="black") +
+        scale_alpha_continuous(range = c(0.3, 1)) +
+        # Predicted patterns
+        geom_path(data=df_model_path%>%filter(prediction_tpt<=curr_tpt),
+                  aes(x=pred_x, y=pred_y, group=model, color=model),
+                  linetype="solid", alpha=0.9, linewidth=0.8) +
+        geom_path(data=df_model_path, aes(x=pred_x, y=pred_y, group=model, color=model), 
+                   linetype="solid", alpha=0.6, linewidth=0.8) +
+        geom_point(data=df_model_points %>% filter(prediction_tpt<=curr_tpt),
+                   aes(x=pred_x, y=pred_y, group=model, color=model),
+                   size=2.5, alpha=0.9) +
+        geom_point(data=df_model_points,
+                   aes(x=pred_x, y=pred_y, group=model, color=model),
+                   size=2.5, alpha=0.6) +
+        geom_text(data=df_model_points,
+                    aes(x = x_min, y = Inf, label = hyp),
+                    size=3.8,
+                    hjust = 0, vjust = 1.1,
+                    nudge_x = -0.01,
+                    family = "Arial Narrow", 
+                    fontface = "bold.italic") +
+
+
+        scale_color_manual(values = setNames(c("#66C2A5", "#8DA0CB", "#FFD92F"),
+                                             c("LoT","GP", "Linear")),
+                           limits = c("LoT", "GP", "Linear"),
+                           labels = c( "LoT" = "LoT", "GP" = "GP","Linear" = "Linear")) +
+
+        paper_theme +
+        theme(legend.title=element_blank(),
+              strip.background=element_blank(),
+              axis.title.x = element_blank(),
+              axis.title.y = element_blank(),
+              axis.text.x = element_blank(),
+              axis.text.y = element_blank(),
+              panel.border = element_rect(color = "black", fill = NA, size = 0.5),
+              strip.text.y.right = element_blank()
+              ) +
+        
+        guides(alpha="none",
+               color = "none",
+               shape = "none") +
+        facet_grid(rows = vars(func.name), cols = vars(model)) +
+        coord_fixed(ratio=1,
+                    xlim=c(x_min, 0.8),
+                    ylim=c(y_min, 0.6))
+
+    return(p)
+}
+
+arg_list <- list(list("stairs_2", 5, list(8,1,1)),
+                 list("plus", 6, list(2,9,3)),
+                 list("zigzag_1", 5, list(3,3,3))
+                 )
+
+df_model_path <- data.frame()
+df_model_points <- data.frame()
+df_true <- data.frame()
+for (arg in arg_list) {
+  df_model_path <- df_model_path %>%
+                  bind_rows(do.call(get_df_path, arg))
+  df_model_points <- df_model_points %>%
+                  bind_rows(do.call(get_df_points, arg))
+  df_true <- df_true %>%
+                  bind_rows(do.call(get_df_true, arg))
+}
+model_levels <- c("Linear", "GP", "LoT")
+seq_levels <- c("zigzag_1", "stairs_2", "plus")
+
+df_true <- df_true %>% crossing(model = factor(model_levels, levels = model_levels)) %>% arrange(tpt)
+
+df_model_path$model = factor(df_model_path$model, levels=model_levels)
+df_model_points$model = factor(df_model_points$model, levels=model_levels)
+df_true$func.name = factor(df_true$func.name, levels=seq_levels)
+df_model_points$func.name = factor(df_model_points$func.name, levels=seq_levels)
+df_model_path$func.name = factor(df_model_path$func.name, levels=seq_levels)
+
+p1 <- plot_tpt(df_model_path, df_model_points, df_true)
+p1
+```
+
+```{r}
+
+legend <- cowplot::get_legend(
+              p3 + guides(fill = guide_legend(nrow = 3)) + theme(legend.position = "right",
+                                                                 legend.title = element_blank(),
+                                                                 legend.text = element_text(
+                                                                  size = 14,
+                                                                  margin = margin(r = 15, l=5))
+                                                                 ))
+          
+
+# Make title grobs
+title_a <- ggdraw() + 
+  draw_label("A) Example model predictions", fontfamily = "Georgia", size = 24, hjust = -0.1, x = 0)
+
+title_b <- ggdraw() + 
+  draw_label("B) Model log likelihoods", fontfamily = "Georgia", size = 24, hjust = 0, x = 0)
+
+# Combine title B and legend
+title_and_legend <- plot_grid(
+  title_b, 
+  ggdraw(legend), 
+  nrow = 1, 
+  rel_widths = c(1, 0.8),
+  align = "v"
+)
+
+# Combine both top titles in a single row
+top <- plot_grid(
+  title_a, 
+  title_and_legend, 
+  nrow = 1, 
+  rel_widths = c(1, 1)
+)
+
+# Plots without titles
+p1_nolabel <- p1 + theme(plot.title = element_blank(), plot.margin = margin(b=20))
+p2_nolabel <- p2 + theme(plot.title = element_blank(), axis.title.y=element_text(margin=margin(r=10))) + guides(fill="none")
+p3_nolabel <- p3 + ggtitle("C) Best fitting models") + theme(plot.title = element_text(size = 24, family="Georgia",  hjust = -0.22, margin=margin(b=25))) + guides(fill="none")
+
+# Final layout: top row of titles, then grid of plots
+bottom <- plot_grid(
+  p1_nolabel, 
+  plot_grid(p2_nolabel, p3_nolabel, ncol = 1, rel_heights=c(1,1.2)), 
+  rel_widths = c(1, 1)
+)
+
+final_plot <- plot_grid(
+  top,
+  bottom,
+  ncol = 1,
+  rel_heights = c(0.15, 1)  # adjust as needed
+)
+
+final_plot
+
+ggsave("../model_combined.png", bg="white", width=15, height=7)
+```
+
+
+
+```{r}
+# LOO crossval over subjects
+# Compute mean of means, or median, or just sum overall?? Then compare to left out subject
+
+get_group_top <- function(df, agent_val, exclude_subj) {
+  df %>%
+    filter(agent == agent_val, subj_id != exclude_subj) %>%
+    group_by(model) %>%
+    summarize(mean_LL = mean(LL)) %>%
+    slice_max(mean_LL, n = 1) %>%
+    pull(model)
+}
+
+df_cv <- df_LL %>%
+  group_by(agent, subj_id) %>%
+  mutate(
+    subj_top = model[which.max(LL)],
+    group_top = get_group_top(df_LL, unique(agent), unique(subj_id))
+  ) %>%
+  ungroup()
+          
+```
+
+
+```{r}
+set.seed(123) 
+
+sample_top_models <- function(df, n_samples = 100) {
+  agent_vals <- unique(df$agent)
+  results <- map_dfr(agent_vals, function(agent_val) {
+    df_agent <- df %>% filter(agent == agent_val)
+    subj_ids <- unique(df_agent$subj_id)
+    n_subj <- length(subj_ids)
+    half_n <- ceiling(n_subj / 2)
+    
+    map_dfr(1:n_samples, function(i) {
+      sampled_subj <- sample(subj_ids, half_n)
+      means <- df_agent %>%
+        filter(subj_id %in% sampled_subj) %>%
+        group_by(model) %>%
+        summarize(mean_LL = mean(LL)) %>%
+        slice_max(mean_LL, n=1)
+      medians <- df_agent %>%
+        filter(subj_id %in% sampled_subj) %>%
+        group_by(model) %>%
+        summarize(median_LL = median(LL)) %>%
+        slice_max(median_LL, n=1)
+      tibble(agent = agent_val, sample = i, top_model_mean = means$model, top_model_median = medians$model)
+    })
+  })
+  return(results)
+}
+
+top_models_samples <- sample_top_models(df_LL, n_samples = 100)
+```
+
+```{r}
+ggplot(data=top_models_samples) +
+  geom_bar(aes(x=top_model_mean, fill=top_model_mean)) +
+  theme(axis.text.x=element_blank()) +
+  facet_wrap(~agent)
+
+ggplot(data=top_models_samples) +
+  geom_bar(aes(x=top_model_median, fill=top_model_median)) +
+  theme(axis.text.x=element_blank()) +
+  facet_wrap(~agent)
+```
+
+
+
+# Monkey training analysis
+# Preprocess data for monkey training transformer likelihood analysis
+```{r}
+write_preprocessed_data_monkey_training <- function() {
+  path <- "preprocessed_data/monkey_training/"
+  df_participant <- read.csv("../data/participants/monkey_training/train.csv") %>%
+                  filter(attempt_number==1) %>%
+                  mutate(n=n+1) %>%
+                  preprocess_df_monkey() %>%
+                  mutate(min_x=0,
+                         min_y=0,
+                         max_x=screen_w,
+                         max_y=screen_h)
+  for (i in c(8, 10, 13)) {
+    df_model <- read.csv(paste0("../data/models/monkey_training/context_len_", i, ".csv")) %>%
+                mutate(n=n+1,
+                       score=1,
+                       weight=1,
+                       particle=0) %>%
+                filter(mode=="train") %>%
+                rename(true_x=x_next, true_y=y_next,
+                       prev_x=x_curr, prev_y=y_curr,
+                       pred_x=x_pred,  pred_y=y_pred,
+                       seq_id = func_id, tpt=n,
+                       sd_x = x_std, sd_y = y_std) %>%
+                preprocess_model() 
+                
+    df_participant_model <- get_df_participant_model(df_participant, df_model)
+    print(length(unique(df_participant_model$func.name)))
+    out_file <- paste0(path, "transformer_", i, "_monkey.csv")
+    write.csv(df_participant_model, out_file)
+  }
+}
+
+write_preprocessed_data_monkey_training()
+
+```
+
+```{r}
+# tmp <- read.csv(paste0("../data/models/monkey_training/context_len_5.csv")) %>% filter(mode=="test")
+# unique(tmp$func_id)
+tmp <- read.csv(paste0("preprocessed_data/transformer_5_monkey.csv")) 
+
+ggplot(data=tmp) +
+  geom_point(aes(x=true_x, y=true_y)) +
+  geom_point(aes(x=model_pred_x, y=model_pred_y, color=n)) + 
+  facet_wrap(~func.name)
+```
+
+
+```{r}
+# for (i in c(1,3,4,5,6,8,10)) {
+#   df <- read.csv(paste0("../data/models/monkey_training/context_len_", i, ".csv")) %>%
+#             mutate(n=n+1,
+#                    score=1,
+#                    weight=1,
+#                    particle=0) %>%
+#             filter(mode=="test") %>%
+#             rename(true_x=x_next, true_y=y_next,
+#                    prev_x=x_curr, prev_y=y_curr,
+#                    pred_x=x_pred,  pred_y=y_pred,
+#                    seq_id = func_id, tpt=n,
+#                    sd_x = x_std, sd_y = y_std) %>%
+#             mutate(seq_id = str_replace(seq_id, "\\.0$", "")) %>%
+#             mutate(seq_id = ifelse(seq_id=="example_line", "line", seq_id))
+#   write.csv(df, paste0("../data/models/transformer_", i, ".csv"), row.names=F)
+# }
+```
+
+
+# Analyze fits
+```{r}
+
+ll_monkey_train <- data.frame()
+for (i in c(1,2,3,4,5,6,8,10,13)) {
+  file <- paste0("model_fits/monkey_training/transformer_", i, "_monkey.csv")
+  ll_monkey_train <- bind_rows(ll_monkey_train, read.csv(file)%>%mutate(context_len = i))
+}
+ll_monkey_test <- data.frame()
+for (i in c(1,2,3,4,5,6,8,10,13)) {
+  file <- paste0("model_fits/transformer_", i, "_monkey.csv")
+  ll_monkey_test <- bind_rows(ll_monkey_test, read.csv(file)%>%mutate(context_len = i))
+}
+ll_monkey_all <- bind_rows(ll_monkey_train %>% mutate(mode="train"),
+                           ll_monkey_test %>% mutate(mode="test"))
+
+```
+
+```{r}
+# mean LL by context len
+ll_monkey_summ <- ll_monkey_all %>%
+                 group_by(func.name, r_id, subj_id, context_len, mode) %>%
+                 summarize(LL=sum(LL, na.rm=T), .groups="drop") %>%
+                 group_by(func.name, subj_id, context_len, mode) %>%
+                 summarize(LL=mean(LL, na.rm=T), .groups="drop") %>%
+                 mutate(mode=ifelse(mode=="train", "Train sequences", "Test sequences"),
+                        subj_id =ifelse(subj_id=="BP22", "Monkey 1", "Monkey 2")) %>%
+                group_by(func.name, subj_id, context_len, mode) %>%
+                mutate()
+```
+
+```{r}
+ggplot(data=ll_monkey_summ) +
+  stat_summary(geom="point", aes(x=context_len, y=LL, group=subj_id, color=subj_id), shape="o", size=3) +
+  stat_summary(geom="line", aes(x=context_len, y=LL, group=subj_id, color=subj_id)) +
+  stat_summary(geom="ribbon", aes(x=context_len, y=LL, group=subj_id, fill=subj_id),alpha=0.2) +
+  scale_color_manual(values=c("orange", "dodgerblue")) +
+  scale_fill_manual(values=c("orange", "dodgerblue")) +
+  paper_theme +
+  scale_x_continuous(breaks=1:13) +
+  ylab("Log likelihood") +
+  xlab("Context length") +
+  theme(
+    legend.title = element_blank(),
+    legend.position = "inside",
+    legend.position.inside = c(0.95, 0.25),         # (x, y) in [0, 1] relative to plot area
+    legend.justification = c(1, 0),           # anchor legend corner
+    legend.box.margin = margin(10, 10, 10, 10)
+) +
+  facet_wrap(~mode, nrow=2)
+  #geom_line(aes(x=context_len, y=LL, group=subj_id)) 
+
+ggsave("../monkey_ll_train_test.png", width=4.5, height=5)
+```
+
+```{r}
+# mean LL by context len
+# ll_monkey_summ <- ll_monkey_all %>%
+#                  group_by(func.name, r_id, subj_id, context_len, mode) %>%
+#                  summarize(LL=sum(LL, na.rm=T), .groups="drop") %>%
+#                  group_by(func.name, subj_id, context_len, mode) %>%
+#                  summarize(LL=mean(LL, na.rm=T), .groups="drop")
+
+ggplot(data=ll_monkey_summ%>%filter(mode=="test")) +
+  geom_line(aes(x=context_len, group=func.name, color=func.name, y=LL), alpha=0.8) +
+  stat_summary(geom="line", aes(x=context_len, y=LL)) +
+  paper_theme +
+  scale_x_continuous(breaks=1:13) +
+  ylab("mean LL") +
+  xlab("transformer context length") +
+  theme(legend.title=element_blank()) +
+  facet_wrap(~mode+subj_id, nrow=2)
+  #geom_line(aes(x=context_len, y=LL, group=subj_id)) 
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Prev analyses
 
 ```{r, message=F}
 get_LLs <- function(all_fits) {
@@ -328,6 +1469,85 @@ get_LLs <- function(all_fits) {
                   group_by(subj_id, model) %>%
                   summarize(LL_mean = mean(LL_mean, na.rm=TRUE),
                             model_sum_LL = mean(model_sum_LL),
+                            sd_motor = mean(sd_motor), sd_prev = mean(sd_prev), sd_lin = mean(sd_lin),
+                            p_lapse = mean(p_lapse), p_prev = mean(p_prev), p_rand = mean(p_rand), p_lin = mean(p_lin)) %>%
+                  ungroup() %>%
+                  group_by(model) %>%
+                  mutate(LL_mean_model = mean(LL_mean),
+                         model_sum_LL = mean(model_sum_LL),
+                         sd_motor = mean(sd_motor), sd_prev = mean(sd_prev), sd_lin = mean(sd_lin),
+                        p_lapse = mean(p_lapse), p_prev = mean(p_prev), p_rand = mean(p_rand), p_lin = mean(p_lin))
+  
+  return(grouped)
+  
+}
+
+
+get_aic <- function(grouped) {
+    n_params_per_subj <- 4
+    n_subjs = length(unique(grouped$subj_id))
+  
+    top <- grouped %>%
+         group_by(subj_id) %>%
+         slice_max(order_by = LL_mean) %>%
+         ungroup()
+  
+  print(table(top$model))
+  
+  df_aic <- grouped %>%
+            group_by(model) %>%
+            summarize(LL_mean_model=mean(LL_mean_model),
+                      model_sum_LL=mean(model_sum_LL), mean_sd_motor = mean(sd_motor),
+                      mean_sd_prev = mean(sd_prev), mean_sd_lin = mean(sd_lin),
+                      mean_p_lapse = mean(p_lapse), mean_p_prev = mean(p_prev),
+                      mean_p_rand = mean(p_rand), mean_p_lin = mean(p_lin)) %>%
+            group_by(model) %>%
+            mutate(n_params = n_subjs*n_params_per_subj) %>% 
+            mutate(AIC = (2*n_params) - (2*model_sum_LL)) %>%
+            ungroup() %>%
+            mutate(delta_AIC = AIC - min(AIC))
+
+  return(df_aic)
+}
+
+
+print("Adults best fit:")
+df_LL_adult <- get_LLs(df_adult)
+df_aic_adult <- get_aic(df_LL_adult)
+# print("Kids best fit:")
+#df_LL_kid <- get_LLs(df_kid)
+#df_aic_kid <- get_aic(df_LL_kid)
+print("Kids CHS best fit:")
+df_LL_kid_chs <- get_LLs(df_kid_chs)
+df_aic_kid_chs <- get_aic(df_LL_kid_chs)
+print("Monkeys best fit:")
+df_LL_monkey <- get_LLs(df_monkey)
+df_aic_monkey <- get_aic(df_LL_monkey)
+df_LL_monkey1 <- get_LLs(df_monkey%>%filter(subj_id=="BP22"))
+df_aic_monkey1 <- get_aic(df_LL_monkey1)
+df_LL_monkey2 <- get_LLs(df_monkey%>%filter(subj_id=="BP24"))
+df_aic_monkey2 <- get_aic(df_LL_monkey2)
+```
+
+
+```{r, message=F}
+get_LLs <- function(all_fits) {
+
+  grouped <- all_fits %>%
+                  group_by(model) %>%
+                  mutate(model_sum_LL = sum(LL, na.rm=T)) %>%
+                  group_by(subj_id, model, func.name) %>%
+                  summarize(LL_mean = mean(LL, na.rm = TRUE),
+                            model_sum_LL = mean(model_sum_LL),
+                            sd_motor = mean(sd_motor),
+                            sd_prev = mean(sd_prev), sd_lin = mean(sd_lin),
+                            age=mean(age),
+                            p_lapse = mean(p_lapse), p_prev = mean(p_prev), p_rand = mean(p_rand), p_lin = mean(p_lin)) %>%
+                  ungroup() %>%
+                  group_by(subj_id, model) %>%
+                  summarize(LL_mean = mean(LL_mean, na.rm=TRUE),
+                            model_sum_LL = mean(model_sum_LL),
+                            age=mean(age),
                             sd_motor = mean(sd_motor), sd_prev = mean(sd_prev), sd_lin = mean(sd_lin),
                             p_lapse = mean(p_lapse), p_prev = mean(p_prev), p_rand = mean(p_rand), p_lin = mean(p_lin)) %>%
                   ungroup() %>%
@@ -368,24 +1588,24 @@ get_aic <- function(grouped) {
 
   return(df_aic)
 }
+grouped <- get_LLs(df_kid_chs)
 
 
-print("Adults best fit:")
-df_LL_adult <- get_LLs(df_adult)
-df_aic_adult <- get_aic(df_LL_adult)
-print("Kids best fit:")
-df_LL_kid <- get_LLs(df_kid)
-df_aic_kid <- get_aic(df_LL_kid)
-print("Kids CHS best fit:")
-df_LL_kid_chs <- get_LLs(df_kid_chs)
-df_aic_kid_chs <- get_aic(df_LL_kid_chs)
-print("Monkeys best fit:")
-df_LL_monkey <- get_LLs(df_monkey)
-df_aic_monkey <- get_aic(df_LL_monkey)
-df_LL_monkey1 <- get_LLs(df_monkey%>%filter(subj_id=="BP22"))
-df_aic_monkey1 <- get_aic(df_LL_monkey1)
-df_LL_monkey2 <- get_LLs(df_monkey%>%filter(subj_id=="BP24"))
-df_aic_monkey2 <- get_aic(df_LL_monkey2)
+n_params_per_subj <- 6
+n_subjs = length(unique(grouped$subj_id))
+
+top <- grouped %>%
+     group_by(subj_id) %>%
+     slice_max(order_by = LL_mean) %>%
+     ungroup()
+```
+
+```{r}
+ggplot(data=top) +
+  geom_histogram(aes(x=model), stat="count") +
+  facet_wrap(~age) +
+  theme(axis.text = element_text(angle=45))
+#df_aic_kid_chs <- get_aic(df_LL_kid_chs)
 ```
 
 
@@ -411,6 +1631,8 @@ df <- df_kid_chs %>%
       mutate(AIC = (2*n_params) - (2*LL_sum_func_mean)) %>%
       group_by(subj_id) %>%
       mutate(delta_AIC = AIC - min(AIC))
+
+
 
 df_model_ambig <- df %>% group_by(subj_id) %>%
                     filter(abs(delta_AIC) < 10) %>%
@@ -574,6 +1796,102 @@ ggplot(tmp, aes(x = model, y = prob, fill = agent)) +
 #ggsave("../figs/LL_group.png", width=8, height=4)
 
 ```
+
+
+
+# More exploratory paper analyses
+```{r}
+# LL by model by subj, mean across functions
+df_LL <- df_all %>%
+           group_by(agent, model, subj_id, r_id, func.name) %>%
+           summarize(func_LL = sum(LL, na.rm = TRUE), .groups="drop") %>%
+          group_by(agent, model, subj_id, func.name) %>%
+           summarize(LL = mean(func_LL, na.rm = TRUE), .groups="drop") %>%
+           group_by(agent, model, func.name) %>%
+           summarize(LL = mean(LL, na.rm=TRUE), .groups="drop")
+
+df_group <- df_LL %>%
+            group_by(agent, model) %>%
+            summarize(med_LL = median(LL),
+                      mean_LL = mean(LL))
+```
+
+```{r}
+# For 3 and 4 year olds, medians and means over subject LLs actually disagree
+
+# Total LL by group
+df_LL_total <- df_all %>%
+               group_by(model, agent) %>%
+               summarize(total_LL = sum(LL),
+                         .groups="drop")
+
+# Why is comp. GP better fitting for 7 year olds than LoT?
+df_subj <- df_all %>%
+           group_by(agent, model, subj_id) %>%
+           mutate(n_func = length(unique(func.name))) %>%
+           ungroup() %>%
+           group_by(agent, model, subj_id, r_id, func.name) %>%
+           summarize(LL = sum(LL, na.rm = TRUE), 
+                     n_func=mean(n_func),
+                     .groups="drop") #%>%
+           #group_by(agent, model, subj_id) %>%
+           #summarize(LL = mean(LL), n_func=mean(n_func), .groups="drop")
+
+# mean across all subject/function pairs
+# Mean across functions within subjects, sum across subjects
+delta_LL <- df_subj %>%
+            group_by(model, agent, subj_id) %>%
+            summarize(LL = mean(LL))
+dist_df <- delta_LL %>% group_by(model, agent) %>% summarize(mean_LL = mean(LL), median_LL=median(LL))
+
+
+
+
+
+# top models by subj
+ df_top <- df_all %>%
+           group_by(agent, model, subj_id, r_id, func.name) %>%
+           summarize(func_LL = sum(LL, na.rm = TRUE), .groups="drop") %>%
+           group_by(agent, model, subj_id) %>%
+           summarize(LL = mean(func_LL, na.rm=TRUE), .groups="drop") %>%
+           group_by(agent, subj_id) %>%
+           mutate(LL_z = scale(LL)) %>%
+   group_by(agent, subj_id) %>%
+   slice_max(LL) %>%
+   ungroup() %>%
+   group_by(agent, model) %>%
+   summarize(model_count=n()) %>%
+   ungroup() %>%
+   #count(agent, model, name = "model_count") %>%
+   complete(agent, model, fill = list(model_count = 0)) %>%
+   group_by(agent) %>%
+   mutate(tot = sum(model_count),
+          model_prop = model_count / tot) %>%
+   ungroup()
+
+```
+
+
+```{r, fig.width=10, fig.height=4}
+df_LL$agent <- factor(df_LL$agent, levels=c("Monkeys", "3 y/o", "4 y/o", "5 y/o", "6 y/o", "7 y/o", "Adults"))
+p2 <- ggplot(data=df_LL) +
+  #geom_point(aes(x=model, y=LL, color=model), alpha=0.3) +
+  geom_line(aes(x=model, y=LL, group=func.name), alpha=0.5, linewidth=0.2) +
+  geom_beeswarm(aes(x=model, y=LL, group=model, color=model), alpha=0.7) +
+  scale_color_brewer(palette = "Set2") +
+  ylab("Log likelihood") +
+  paper_theme + 
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    legend.title=element_blank(),
+    strip.background = element_blank(), strip.placement = "outside",
+    panel.border = element_blank(), panel.background = element_blank(), panel.spacing = unit(0, "lines")
+  ) +
+  facet_wrap(~agent, nrow=1, strip.position="bottom")
+p2
+```
+
 
 
 

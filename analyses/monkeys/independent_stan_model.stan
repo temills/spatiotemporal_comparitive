@@ -21,6 +21,7 @@ parameters {
   // Effects of function type and count
   vector[n_func_types] beta_func_type;
   vector[n_func_types] beta_func_type_seen;
+  vector<lower=0, upper=1>[n_func_types] max_p;
   real<lower=0> sd_motor;
   simplex[2] p_rand_strategy[n_func_types];
 }
@@ -32,9 +33,10 @@ model {
   beta_func_type_seen ~ normal(0,1);
   sd_motor ~ exponential(1);
   p_rand_strategy ~ dirichlet(rep_vector(1,2));
+  max_p ~ beta(1, 1);
 
   for (i in 1:N) {
-    real p_true = inv_logit(beta_func_type_seen[func_type[i]] * n_seen[i] + beta_func_type[func_type[i]]);
+    real p_true = inv_logit(beta_func_type_seen[func_type[i]] * n_seen[i] + beta_func_type[func_type[i]]) * max_p[func_type[i]];
 
     vector[3] log_probs;
     log_probs[1] = log(p_true) + normal_lpdf(x_pred[i] | x_next[i], sd_motor) + normal_lpdf(y_pred[i] | y_next[i], screen_ratio*sd_motor);
