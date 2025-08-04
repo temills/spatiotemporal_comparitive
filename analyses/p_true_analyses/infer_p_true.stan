@@ -35,8 +35,8 @@ model { //When beta guess num is a vector, it fails to initialize. divergent tra
   use_true_icpt ~ normal(0,3);
   beta_guess_num_func_type ~ normal(0,3); //for each guess_num
   beta_func_type ~ normal(0,3);
-  motor_sd ~ exponential(10);
-  prev_sd ~ exponential(10);
+  motor_sd ~ exponential(1);
+  prev_sd ~ exponential(1);
   p_rand_strategy ~ dirichlet(rep_vector(1,2)); //prev, rand, lin
 
   for (i in 1:N) {

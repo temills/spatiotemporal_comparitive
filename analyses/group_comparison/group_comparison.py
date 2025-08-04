@@ -28,7 +28,7 @@ def plot_gmm(func, tpt, df):
     fig, ax = plt.subplots()
     ax.imshow(np.rot90(Z), cmap=plt.cm.gist_earth_r,
             extent=[xmin, xmax, ymin, ymax])
-    #ax.plot(data["pred_x"], data["pred_y"], 'k.', markersize=5)
+    ax.plot(data["pred_x"], data["pred_y"], 'k.', markersize=5)
     ax.set_xlim([xmin, xmax])
     ax.set_ylim([ymin, ymax])
     plt.show()
@@ -197,16 +197,16 @@ if __name__=="__main__":
     df_adult.to_csv("scaled_adult.csv", index=False)
     df_monkey.to_csv("scaled_monkey.csv", index=False)
     
-    adult_gmms = compute_gmms(df_adult)
+    #adult_gmms = compute_gmms(df_adult)
     #print("-------------")
     #monkey_gmms = compute_gmms(df_monkey)
     
     #with open('monkey_gmms.json', 'w') as f:
     #    json.dump(monkey_gmms, f)
     
-    #plot_gmm("sine", 8, df_adult)
+    plot_gmm("triangle_1", 8, df_monkey)
     
-    compute_lik(adult_gmms, df_kid, "p_adult.csv")
+    #compute_lik(adult_gmms, df_kid, "p_adult.csv")
     
     
     

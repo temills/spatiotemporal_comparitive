@@ -26,25 +26,27 @@ library(purrr)
 library(stringr)
 library(ggforce)
 
-paper_theme <- theme_light() + theme( axis.title.x = element_text(size=22),
-                                      axis.text.x=element_text(
-                                        size = 18), 
-                                      axis.title.y = element_text(size = 22, vjust = 1),
-                                      axis.text.y  = element_text(size = 18),
-                             strip.text=element_text(size=16),
-                                      axis.line.x = element_line(colour = "black"), 
-                                      axis.line.y = element_line(colour = "black"),
-                                      legend.title=element_text(size=20),
-                                      legend.text=element_text(size=16),
-                                      panel.grid.major=element_blank(),
-                                      panel.grid.minor=element_blank())  
+paper_theme <- theme_light() + theme(
+  axis.text.x=element_text(colour="#292929",
+                           size = 14), 
+axis.title.x = element_text(size=18, family="Georgia"),
+  axis.title.y = element_text(size = 18, vjust = 1,  family="Georgia"),
+  axis.text.y  = element_text(size = 14, colour="#292929", family="Georgia"),
+  strip.text=element_text(size=16,color="black", family="Georgia"),
+strip.background = element_rect(colour = "grey50", fill = "white"),
+panel.background = element_rect(fill = "white", colour = "grey50"),
+  axis.ticks.x=element_blank(),axis.ticks.y=element_blank(),
+  axis.line.x = element_line(colour = "black"), 
+  axis.line.y = element_line(colour = "black"),
+  legend.title=element_text(size=18, family="Georgia"),
+  legend.text=element_text(size=15, family="Georgia"),
+  panel.grid.major = element_blank(), panel.grid.minor = element_blank())
 
 
 ```
 
-```{r}
 # sanity check preprocessing
-
+```{r}
 kid <- read.csv('scaled_kid.csv')
 adult <- read.csv('scaled_adult.csv')
 monkey <- read.csv('scaled_monkey.csv')
@@ -59,11 +61,17 @@ ggplot(data=kid, aes(x=prev_x, y=prev_y)) +
 
 ```
 
-# Load data
+# Load fits
 ```{r, message=F}
-p_adult_df <- read.csv("p_adult.csv") 
+p_adult_df <- read.csv("p_adult.csv") %>%
+              group_by(subj_id) %>% 
+              mutate(n_func = length(unique(func.name))) %>%
+              filter(n_func>7)
 
-p_monkey_df <- read.csv("p_monkey.csv") 
+p_monkey_df <- read.csv("p_monkey.csv") %>%
+               group_by(subj_id) %>% 
+               mutate(n_func = length(unique(func.name))) %>%
+               filter(n_func>7)
               
 
 ```
@@ -118,7 +126,6 @@ ggplot(data=summ_df) +
 
 
 
-
 # By individual subj
 ```{r, fig.width=8, fig.height=3}
 comp_df <- p_adult_df %>%
@@ -137,11 +144,15 @@ comp_df <- p_adult_df %>%
                      sd_motor_monkeys=mean(sd_motor_monkeys), sd_motor_adults=mean(sd_motor_adults), .groups="drop") %>%
            mutate(log_lik_diff = log_lik_adults-log_lik_monkeys)
   
-
 ggplot(data=comp_df) +
   geom_histogram(aes(x=log_lik_adults-log_lik_monkeys, fill=as.factor(age))) +
   geom_vline(aes(xintercept=0), linetype="dashed") +
+  guides(fill="none") +
   facet_wrap(~age, nrow=1) 
+
+ggplot(data=comp_df%>%filter(age==3)) +
+  geom_histogram(aes(x=log_lik_adults-log_lik_monkeys, fill=as.factor(age))) +
+  geom_vline(aes(xintercept=0), linetype="dashed") 
 ```
 
 

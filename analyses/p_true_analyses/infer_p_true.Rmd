@@ -147,7 +147,6 @@ preprocess_df_monkey <- function(df) {
 
 # Inference helpers
 ```{r}
-
 run_inference_subj <- function(df, n_iter, n_chains, var_maps) {
   stan_df <- df %>% filter(!is.na(x_pred) & (!is.na(y_pred)))
   stan_data <- list(
@@ -207,7 +206,7 @@ refactor_posterior <- function(posterior_samples, var_maps) {
   refactored_post <- refactored_post %>%
                      #slice(rep(1:n(), each = 12)) %>%
                      mutate(p_true = inv_logit(use_true_icpt+beta_func_type)) %>%
-                     mutate(p_lin = p_rand_strategy.3*(1-p_true),
+                     mutate(#p_lin = p_rand_strategy.3*(1-p_true),
                             p_rand = p_rand_strategy.2*(1-p_true),
                             p_prev = p_rand_strategy.1*(1-p_true))
 
@@ -220,35 +219,34 @@ get_subj_df <- function(participant_df, group, subj) {
   func_to_num_map <- setNames(as.numeric(factor(unique(df_subj$func.type))), unique(df_subj$func.type))
   subj_to_num_map <- setNames(as.numeric(factor(unique(df_subj$subject_id))), unique(df_subj$subject_id))
   var_maps <- list("func_type"=func_to_num_map, "subject_id"=subj_to_num_map)
-  fit <- readRDS(file = paste0("stan_fits_lin/", group, "/", subj, ".rds"))
-  posterior_samples_lst <- rstan::extract(fit)
-  posterior_samples <- as.data.frame(posterior_samples_lst)
+  fit <- readRDS(file = paste0("stan_fits/", group, "/", subj, ".rds"))
+  posterior_samples <- as.data.frame(rstan::extract(fit))
   posterior_samples$subj = subj
   post_subj <- refactor_posterior(posterior_samples, var_maps)
   
   df_subj <- merge(df_subj, post_subj, "func.type") %>%
                mutate(LL_true = log(dnorm(x_pred, mean=x_next, sd=motor_sd)) +
                                 log(dnorm(y_pred, mean=y_next, sd=motor_sd)), 
-                      LL_lin =  log(dnorm(x_pred, mean=lin1_x_pred, sd=motor_sd)) +
-                                log(dnorm(y_pred, mean=lin1_y_pred, sd=motor_sd)), 
+                      #LL_lin =  log(dnorm(x_pred, mean=lin1_x_pred, sd=motor_sd)) +
+                      #          log(dnorm(y_pred, mean=lin1_y_pred, sd=motor_sd)), 
                       LL_prev = log(dnorm(x_pred, mean=x_curr, sd=motor_sd)) +
                                 log(dnorm(y_pred, mean=y_curr, sd=motor_sd)), 
                       LL_rand = log(dunif(x_pred, min=min_x, max=max_x)) +
                                 log(dunif(y_pred, min=min_y, max=max_y))) %>%
                mutate(logprob_true = LL_true + log(p_true),
-                      logprob_lin = LL_lin + log(p_lin),
+                      #logprob_lin = LL_lin + log(p_lin),
                       logprob_prev = LL_prev + log(p_prev),
                       logprob_rand = LL_rand + log(p_rand)) %>%
               rowwise() %>%
-              mutate(#logprob_norm = logSumExp(c(logprob_true, logprob_prev, logprob_rand))) %>%
-                     logprob_norm = logSumExp(c(logprob_true, logprob_lin, logprob_prev, logprob_rand))) %>%
+              mutate(logprob_norm = logSumExp(c(logprob_true, logprob_prev, logprob_rand))) %>%
+                     #logprob_norm = logSumExp(c(logprob_true, logprob_lin, logprob_prev, logprob_rand))) %>%
               ungroup() %>%
               mutate(logprob_true = logprob_true-logprob_norm,
-                      logprob_lin = logprob_lin-logprob_norm,
-                      logprob_prev = logprob_prev-logprob_norm,
-                      logprob_rand = logprob_rand-logprob_norm) %>%
+                     #logprob_lin = logprob_lin-logprob_norm,
+                     logprob_prev = logprob_prev-logprob_norm,
+                     logprob_rand = logprob_rand-logprob_norm) %>%
               mutate(prob_true = exp(logprob_true),
-                     prob_lin = exp(logprob_lin),
+                     #prob_lin = exp(logprob_lin),
                      prob_prev = exp(logprob_prev),
                      prob_rand = exp(logprob_rand))
   
@@ -256,109 +254,12 @@ get_subj_df <- function(participant_df, group, subj) {
 }
 ```
 
-# Make videos from loaded model fits for each subject
-```{r, echo=F}
-generate_videos <- function(df, group) {
-  i = 0
-  for (subj in unique(df$subject_id)) {
-    #now, for each prediction, can we get prob under each model?
-    df_subj <- get_subj_df(df, group, subj)
-    file <- paste0(group, "/", "individual_subjects/", subj)
-    make_subj_video(df_subj, file)
-    i=i+1
-    if(i==1) {
-      df_all <- df_subj
-    } else {
-      df_all <- bind_rows(df_all, df_subj)
-    }
-  }
-  file <- paste0(group, "/", "all_subjects")
-  make_subj_video(df_all, file)
-}
-
-make_subj_video <- function(df_subj, file) {
-  out_folder <- paste0("../../figs/videos/p_true/", file)
-  df <- df_subj %>%
-        group_by(func.type, tpt, subj, r_id) %>%
-        summarize(x_pred=mean(x_pred),
-                           y_pred=mean(y_pred),
-                           x_next=mean(x_next),
-                           y_next=mean(y_next),
-                           prob_true=mean(prob_true),
-                           prob_rand=mean(prob_rand),
-                           prob_lin=mean(prob_lin),
-                           prob_prev=mean(prob_prev)) %>%
-        ungroup() %>%
-        mutate(top_model = apply(select(., prob_true, prob_rand, prob_prev, prob_lin), 1, 
-                                 function(row) c("true", "rand", "prev", "lin")[which.max(row)])) %>%
-        filter(tpt>0)
-  
-  df <- df[order(df$tpt),] %>% filter(func.type != "example_line")
-  
-  unlink(out_folder, recursive=TRUE)
-  dir.create(out_folder)
-  
-  f_plot_func_sbs <- function(f) {
-    df_seq <- subset(df, (df$func.type == f))
-    dir.create(paste(out_folder, f, sep="/"))
-  
-    x_min <- min(min(df_seq$x_next, na.rm=TRUE), min(df_seq$x_pred, na.rm=TRUE))
-    x_max <- max(max(df_seq$x_next, na.rm=TRUE), max(df_seq$x_pred, na.rm=TRUE))
-    y_min <- min(min(df_seq$y_next, na.rm=TRUE), min(df_seq$y_pred, na.rm=TRUE))
-    y_max <- max(max(df_seq$y_next, na.rm=TRUE), max(df_seq$y_pred, na.rm=TRUE))
-    
-    range_x <- (x_max-x_min)
-    range_y <- (y_max-y_min)
-    range_x = range_x
-    range_y = range_y
-    
-    shift_x1<-0
-    shift_y1<-0
-    
-    for (i in (min(df$tpt)+1):max(df$tpt)) {
-      df_tpt <- subset(df_seq, (df_seq$tpt == i))
-      df_hist <- df_seq[order(df_seq$tpt),] %>% filter(tpt<i)
-      
-      df_tpt$top_model <- factor(df_tpt$top_model, levels = c("true", "lin", "prev", "rand"))
-      
-      p <- ggplot() +
-        #prev points and path
-        geom_path(data=df_hist, aes(x=shift_x1+x_next, y=shift_y1+y_next), linewidth=0.25, linetype="dotted") +
-        geom_point(data=df_hist, aes(x=shift_x1+x_next, y=shift_y1+y_next), size=3) +
-        #next true point
-        geom_point(data=df_tpt, aes(x=shift_x1+x_next, y=shift_y1+y_next), color="gold", shape=8, size=4, stroke=2.0) +
-        #first human response
-        geom_point(data=df_tpt, aes(x=shift_x1+x_pred, y=shift_y1+y_pred, color=top_model), shape=20, size=3, stroke=1) +
-
-        scale_color_manual(
-          name = "Model",
-          values = c("true" = "#8BC34A", "lin" = "orange", "prev" = "blue2", "rand" = "purple1"),
-          breaks = c("true", "lin", "prev", "rand"), 
-          limits = c("true", "lin", "prev", "rand")  
-        ) +
-        coord_cartesian(xlim=c(x_min-range_x*.5, x_max+(range_x*.5)), ylim=c(y_min-(range_y*.5), y_max+(range_y*.5))) +
-        theme_void() +
-        theme(panel.background = element_rect(fill = "white"), legend.background = element_rect(fill = "white", color=NA),
-              legend.text=element_text(size=12), legend.title=element_blank(), legend.position = "top")
-              
-      f_name <- paste0(out_folder, "/", f, "/", f, "_n", as.character(i), ".png",sep="")
-      ggsave(f_name, plot=p,width=12,height=6, dpi=500, bg="white")
-    }
-  }
-  
-  for (id in sort(unique(df$func.type))) {
-    f_plot_func_sbs(id)
-  }
-}
-```
-
-
 ```{r}
 get_mean_df <- function(df, group) {
   i=0
   for (subj in unique(df$subject_id)) {
     print(subj)
-    #for each prediction, mean prob under each model
+    # for each prediction, mean prob under each model
     df_subj <- get_subj_df(df, group, subj)  %>%
                filter(guess_num>0) %>%
                group_by(func.type, tpt, r_id) %>%
@@ -369,7 +270,7 @@ get_mean_df <- function(df, group) {
                          motor_sd=mean(motor_sd),
                          prob_true=mean(prob_true),
                          prob_rand=mean(prob_rand),
-                         prob_lin=mean(prob_lin),
+                         #prob_lin=mean(prob_lin),
                          prob_prev=mean(prob_prev)) %>%
                ungroup()
     
@@ -389,132 +290,55 @@ get_mean_df <- function(df, group) {
 
 ```
 
+```{r}
+tmp <- get_subj_df(df_monkey, "monkeys", "BP22")
+```
 
 
 # Load participant data
 ```{r, message=F}
-df_kid_chs <- preprocess_df_human(read.csv("../data/participants/kids_chs.csv"))                                             
+df_kid_chs <- preprocess_df_human(read.csv('../../human_experiments/dots_app_kids/data/clean_data/data.csv'))                                       
 df_kid <- preprocess_df_human(read.csv("../data/participants/kids.csv"))
 df_adult <-preprocess_df_human(read.csv("../data/participants/adults.csv"))
 df_monkey <-  preprocess_df_monkey(read.csv("../data/participants/monkeys_all.csv"))
 ```
 
-# Run inference
+# Run inference, compute posterior means
 ```{r}
-run_inference_group(df_kid_chs, "kids_chs")
+#run_inference_group(df_kid_chs, "kids_chs")
+for (x in 3:7) {
+  df_age <- df_kid_chs %>% filter(age==x)
+  run_inference_group(df_age, paste0("kid_chs_", x))
+}
 run_inference_group(df_monkey, "monkeys")
 run_inference_group(df_adult, "adults")
-#generate_videos(df_kid_chs, "kids_chs")
 
-df_mean_kid_chs <- get_mean_df(df_kid_chs, "kids_chs")
+#generate_videos(df_kid_chs, "kids_chs")
+```
+
+```{r}
 df_mean_adult <- get_mean_df(df_adult, "adults")
 df_mean_monkey <- get_mean_df(df_monkey, "monkeys")  %>% mutate(r_id = as.character(r_id))
 ```
 
 ```{r}
-df_mean_kid_chs_lin <- get_mean_df(df_kid_chs%>%filter(age==3), "kids_chs")
-write.csv(df_mean_kid_chs_lin, "mean_kid_chs_lin_3.csv")
+df_kid_chs <- df_kid_chs %>% filter(subject_id != "6QWTWP")
 
-write.csv(df_mean_kid_chs, "mean_kid_chs.csv")
-write.csv(df_mean_adult, "mean_adult.csv")
-write.csv(df_mean_monkey, "mean_monkey.csv")
+df_mean_kid_chs <- data.frame()
+for (x in 3:7) {
+  df_mean_kid_chs <- bind_rows(df_mean_kid_chs, get_mean_df(df_kid_chs%>%filter(age==x), paste0("kid_chs_", x)))
+}
 
-#df_mean_kid <- get_mean_df(df_kid, "kids")
-#df_mean_adult <- get_mean_df(df_adult, "adults")
-#df_mean_monkey <- get_mean_df(df_monkey, "monkeys")  %>% mutate(r_id = as.character(r_id))
-
-# df_mean_kid <- read.csv(df_mean_kid, "kid.csv")
-#df_mean_adult <- read.csv("adult.csv") %>% mutate(guess_num=tpt-2)
-#df_mean_monkey <- read.csv("monkey.csv") %>% mutate(r_id = as.character(r_id)) %>% mutate(guess_num=tpt-2)
-
+write.csv(df_mean_kid_chs, "posterior_means/mean_kid_chs.csv")
+write.csv(df_mean_adult, "posterior_means/mean_adult.csv")
+write.csv(df_mean_monkey, "posterior_means/mean_monkey.csv")
 ```
-
-
-# P lin monkeys vs 3 yo
+# Or load cached posterior means
 ```{r}
-df_mean_monkey_lin <- read.csv("mean_monkey_lin.csv") %>% mutate(r_id = as.character(r_id))
-df_mean_kid_chs_lin <- read.csv("mean_kid_chs_lin_3.csv")
-demo <- read.csv("../../human_experiments/dots_app_kids/data/demographics.csv") %>% mutate(subject_id = child__hashed_id)
-ages <- demo %>% mutate(exact_age = as.numeric(difftime(consent__time, child__birthday, units = "days")) / 365.25) %>% select(c(subject_id, exact_age)) %>% mutate(subj=subject_id) %>% 
-  mutate(age = ifelse(exact_age<4, 3,
-                            ifelse(exact_age<5, 4,
-                                   ifelse(exact_age<6, 5,
-                                          ifelse(exact_age<7, 6,
-                                                 ifelse(exact_age<8, 7,
-                                                        NA))))))
-
-df_mean_kid_chs_lin <- df_mean_kid_chs_lin %>% mutate(subj=r_id) %>% mutate(group="kids") %>%
-                  filter(func.type %in% unique(df_mean_monkey_lin$func.type)) %>%
-                  merge(ages, by="subj")
-
-
-df_all <- bind_rows(df_mean_kid_chs_lin, df_mean_monkey_lin)
-
-df_all <- df_all %>% mutate(agent = ifelse(group=="monkeys", subj, group)) %>% mutate(guess_num=tpt-2)
-```
-
-
-
-```{r}
-df_all$agent <- factor(df_all$agent, 
-                       levels = c("kids", "BP22", "BP24"),
-                       labels = c("Children", "Monkey 1", "Monkey 2"))
-df_all <- df_all %>%
-          group_by(func.type, agent) %>%
-          mutate(mean_p_lin_kid = ifelse(agent == "Children", mean(prob_lin, na.rm = TRUE), NA)) %>%
-          group_by(func.type) %>%
-          mutate(mean_p_lin_kid = mean(mean_p_lin_kid, na.rm = TRUE)) %>%
-          arrange(mean_p_lin_kid) %>%
-          ungroup()
-
-df_all$func.type =  factor(df_all$func.type, levels=unique(df_all$func.type[order(1-df_all$mean_p_lin_kid)]))
-df_all$func.type <- fct_reorder(df_all$func.type, df_all$mean_p_lin_kid, .desc=T)
-```
-
-```{r}
-# p_lin
-# summarize data
-summary_stats <- df_all %>%
-  group_by(agent, age, func.type, guess_num) %>%
-    summarize(
-    mean_p_lin_kid = mean(mean_p_lin_kid),
-    prob_lin = mean(prob_lin),
-  ) %>%
-  ungroup() %>%
-  group_by(agent, age, func.type) %>%
-  summarize(
-    median = median(prob_lin),
-    mean_p_lin_kid = mean(mean_p_lin_kid),
-    lower_q = quantile(prob_lin, 0.25),
-    upper_q = quantile(prob_lin, 0.75),
-    mean_p_lin = mean(prob_lin),
-    sd_p_lin = sd(prob_lin),
-    se_p_lin = sd(prob_lin)/ sqrt(length(prob_lin))) %>%
-  mutate(char_age=ifelse(agent=="Children", paste0("(",as.character(age),")"), ""))
-  #mutate(agent = ifelse(agent=="BP22", "Monkey 1", agent),
-  #       agent = ifelse(agent=="BP24", "Monkey 2", agent))
-
-summary_stats$func.type <- fct_reorder(summary_stats$func.type, summary_stats$mean_p_lin_kid, .desc=T)
-                      
-
-p <- ggplot(data=summary_stats) +
-  geom_point(aes(color=paste0(agent, char_age), fill=paste0(agent, char_age), x = func.type, y = mean_p_lin), size=2,  position = position_dodge(width = .7), shape=8, stroke=1) +
-  geom_errorbar(aes(x=func.type, ymin = mean_p_lin-sd_p_lin, ymax = mean_p_lin+sd_p_lin, color=paste0(agent, char_age)), width = 0.2, position = position_dodge(width = .7), alpha=0.3) +
-  #scale_color_manual(values = c("#329828",  "orchid", "dodgerblue", "blue")) +
-  scale_y_continuous(breaks = seq(0,1,by=0.5)) +
-  coord_cartesian(clip = 'off') +
-  paper_theme + theme(legend.title=element_blank(), legend.position="top", plot.margin = unit(c(0, 0, 15, 0), "mm"), axis.text.x = element_blank(), strip.background=element_rect(fill="white", color="white")) +
-  labs(x="", y="P(linear)")
-
-fname <- "../../figs/p_true/p_lin.png"
-add_png_to_plot(p, plot_df, -0.13,440,100, fname)
-print(knitr::include_graphics(fname))
-```
-
-
-```{r}
-df_mean_kid_chs <- read.csv("mean_kid_chs.csv") #%>% filter(exact_age)
-
+# df_mean_adult <- read.csv("posterior_means/mean_adult.csv")
+# df_mean_monkey <- read.csv("posterior_means/mean_monkey.csv")
+# df_mean_kid_chs <- read.csv("posterior_means/mean_kid_chs.csv")
+#df_mean_kid <- read.csv(df_mean_kid, "kid.csv")
 ```
 
 # P true by func.type, tpt
@@ -635,7 +459,6 @@ print(knitr::include_graphics(fname))
 
 ```
 
-
 # P true by func.type
 ```{r, cache=T}
 # summarize data
@@ -677,7 +500,6 @@ add_png_to_plot(p, plot_df, -0.13,440,100, fname)
 print(knitr::include_graphics(fname))
 ```
 
-
 # Scatter plots
 ```{r}
 plot_scatter <- function(dfx, dfy, name_x, name_y) {
@@ -713,14 +535,175 @@ plot_scatter <- function(dfx, dfy, name_x, name_y) {
 # plot_scatter(df_mean_monkey, df_mean_adult, "Monkeys", "Adults")
 # plot_scatter(df_mean_monkey, df_mean_kid, "Monkeys", "Children")
 # plot_scatter(df_mean_kid, df_mean_adult, "Children", "Adults")
-plot_scatter(df_mean_kid_chs%>%filter(age==3), df_mean_monkey, "3yo",  "Monkeys")
-plot_scatter(df_mean_kid_chs%>%filter(age==4), df_mean_monkey, "4yo",  "Monkeys")
-plot_scatter(df_mean_kid_chs%>%filter(age==5), df_mean_monkey, "5yo",  "Monkeys")
-plot_scatter(df_mean_kid_chs%>%filter(age==6), df_mean_monkey, "6yo",  "Monkeys")
-plot_scatter(df_mean_kid_chs%>%filter(age==7), df_mean_monkey, "7yo",  "Monkeys")
-plot_scatter(df_mean_kid_chs%>%filter(age==3), df_mean_adult, "3yo",  "Adults")
-plot_scatter(df_mean_kid_chs%>%filter(age==4), df_mean_adult, "4yo",  "Adults")
-plot_scatter(df_mean_kid_chs%>%filter(age==5), df_mean_adult, "5yo",  "Adults")
-plot_scatter(df_mean_kid_chs%>%filter(age==6), df_mean_adult, "6yo",  "Adults")
-plot_scatter(df_mean_kid_chs%>%filter(age==7), df_mean_adult, "7yo",  "Adults")
+for (x in 3:7) {
+  plot_scatter(df_mean_kid_chs%>%filter(age==x), df_mean_monkey, paste0(x,"yo"),  "Monkeys")
+  plot_scatter(df_mean_kid_chs%>%filter(age==3), df_mean_adult, paste0(x,"yo"),  "Adults")
+}
+```
+
+# P lin. comparison
+```{r}
+ages <- df_kid_chs %>% select(c(subject_id, age)) %>% rename(subj=subject_id)
+
+df_mean_monkey_lin <- read.csv("mean_monkey_lin.csv") %>% mutate(r_id = as.character(r_id))
+df_mean_kid_chs_lin <- read.csv("mean_kid_chs_lin_3.csv")
+
+df_mean_kid_chs_lin <- df_mean_kid_chs_lin %>% mutate(subj=r_id) %>% mutate(group="kids") %>%
+                  filter(func.type %in% unique(df_mean_monkey_lin$func.type)) %>%
+                  merge(ages, by="subj")
+
+
+df_all <- bind_rows(df_mean_kid_chs_lin, df_mean_monkey_lin)
+
+df_all <- df_all %>% mutate(agent = ifelse(group=="monkeys", subj, group)) %>% mutate(guess_num=tpt-2)
+
+df_all$agent <- factor(df_all$agent, 
+                       levels = c("kids", "BP22", "BP24"),
+                       labels = c("Children", "Monkey 1", "Monkey 2"))
+df_all <- df_all %>%
+          group_by(func.type, agent) %>%
+          mutate(mean_p_lin_kid = ifelse(agent == "Children", mean(prob_lin, na.rm = TRUE), NA)) %>%
+          group_by(func.type) %>%
+          mutate(mean_p_lin_kid = mean(mean_p_lin_kid, na.rm = TRUE)) %>%
+          arrange(mean_p_lin_kid) %>%
+          ungroup()
+
+df_all$func.type =  factor(df_all$func.type, levels=unique(df_all$func.type[order(1-df_all$mean_p_lin_kid)]))
+df_all$func.type <- fct_reorder(df_all$func.type, df_all$mean_p_lin_kid, .desc=T)
+
+
+# summarize data
+summary_stats <- df_all %>%
+  group_by(agent, age, func.type, guess_num) %>%
+    summarize(
+    mean_p_lin_kid = mean(mean_p_lin_kid),
+    prob_lin = mean(prob_lin),
+  ) %>%
+  ungroup() %>%
+  group_by(agent, age, func.type) %>%
+  summarize(
+    median = median(prob_lin),
+    mean_p_lin_kid = mean(mean_p_lin_kid),
+    lower_q = quantile(prob_lin, 0.25),
+    upper_q = quantile(prob_lin, 0.75),
+    mean_p_lin = mean(prob_lin),
+    sd_p_lin = sd(prob_lin),
+    se_p_lin = sd(prob_lin)/ sqrt(length(prob_lin))) %>%
+  mutate(char_age=ifelse(agent=="Children", paste0("(",as.character(age),")"), ""))
+  #mutate(agent = ifelse(agent=="BP22", "Monkey 1", agent),
+  #       agent = ifelse(agent=="BP24", "Monkey 2", agent))
+
+summary_stats$func.type <- fct_reorder(summary_stats$func.type, summary_stats$mean_p_lin_kid, .desc=T)
+                      
+
+p <- ggplot(data=summary_stats) +
+  geom_point(aes(color=paste0(agent, char_age), fill=paste0(agent, char_age), x = func.type, y = mean_p_lin), size=2,  position = position_dodge(width = .7), shape=8, stroke=1) +
+  geom_errorbar(aes(x=func.type, ymin = mean_p_lin-sd_p_lin, ymax = mean_p_lin+sd_p_lin, color=paste0(agent, char_age)), width = 0.2, position = position_dodge(width = .7), alpha=0.3) +
+  #scale_color_manual(values = c("#329828",  "orchid", "dodgerblue", "blue")) +
+  scale_y_continuous(breaks = seq(0,1,by=0.5)) +
+  coord_cartesian(clip = 'off') +
+  paper_theme + theme(legend.title=element_blank(), legend.position="top", plot.margin = unit(c(0, 0, 15, 0), "mm"), axis.text.x = element_blank(), strip.background=element_rect(fill="white", color="white")) +
+  labs(x="", y="P(linear)")
+
+fname <- "../../figs/p_true/p_lin.png"
+add_png_to_plot(p, plot_df, -0.13,440,100, fname)
+print(knitr::include_graphics(fname))
+```
+
+
+
+# Make videos from loaded model fits for each subject
+```{r, echo=F}
+generate_videos <- function(df, group) {
+  i = 0
+  for (subj in unique(df$subject_id)) {
+    #now, for each prediction, can we get prob under each model?
+    df_subj <- get_subj_df(df, group, subj)
+    file <- paste0(group, "/", "individual_subjects/", subj)
+    make_subj_video(df_subj, file)
+    i=i+1
+    if(i==1) {
+      df_all <- df_subj
+    } else {
+      df_all <- bind_rows(df_all, df_subj)
+    }
+  }
+  file <- paste0(group, "/", "all_subjects")
+  make_subj_video(df_all, file)
+}
+
+make_subj_video <- function(df_subj, file) {
+  out_folder <- paste0("../../figs/videos/p_true/", file)
+  df <- df_subj %>%
+        group_by(func.type, tpt, subj, r_id) %>%
+        summarize(x_pred=mean(x_pred),
+                           y_pred=mean(y_pred),
+                           x_next=mean(x_next),
+                           y_next=mean(y_next),
+                           prob_true=mean(prob_true),
+                           prob_rand=mean(prob_rand),
+                           prob_lin=mean(prob_lin),
+                           prob_prev=mean(prob_prev)) %>%
+        ungroup() %>%
+        mutate(top_model = apply(select(., prob_true, prob_rand, prob_prev, prob_lin), 1, 
+                                 function(row) c("true", "rand", "prev", "lin")[which.max(row)])) %>%
+        filter(tpt>0)
+  
+  df <- df[order(df$tpt),] %>% filter(func.type != "example_line")
+  
+  unlink(out_folder, recursive=TRUE)
+  dir.create(out_folder)
+  
+  f_plot_func_sbs <- function(f) {
+    df_seq <- subset(df, (df$func.type == f))
+    dir.create(paste(out_folder, f, sep="/"))
+  
+    x_min <- min(min(df_seq$x_next, na.rm=TRUE), min(df_seq$x_pred, na.rm=TRUE))
+    x_max <- max(max(df_seq$x_next, na.rm=TRUE), max(df_seq$x_pred, na.rm=TRUE))
+    y_min <- min(min(df_seq$y_next, na.rm=TRUE), min(df_seq$y_pred, na.rm=TRUE))
+    y_max <- max(max(df_seq$y_next, na.rm=TRUE), max(df_seq$y_pred, na.rm=TRUE))
+    
+    range_x <- (x_max-x_min)
+    range_y <- (y_max-y_min)
+    range_x = range_x
+    range_y = range_y
+    
+    shift_x1<-0
+    shift_y1<-0
+    
+    for (i in (min(df$tpt)+1):max(df$tpt)) {
+      df_tpt <- subset(df_seq, (df_seq$tpt == i))
+      df_hist <- df_seq[order(df_seq$tpt),] %>% filter(tpt<i)
+      
+      df_tpt$top_model <- factor(df_tpt$top_model, levels = c("true", "lin", "prev", "rand"))
+      
+      p <- ggplot() +
+        #prev points and path
+        geom_path(data=df_hist, aes(x=shift_x1+x_next, y=shift_y1+y_next), linewidth=0.25, linetype="dotted") +
+        geom_point(data=df_hist, aes(x=shift_x1+x_next, y=shift_y1+y_next), size=3) +
+        #next true point
+        geom_point(data=df_tpt, aes(x=shift_x1+x_next, y=shift_y1+y_next), color="gold", shape=8, size=4, stroke=2.0) +
+        #first human response
+        geom_point(data=df_tpt, aes(x=shift_x1+x_pred, y=shift_y1+y_pred, color=top_model), shape=20, size=3, stroke=1) +
+
+        scale_color_manual(
+          name = "Model",
+          values = c("true" = "#8BC34A", "lin" = "orange", "prev" = "blue2", "rand" = "purple1"),
+          breaks = c("true", "lin", "prev", "rand"), 
+          limits = c("true", "lin", "prev", "rand")  
+        ) +
+        coord_cartesian(xlim=c(x_min-range_x*.5, x_max+(range_x*.5)), ylim=c(y_min-(range_y*.5), y_max+(range_y*.5))) +
+        theme_void() +
+        theme(panel.background = element_rect(fill = "white"), legend.background = element_rect(fill = "white", color=NA),
+              legend.text=element_text(size=12), legend.title=element_blank(), legend.position = "top")
+              
+      f_name <- paste0(out_folder, "/", f, "/", f, "_n", as.character(i), ".png",sep="")
+      ggsave(f_name, plot=p,width=12,height=6, dpi=500, bg="white")
+    }
+  }
+  
+  for (id in sort(unique(df$func.type))) {
+    f_plot_func_sbs(id)
+  }
+}
 ```

@@ -3,9 +3,11 @@
 .Rhistory
 .Rapp.history 
 analyses/learning_model_comparisons/model_fits/LLs/*.csv
+analyses/learning_model_comparisons/model_fits/
 analyses/learning_model_comparisons/preprocessed_data/*.csv
 analyses/p_true_analyses/stan_fits/
 analyses/p_true_analyses/*.csv
 models/
 human_experiments/
 individual_differences/
+figs/videos/

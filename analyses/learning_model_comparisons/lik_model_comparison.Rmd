@@ -15,6 +15,8 @@ library(tidyr)
 library(ggstar)
 library(patchwork)
 library(ggbeeswarm)
+library(cowplot)
+library(boot)
 
 preprocess_df_human <- function(df) {
   sm <- 1e-10
@@ -110,7 +112,7 @@ preprocess_model <- function(df_model) {
 
 # Each particle assigns some probability mass to each previous point and linear extrapolation
 # Split these into multiple particles, whose probabilities sum to particle probability
-preprocess_model_ss <- function(df_model) {
+preprocess_model_lin_or_prev <- function(df_model) {
   df_model$id <- seq.int(1,nrow(df_model))
   
   prev_pt_df <- df_model %>%
@@ -143,8 +145,8 @@ preprocess_model_ss <- function(df_model) {
         mutate(pred_x = means_x,
                pred_y = means_y) %>%
         group_by(func.name, n, particle) %>%
-        mutate(sd_x = ifelse(is_periodic, sd_periodic, sd_vec),
-               sd_y = ifelse(is_periodic, sd_periodic, sd_vec)) %>%
+        mutate(sd_x = ifelse(is_periodic, sd_periodic_x, sd_vec_x),
+               sd_y = ifelse(is_periodic, sd_periodic_y, sd_vec_y)) %>%
         ungroup() %>%
         rowwise() %>%
         mutate(posterior = posterior * weights) %>%
@@ -341,13 +343,13 @@ get_df_participant_model <- function(df_participant, df_model) {
 write_preprocessed_data <- function() {
   path <- "preprocessed_data/"
   model_paths <- list("lot"=lot_path, "lot_no_recursion"=lot_no_recursion_path, "gpnc_fixed"=gpnc_fixed_path, "gpnc"=gpnc_path, "gpsl"=gpsl_path, "ridge"=ridge_path, "lin"=lin_path, "lot_no_recursion"=lot_no_recursion_path, "lin_prev"=lin_prev_path, "transformer_1"=transformer_1_path,  "transformer_2"=transformer_2_path, "transformer_3"=transformer_3_path, "transformer_4"=transformer_4_path, "transformer_5"=transformer_5_path, "transformer_6"=transformer_6_path, "transformer_8"=transformer_8_path, "transformer_10"=transformer_10_path, "transformer_13"=transformer_13_path)
-  models = c("transformer_1", "transformer_4", "transformer_5", "transformer_6", "transformer_8", "transformer_10")#"transformer_2", "transformer_3", "transformer_13", "lot", "lot_no_recursion", "lin_prev", "gpnc", "gpsl", "ridge", "lin")
-  participants = c('monkey')#'kid_chs', 'adult', #, "kid", "monkey")
+  models = c("lin_prev")#"transformer_1", "transformer_4", "transformer_5", "transformer_6", "transformer_8", "transformer_10")#"transformer_2", "transformer_3", "transformer_13", "lot", "lot_no_recursion", "lin_prev", "gpnc", "gpsl", "ridge", "lin")
+  participants = c('monkey', 'kid_chs', 'adult')#, #, "kid", "monkey")
   for (i in seq_along(models)) {
     model_name <- models[i]
     model_path <- model_paths[[model_name]]
     if (model_name == "lin_prev") {
-      df_model <- preprocess_model_ss(read.csv(model_path))
+      df_model <- preprocess_model_lin_or_prev(read.csv(model_path))
     } else if (model_name %in% c("transformer_1", "transformer_4", "transformer_5", "transformer_6", "transformer_8", "transformer_10", "transformer_2", "transformer_3", "transformer_13")) {
       print("here")
       print(model_path)
@@ -365,8 +367,8 @@ write_preprocessed_data <- function() {
           print("monkeys")
          df_participant <- preprocess_df_monkey(read.csv("../data/participants/monkeys_all.csv"))
       } else if (participants[j] == 'kid_chs') {
-         df_participant <- preprocess_df_human(read.csv("../data/participants/kid_chs.csv")) %>%
-                            filter(!(func.name %in% c("123", "decreasing_y", "radial_increasing")))
+         df_participant <- preprocess_df_human(read.csv("../data/participants/kids_chs.csv")) #%>%
+                            #filter(!(func.name %in% c("123", "decreasing_y", "radial_increasing")))
       }
       print(model_name)
       print(participants[j])
@@ -502,6 +504,31 @@ ggplot(data=cv_diff_summ) +
 
 
 
+```{r}
+fancy_colnames <- function(df) {
+  df <- df %>%
+        mutate(model = ifelse(model=="gpsl", "Comp. GP", model),
+              model = ifelse(model=="gpnc", "GP", model),
+              model = ifelse(model=="lin", "Linear", model),
+              model = ifelse(model=="ridge", "Ridge", model),
+              model = ifelse(model=="lot", "LoT", model),
+              model = ifelse(model=="lin_prev", "Linear + Prev.", model),
+              model = ifelse(model=="lot_no_recursion", "Nonrecursive LoT", model),
+              model = ifelse(model=="transformer_2", "Transformer (2)", model),
+              model = ifelse(model=="transformer_3", "Transformer (3)", model),
+              model = ifelse(model=="transformer_13", "Transformer (13)", model)
+            )  %>%
+            filter(model != "Nonrecursive LoT") %>%
+            filter(!(model %in% c("Transformer (2)", "Transformer (3)", "Transformer (13)")))
+  
+  df$model = factor(df$model, levels = c("LoT",  "Comp. GP", "GP", "Ridge", "Linear + Prev.", "Linear"))#,  "transformer_2", "transformer_3", "transformer_13")), "Nonrecursive LoT"))
+    
+  df$agent = factor(df$agent, levels=c("Monkeys", "3 y/o", "4 y/o", "5 y/o", "6 y/o", "7 y/o", "Adults")) 
+  return(df)
+}
+```
+
+
 ```{r, fig.width=10, fig.height=4}
 
 cv_summ <- read.csv("cross_val_summ.csv") %>%
@@ -896,6 +923,7 @@ cv_monkey_diff <- read.csv("cross_val_summ1.csv") %>%
                 summarize(LL_diff = LL-max_LL,
                           LL=mean(LL))
 ```
+
 ```{r}
 ggplot(data=cv_monkey_diff) +
   stat_summary(
@@ -928,6 +956,10 @@ ggsave("../crossval_monkey_sep.png", width=12, height=5)
 ```
 
 
+
+
+
+
 # Analyze fits
 ```{r}
 read_model_fit_data <- function(participant) {
@@ -949,6 +981,7 @@ df_kid_chs <- read_model_fit_data("kid_chs")  %>%
               mutate(n_func = length(unique(func.name)))
 df_adult <- read_model_fit_data("adult")
 #df_kid <- read_model_fit_data("kid")
+
 df_monkey <- read_model_fit_data("monkey")
 
 ```
@@ -956,27 +989,167 @@ df_monkey <- read_model_fit_data("monkey")
 # Monkey LLs
 ```{r}
 # t-test between models
-df_monkey1 <- df_monkey %>% filter(subj_id=="BP22")
-df_monkey2 <- df_monkey %>% filter(subj_id=="BP24")
+df_monkey1 <- df_monkey %>% filter(n>2) %>% filter(subj_id=="BP22") %>% select(c(func.name, n, r_id, subj_id, model, LL))
+df_monkey2 <- df_monkey %>% filter(n>2) %>% filter(subj_id=="BP24") %>% select(c(func.name, n, r_id, subj_id, model, LL))
+
+tmp <- df_monkey1 %>%
+       filter(!is.na(LL)) %>%
+       pivot_wider(names_from="model", values_from="LL")
+
+t.test(tmp$lin, tmp$lot, paired=T)
+
+ggplot(tmp) +
+  geom_histogram(aes(x=lin-lot), alpha=0.5, fill="purple")# +
+  #geom_histogram(aes(x=lot),alpha=0.5, fill="gold")
+
 
 tmp <- df_monkey2 %>%
        filter(!is.na(LL)) %>%
        pivot_wider(names_from="model", values_from="LL")
 
-t.test(tmp$lin, tmp$lot)
+t.test(tmp$lin_prev, tmp$lot, paired=T)
 
 ggplot(tmp) +
-  geom_histogram(aes(x=lin), alpha=0.5, fill="purple") +
-  geom_histogram(aes(x=lot),alpha=0.5, fill="gold")
+  geom_histogram(aes(x=lin_prev-lot), alpha=0.5, fill="purple") #+
+  #geom_histogram(aes(x=lot),alpha=0.5, fill="gold")
 
 ```
+# Dif by func
 ```{r}
+df_monkey_tmp <- df_monkey %>%
+                mutate(model = ifelse(model=="gpsl", "Comp. GP", model),
+                  model = ifelse(model=="gpnc", "GP", model),
+                  model = ifelse(model=="lin", "Linear", model),
+                  model = ifelse(model=="ridge", "Ridge", model),
+                  model = ifelse(model=="lot", "LoT", model),
+                  model = ifelse(model=="lin_prev", "Linear + Prev.", model),
+                  model = ifelse(model=="lot_no_recursion", "Nonrecursive LoT", model),
+                  model = ifelse(model=="transformer_2", "Transformer (2)", model),
+                  model = ifelse(model=="transformer_3", "Transformer (3)", model),
+                  model = ifelse(model=="transformer_13", "Transformer (13)", model)
+                )  %>%
+                filter(model != "Nonrecursive LoT") %>%
+                filter(!(model %in% c("Transformer (2)", "Transformer (3)", "Transformer (13)")))
+    
+df_monkey_tmp$model = factor(df_monkey_tmp$model, levels = c("LoT",  "Comp. GP", "GP", "Ridge", "Linear + Prev.", "Linear"))#, "Nonrecursive LoT"))# "Transformer (2)", "Transformer (3)", "Transformer (13)")) 
+```
+
+```{r, fig.width=12, fig.height=4}
+df_monkey_tmp <- df_monkey_tmp %>%
+                filter(subj_id=="BP22") %>%
+                group_by(func.name) %>%
+                mutate(lin_mean = ifelse(model=="Linear", LL, NA),
+                       lin_mean = mean(lin_mean, na.rm=T)) %>%
+                ungroup()
+ggplot(data=df_monkey_tmp) +
+  geom_beeswarm(aes(x=model, y=LL, color=model), alpha=0.3) +
+  stat_summary(geom="point", aes(x=model, y=LL), fun="mean", size=0.5) +
+  geom_hline(aes(yintercept=lin_mean), linetype="dotted") +
+  scale_color_brewer(palette = "Set2") +
+  theme_minimal() +
+  theme(axis.text.x=element_blank()) +
+  facet_wrap(~func.name, nrow=3)
+
+```
+
+
+
 # Params
+```{r}
+param_df <- df_kid_chs %>%
+            distinct(subj_id, sd_motor, sd_prev, p_lapse, p_prev, p_rand, model)
+
+ggplot(data=param_df) +
+  geom_histogram(aes(x=p_lapse)) +
+  facet_wrap(~model)
+```
+# Params
+```{r}
 param_df <- df_monkey %>%
             distinct(subj_id, sd_motor, sd_prev, p_lapse, p_prev, p_rand, model)
+
+ggplot(data=param_df) +
+  geom_histogram(aes(x=p_lapse)) +
+  facet_wrap(~model)
 ```
 
 
+# Bootstrapping
+```{r}
+compute_boot_ci <- function(x, conf = 0.95, R = 1000) {
+  b <- boot(x, statistic = function(data, i) mean(data[i]), R = R)
+  ci <- boot.ci(b, type = "perc", conf = conf)
+  tibble(
+    mean = mean(x),
+    lower = ci$percent[4],
+    upper = ci$percent[5]
+  )
+}
+```
+
+# 3 yo only
+```{r}
+summary_df <- df_all %>%
+            filter(agent=="3 y/o") %>%
+            group_by(model, subj_id) %>%
+            summarize(ci = list(compute_boot_ci(LL)), .groups = "drop") %>%
+            unnest(ci)
+```
+
+```{r, fig.width=10, fig.height=4}
+ggplot(summary_df, aes(x = model, y = mean, ymin = lower, ymax = upper, color=model, group=model)) +
+  geom_point() +
+  geom_errorbar() +
+  paper_theme +
+  scale_color_brewer(palette = "Set2") +
+  theme(axis.text.x=element_blank(),
+        axis.title.x=element_blank(),
+        legend.title=element_blank(),
+        strip.text=element_blank()) +
+  facet_wrap(~subj_id, nrow=3)
+```
+
+
+```{r}
+# Precompute per model and subj_id
+summary_df <- df_monkey %>%
+  group_by(model) %>%
+  summarize(ci = list(monkey_boot_ci(LL)), .groups = "drop") %>%
+  unnest(ci)
+
+ggplot(summary_df, aes(x = model, y = mean, ymin = lower, ymax = upper)) +
+  geom_pointrange(position = position_dodge(width = 0.5)) +
+  theme_minimal()
+
+summary_df <- df_monkey %>%
+  group_by(model, subj_id) %>%
+  summarize(ci = list(compute_boot_ci(LL)), .groups = "drop") %>%
+  unnest(ci)
+
+ggplot(summary_df, aes(x = model, y = mean, ymin = lower, ymax = upper, group = subj_id, color=subj_id)) +
+  geom_pointrange(position = position_dodge(width = 0.5)) +
+  theme_minimal()
+```
+
+```{r}
+summary_df <- df_all %>%
+  group_by(model, agent) %>%
+  summarize(ci = list(compute_boot_ci(LL)), .groups = "drop") %>%
+  unnest(ci)
+```
+
+
+```{r}
+ggplot(summary_df, aes(x = model, y = mean, ymin = lower, ymax = upper, color=model, group=model)) +
+  geom_point() +
+  geom_errorbar() +
+  paper_theme +
+  scale_color_brewer(palette = "Set2") +
+  theme(axis.text.x=element_blank(),
+        axis.title.x=element_blank(),
+        legend.title=element_blank()) +
+  facet_wrap(~agent, scales="free")
+```
 
 
 
@@ -996,9 +1169,9 @@ df_all <- df_all %>%
               model = ifelse(model=="transformer_2", "Transformer (2)", model),
               model = ifelse(model=="transformer_3", "Transformer (3)", model),
               model = ifelse(model=="transformer_13", "Transformer (13)", model)
-            ) %>%
-            filter(model != "Nonrecursive LoT")# %>%
-            #filter(!(model %in% c("transformer_2", "transformer_3", "transformer_13")))
+            )  %>%
+            filter(model != "Nonrecursive LoT") %>%
+            filter(!(model %in% c("Transformer (2)", "Transformer (3)", "Transformer (13)")))
 
 
 df_all <- df_all %>% mutate(subj_func = paste0(subj_id, func.name))
@@ -1006,7 +1179,7 @@ subj_func_list <- unique((df_all %>% filter(model=="GP"))$subj_func)
 df_all <- df_all %>% filter(subj_func %in% subj_func_list)
 
 
-df_all$model = factor(df_all$model, levels = c("LoT",  "Comp. GP", "GP", "Ridge", "Linear + Prev.", "Linear",  "Transformer (2)", "Transformer (3)", "Transformer (13)")) #"Nonrecursive LoT", s
+df_all$model = factor(df_all$model, levels = c("LoT",  "Comp. GP", "GP", "Ridge", "Linear + Prev.", "Linear"))#, "Nonrecursive LoT"))# "Transformer (2)", "Transformer (3)", "Transformer (13)")) 
 
 df_all$agent = factor(df_all$agent, levels=c("Monkeys", "3 y/o", "4 y/o", "5 y/o", "6 y/o", "7 y/o", "Adults")) 
 # LL by model by subj, mean across functions
@@ -1039,6 +1212,8 @@ df_top <- df_all %>%
 
 
 ```
+
+
 
 # Exploratory analyses
 ```{r, fig.width=10, fig.height=4}
@@ -1176,12 +1351,21 @@ df_LL <- df_all %>%
 
 
 df_LL$agent <- factor(df_LL$agent, levels=c("Monkeys", "3 y/o", "4 y/o", "5 y/o", "6 y/o", "7 y/o", "Adults"))
-p2 <- ggplot(data=df_LL) +
-  geom_boxplot(aes(x=agent, y=LL, fill=model), outliers=F) +
+
+df_all2 <- df_all %>% 
+           group_by(func.name, n, subj_id, r_id) %>%
+           mutate(max_LL = max(LL)) %>%
+           group_by(func.name, n, subj_id, r_id, model) %>%
+           mutate(LL_diff = LL-max_LL)
+
+# or baseline
+p2 <- ggplot(data=df_all2) +
+  geom_boxplot(aes(x=agent, y=LL_diff, fill=model), outliers=F) +
   #geom_point(aes(x=model, y=LL, color=model), alpha=1) +
   #geom_line(aes(x=model, y=LL, group=subj_id), alpha=0.5) +
   scale_fill_brewer(palette = "Set2") +
-  ylab("Log likelihood") +
+  #ylab("Log likelihood") +
+  ylab("LL - LL_{best}")
   paper_theme + 
   theme(
     axis.title.x = element_blank(),
@@ -1376,7 +1560,6 @@ plot_tpt <- function(df_model_path, df_model_points, df_true) {
 
         paper_theme +
         theme(legend.title=element_blank(),
-              strip.background=element_blank(),
               axis.title.x = element_blank(),
               axis.title.y = element_blank(),
               axis.text.x = element_blank(),
@@ -1426,18 +1609,15 @@ df_model_path$func.name = factor(df_model_path$func.name, levels=seq_levels)
 p1 <- plot_tpt(df_model_path, df_model_points, df_true)
 p1
 ```
-
+# Combine plots
 ```{r}
-
-legend <- cowplot::get_legend(
-              p3 + guides(fill = guide_legend(nrow = 3)) + theme(legend.position = "right",
-                                                                 legend.title = element_blank(),
-                                                                 legend.text = element_text(
-                                                                  size = 14,
-                                                                  margin = margin(r = 15, l=5))
-                                                                 ))
-          
-
+legend <- cowplot::get_legend(p3 +
+                              guides(fill = guide_legend(nrow = 3)) +
+                              theme(legend.position = "right",
+                                    legend.title = element_blank(),
+                                    legend.text = element_text(
+                                    size = 14,
+                                    margin = margin(r = 15, l=5))))
 # Make title grobs
 title_a <- ggdraw() + 
   draw_label("A) Example model predictions", fontfamily = "Georgia", size = 24, hjust = -0.1, x = 0)
@@ -1485,7 +1665,49 @@ final_plot
 
 ggsave("../model_combined.png", bg="white", width=15, height=7)
 ```
+# Supplementary plots
+```{r}
+legend <- cowplot::get_legend(p3 +
+                              guides(fill = guide_legend(nrow = 3)) +
+                              theme(legend.position = "right",
+                                    legend.title = element_blank(),
+                                    legend.text = element_text(
+                                    size = 14,
+                                    margin = margin(r = 15, l=5))))
+title_b <- ggdraw() + 
+  draw_label("A) Model log likelihoods", fontfamily = "Georgia", size = 24, hjust = 0, x = 0)
 
+# Combine title B and legend
+title_and_legend <- plot_grid(
+  title_b, 
+  ggdraw(legend), 
+  nrow = 1, 
+  rel_widths = c(1, 1),
+  align = "v"
+)
+
+# Combine both top titles in a single row
+top <- title_and_legend
+
+# Plots without titles
+p2_nolabel <- p2 + theme(plot.title = element_blank(), axis.title.y=element_text(margin=margin(r=10))) + guides(fill="none")
+p3_nolabel <- p3 + ggtitle("B) Best fitting models") + theme(plot.title = element_text(size = 24, family="Georgia",  hjust = -0.125, margin=margin(b=25))) + guides(fill="none")
+
+# Final layout: top row of titles, then grid of plots
+bottom <- plot_grid(p2_nolabel, p3_nolabel, ncol = 1, rel_heights=c(1,1.2))
+
+
+final_plot <- plot_grid(
+  top,
+  bottom,
+  ncol = 1,
+  rel_heights = c(0.15, 1)  # adjust as needed
+)
+
+final_plot
+
+ggsave("../model_combined_nonrecursive.png", bg="white", width=10, height=7)
+```
 
 
 ```{r}
@@ -1596,6 +1818,7 @@ write_preprocessed_data_monkey_training()
 
 ```
 
+
 ```{r}
 # tmp <- read.csv(paste0("../data/models/monkey_training/context_len_5.csv")) %>% filter(mode=="test")
 # unique(tmp$func_id)
@@ -1646,6 +1869,25 @@ ll_monkey_all <- bind_rows(ll_monkey_train %>% mutate(mode="train"),
 
 ```
 
+
+```{r}
+
+ll_monkey_train <- data.frame()
+for (i in c(1,2,3,4,5,6,8,10,13)) {
+  file <- paste0("model_fits/monkey_training_no_model_std/transformer_", i, "_monkey.csv")
+  ll_monkey_train <- bind_rows(ll_monkey_train, read.csv(file)%>%mutate(context_len = i))
+}
+# ll_monkey_test <- data.frame()
+# for (i in c(1,2,3,4,5,6,8,10,13)) {
+#   file <- paste0("model_fits/transformer_", i, "_monkey.csv")
+#   ll_monkey_test <- bind_rows(ll_monkey_test, read.csv(file)%>%mutate(context_len = i))
+# }
+
+ll_monkey_all <- bind_rows(ll_monkey_train %>% mutate(mode="train"),
+                            ll_monkey_test %>% mutate(mode="test"))
+
+```
+
 ```{r}
 # mean LL by context len
 ll_monkey_summ <- ll_monkey_all %>%
@@ -1682,6 +1924,12 @@ ggplot(data=ll_monkey_summ) +
 
 ggsave("../monkey_ll_train_test.png", width=4.5, height=5)
 ```
+
+```{r}
+tmp <- ll_monkey_train %>%
+       distinct(subj_id, context_len, sd_motor, sd_prev, p_lapse)
+```
+
 
 ```{r}
 # mean LL by context len
