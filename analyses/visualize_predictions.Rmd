@@ -195,32 +195,12 @@ df_gpnc <- preprocess_df_model(read.csv('data/models/gpnc.csv'))
 df_gpsl <- preprocess_df_model(read.csv('data/models/gpsl.csv'))
 df_ridge <- preprocess_df_model(read.csv('data/models/ridge.csv'))
 df_lot <- preprocess_df_model(read.csv('data/models/lot.csv'))
-<<<<<<< HEAD
 df_lin <- preprocess_df_model(read.csv('data/models/linear.csv'))
-
-
-#df_noisy_repeat <- preprocess_df_model(read.csv('data/models/noisy_model_variants/noisy_repeat.csv'))
-df_noisy_idx <- preprocess_df_model(read.csv('data/models/noisy_model_variants/noisy_idx.csv'))
-df_noisy_op_order <- preprocess_df_model(read.csv('data/models/noisy_model_variants/noisy_op_order.csv'))
-df_lot_plus_noise <- preprocess_df_model(read.csv('data/models/noisy_model_variants/lot_plus_noise.csv'))
-df_true_plus_noise <- preprocess_df_model(read.csv('data/models/noisy_model_variants/true_plus_noise.csv'))
-df_true_plus_noise <- preprocess_df_model(read.csv('data/models/noisy_model_variants/true_plus_noise.csv'))
-```
-
-```{r}
-df_lot_rec <- preprocess_df_model(read.csv('../models/LoT/rec_stim_output_y_2/lot_all.csv'))
-```
-
-```{r}
-df_lot <- preprocess_df_model(read.csv('data/models/lot.csv'))
-df_ss <- preprocess_df_model(read.csv('data/models/lin_prev.csv'))
-=======
->>>>>>> f51a886 (reorganization)
 df_lot_no_recursion <- preprocess_df_model(read.csv('data/models/lot_no_recursion.csv'))
-df_lin <- preprocess_df_model(read.csv('data/models/linear.csv'))
 df_lin_prev <- preprocess_df_model_lin_prev(read.csv('data/models/lin_or_prev.csv'))
                
 ```
+
 ```{r}
 df_transformer_2 <- preprocess_df_model_transformer(read.csv('data/models/transformer_2.csv'))
 df_transformer_3 <- preprocess_df_model_transformer(read.csv('data/models/transformer_3.csv'))
@@ -347,77 +327,11 @@ for (i in (1:length(model_list))) {
 }
 ```
 
-# Test
-```{r}
-df_model <- df_transformer_2
-i = 10
-funcname = "3_pts"
-df_seq <- subset(df_participant, (df_participant$func.type == funcname))
-dir.create(paste0(out_folder, "/", funcname))
 
-x_min <- min(min(df_seq$x_next, na.rm=TRUE), min(df_seq$x_pred, na.rm=TRUE))
-x_max <- max(max(df_seq$x_next, na.rm=TRUE), max(df_seq$x_pred, na.rm=TRUE))
-y_min <- min(min(df_seq$y_next, na.rm=TRUE), min(df_seq$y_pred, na.rm=TRUE))
-y_max <- max(max(df_seq$y_next, na.rm=TRUE), max(df_seq$y_pred, na.rm=TRUE))
-
-range_x <- (x_max-x_min)
-range_y <- (y_max-y_min)
-
-
-df_tpt <- subset(df_seq, (df_seq$tpt == i))
-df_hist <- df_seq[order(df_seq$tpt),] %>% filter(tpt<i)
-    
-p1 <- ggplot() +
-      # prev points and path
-      geom_path(data=df_hist, aes(x=x_next, y=y_next), linewidth=0.25, linetype="dotted") +
-      geom_point(data=df_hist%>%filter(tpt==max(tpt)), aes(x=x_next, y=y_next, color="agent1"), size=1) +
-      geom_point(data=df_hist%>%filter(tpt==max(tpt)), aes(x=x_next, y=y_next, color="agent2"), size=1) +
-      geom_point(data=df_hist, aes(x=x_next, y=y_next), size=3) +
-      # formatting
-      scale_color_manual(labels = c("agent1"=agent1, "agent2"=agent2),
-                        values=c("agent1"="maroon", "agent2"="#516797"),
-                        breaks = c("agent1", "agent2")) +
-      coord_equal(xlim=c(x_min-range_x*.2, x_min+(range_x*1.2)),
-                      ylim=c(y_min-(range_y*.2), y_min+(range_y*1.2))) +
-      theme_void() +
-      theme(panel.background = element_rect(fill = "white"),
-            #legend.background = element_rect(fill = "white", color=NA),
-            legend.text=element_text(size=18, margin = margin(r = 20, l=10)),
-            legend.title=element_blank(),
-            legend.spacing.y = unit(2, "lines"),
-            legend.position = "top") +
-      guides(alpha="none",
-             size="none",
-             fill="none",
-             color = guide_legend(override.aes = list(size = 5)))
-    
-p2 <- p1 +
-        # next true point
-        geom_point(data=df_tpt, aes(x=x_next, y=y_next), color="gold", shape=8, size=4, stroke=2.0)
-      
-df_model_tpt <- df_model %>%
-                filter(tpt==i) %>%
-                filter(func.type==funcname) %>%
-                group_by(x_pred, y_pred) %>%
-                summarize(posterior=sum(posterior))
-
-p3 <- p2 +
-        # model predictions
-        geom_point(data=df_model_tpt,
-                   aes(x=x_pred, y=y_pred, alpha=posterior, color="agent2"),
-                   size=3, stroke=1) +
-        # participant predictions
-        geom_point(data=df_tpt, aes(x=x_pred, y=y_pred, color="agent1"), size=2, stroke=1, alpha=0.7)
-
-p3
-```
-
-
-
-# grid-ify model probs
+# Videos with model probability density
 ```{r}
 gaussian_2d <- function(x_min, x_max, y_min, y_max, mu_x, mu_y, sd_x, sd_y) {
-  return ((pnorm(x_max - mu_x, 0, sd_x) - pnorm(x_min-mu_x, 0, sd_x)) * (pnorm(y_max - mu_y, 0, sd_y) - pnorm(y_min-mu_y, 0, sd_y)))
+  return ((pnorm(abs(x_max - mu_x), 0, sd_x) - pnorm(abs(x_min-mu_x), 0, sd_x)) * (pnorm(abs(y_max - mu_y), 0, sd_y) - pnorm(abs(y_min-mu_y), 0, sd_y)))
   #return((pnorm(x_max, mu_x, sd_x) - pnorm(x_min, mu_x, sd_x)) * (pnorm(y_max, mu_y, sd_y) - pnorm(y_min, mu_y, sd_y)))
 }
 
@@ -447,7 +361,7 @@ make_func_vid <- function(funcname) {
           geom_point(data=df_hist, aes(x=x_next, y=y_next), size=3) +
           # formatting
           scale_color_manual(labels = c("agent1"=agent1, "agent2"=agent2),
-                            values=c("agent1"="maroon", "agent2"="green"),
+                            values=c("agent1"="maroon", "agent2"="#3ebdb4"),
                             breaks = c("agent1", "agent2")) +
           coord_equal(xlim=c(x_min-range_x*.25, x_min+(range_x*1.25)),
                           ylim=c(y_min-(range_y*.25), y_min+(range_y*1.25))) +
@@ -468,8 +382,8 @@ make_func_vid <- function(funcname) {
 
     df_model_tpt <- df_model %>% filter(tpt==i) %>% filter(func.type==funcname)
     # cell edges
-    x_edges <- seq(x_min - (range_x * 0.25), x_min + (range_x * 1.25), length.out = 150)
-    y_edges <- seq(y_min - (range_y * 0.25), y_min + (range_y * 1.25), length.out = 100)
+    x_edges <- seq(x_min - (range_x * 0.25), x_min + (range_x * 1.25), length.out = 200)
+    y_edges <- seq(y_min - (range_y * 0.25), y_min + (range_y * 1.25), length.out = 200*(range_y/range_x))
     # cell bounds
     x_mins <- head(x_edges, -1)
     x_maxs <- tail(x_edges, -1)
@@ -500,14 +414,14 @@ make_func_vid <- function(funcname) {
     
     density_vec <- rowSums(density_arr)
     grid$d <- density_vec
-    grid <- grid %>% filter(d != 0)
+    #grid <- grid %>% filter(d != 0)
     
     if (i<3) {
       p_list <- list(p1, p2)
     } else {
       p3 <- p2 +
             # model predictions
-            geom_tile(data=grid, aes(x = x_center, y = y_center, alpha=log(d)), fill="green") +
+            geom_tile(data=grid, aes(x = x_center, y = y_center, alpha=log(d)), fill="#3ebdb4") +
             # participant predictions
             geom_point(data=df_tpt, aes(x=x_pred, y=y_pred, color="agent1"), size=1.5, stroke=1, alpha=0.7)
       
@@ -546,327 +460,6 @@ for (i in (1:length(model_list))) {
   }
 }
 ```
-
-```{r}
-gaussian_2d <- function(x_min, x_max, y_min, y_max, mu_x, mu_y, sd_x, sd_y) {
-  return ((pnorm(x_max - mu_x, 0, sd_x) - pnorm(x_min-mu_x, 0, sd_x)) * (pnorm(y_max - mu_y, 0, sd_y) - pnorm(y_min-mu_y, 0, sd_y)))
-}
-
-funcname = "123"
-df_seq <- subset(df_participant, (df_participant$func.type == funcname))
-dir.create(paste0(out_folder, "/", funcname))
-
-x_min <- min(min(df_seq$x_next, na.rm=TRUE), min(df_seq$x_pred, na.rm=TRUE))
-x_max <- max(max(df_seq$x_next, na.rm=TRUE), max(df_seq$x_pred, na.rm=TRUE))
-y_min <- min(min(df_seq$y_next, na.rm=TRUE), min(df_seq$y_pred, na.rm=TRUE))
-y_max <- max(max(df_seq$y_next, na.rm=TRUE), max(df_seq$y_pred, na.rm=TRUE))
-
-range_x <- (x_max-x_min)
-range_y <- (y_max-y_min)
-
-frame_num <- 0
-
-i = 3
-  
-    df_tpt <- subset(df_seq, (df_seq$tpt == i))
-    df_hist <- df_seq[order(df_seq$tpt),] %>% filter(tpt<i)
-    
-    p1 <- ggplot() +
-          # prev points and path
-          geom_path(data=df_hist, aes(x=x_next, y=y_next), linewidth=0.25, linetype="dotted") +
-          geom_point(data=df_hist%>%filter(tpt==max(tpt)), aes(x=x_next, y=y_next, color="agent1"), size=1) +
-          geom_point(data=df_hist%>%filter(tpt==max(tpt)), aes(x=x_next, y=y_next, color="agent2"), size=1) +
-          geom_point(data=df_hist, aes(x=x_next, y=y_next), size=3) +
-          # formatting
-          scale_color_manual(labels = c("agent1"=agent1, "agent2"=agent2),
-                            values=c("agent1"="maroon", "agent2"="green"),
-                            breaks = c("agent1", "agent2")) +
-          coord_equal(xlim=c(x_min-range_x*.25, x_min+(range_x*1.25)),
-                          ylim=c(y_min-(range_y*.25), y_min+(range_y*1.25))) +
-          theme_void() +
-          theme(panel.background = element_rect(fill = "white"),
-                legend.text=element_text(size=18, margin = margin(r = 20, l=10)),
-                legend.title=element_blank(),
-                legend.spacing.y = unit(2, "lines"),
-                legend.position = "top") +
-          guides(alpha="none",
-                 size="none",
-                 fill="none",
-                 color = guide_legend(override.aes = list(size = 5)))
-    
-    p2 <- p1 +
-            # next true point
-            geom_point(data=df_tpt, aes(x=x_next, y=y_next), color="gold", shape=8, size=3, stroke=1.5)
-
-    df_model_tpt <- df_model %>% filter(tpt==i) %>% filter(func.type==funcname)
-    
-    # cell edges
-    x_edges <- seq(x_min - (range_x * 0.25), x_min + (range_x * 1.25), length.out = 150)
-    y_edges <- seq(y_min - (range_y * 0.25), y_min + (range_y * 1.25), length.out = 100)
-    # cell bounds
-    x_mins <- head(x_edges, -1)
-    x_maxs <- tail(x_edges, -1)
-    y_mins <- head(y_edges, -1)
-    y_maxs <- tail(y_edges, -1)
-    # grid
-    grid <- expand.grid(x_idx = seq_along(x_mins), y_idx = seq_along(y_mins))
-    grid$x_min <- x_mins[grid$x_idx]
-    grid$x_max <- x_maxs[grid$x_idx]
-    grid$y_min <- y_mins[grid$y_idx]
-    grid$y_max <- y_maxs[grid$y_idx]
-    grid$x_center <- (grid$x_min + grid$x_max) / 2
-    grid$y_center <- (grid$y_min + grid$y_max) / 2
-    
-    # particles x grid idxs
-    density_arr <- sapply(1:nrow(df_model_tpt), function(i) {
-      df_model_tpt$posterior[i] * gaussian_2d(
-        x_min = grid$x_min,
-        x_max = grid$x_max,
-        y_min = grid$y_min,
-        y_max = grid$y_max,
-        mu_x = df_model_tpt$x_pred[i],
-        mu_y = df_model_tpt$y_pred[i],
-        sd_x = df_model_tpt$sd_x[i],
-        sd_y = df_model_tpt$sd_y[i]
-      )
-    })
-    
-    density_vec <- rowSums(density_arr)
-    grid$d <- density_vec
-    grid <- grid %>% filter(d > 1e-10)
-
-p2 +
-    # model predictions
-    geom_point(data=df_model_tpt, aes(x=x_pred, y=y_pred), color="blue") +
-
-    geom_tile(data=grid, aes(x = x_center, y = y_center, alpha=log(d)), fill="green")
-    # participant predictions
-    #geom_point(data=df_tpt, aes(x=x_pred, y=y_pred, color="agent1"), size=1.5, stroke=1, alpha=0.7)
-      
-```
-
-
-```{r}
-# there's something weird going on
-# why is prob only left and below particles
-gaussian_2d <- function(x_min, x_max, y_min, y_max, mu_x, mu_y, sd_x, sd_y) {
-  return((pnorm(x_max, mu_x, sd_x) - pnorm(x_min, mu_x, sd_x)) *
-         (pnorm(y_max, mu_y, sd_y) - pnorm(y_min, mu_y, sd_y)))
-}
-
-
-funcname = "123"
-df_participant <- df_kid_chs %>% filter(age==3)
-df_model <- df_lot#lin_prev
-df_seq <- subset(df_participant, (df_participant$func.type == funcname))
-#dir.create(paste0(out_folder, "/", funcname))
-
-x_min <- min(min(df_seq$x_next, na.rm=TRUE), min(df_seq$x_pred, na.rm=TRUE))
-x_max <- max(max(df_seq$x_next, na.rm=TRUE), max(df_seq$x_pred, na.rm=TRUE))
-y_min <- min(min(df_seq$y_next, na.rm=TRUE), min(df_seq$y_pred, na.rm=TRUE))
-y_max <- max(max(df_seq$y_next, na.rm=TRUE), max(df_seq$y_pred, na.rm=TRUE))
-
-range_x <- (x_max-x_min)
-range_y <- (y_max-y_min)
-
-i=10
-
-df_tpt <- subset(df_seq, (df_seq$tpt == i))
-df_hist <- df_seq[order(df_seq$tpt),] %>% filter(tpt<i)
-    
-p1 <- ggplot() +
-      # prev points and path
-      #geom_path(data=df_hist, aes(x=x_next, y=y_next), linewidth=0.25, linetype="dotted") +
-      #geom_point(data=df_hist%>%filter(tpt==max(tpt)), aes(x=x_next, y=y_next, color="agent1"), size=1) +
-      #geom_point(data=df_hist%>%filter(tpt==max(tpt)), aes(x=x_next, y=y_next, color="agent2"), size=1) +
-      #geom_point(data=df_hist, aes(x=x_next, y=y_next), size=3) +
-      # formatting
-      scale_color_manual(labels = c("agent1"=agent1, "agent2"=agent2),
-                        values=c("agent1"="maroon", "agent2"="#516797"),
-                        breaks = c("agent1", "agent2")) +
-      coord_equal(xlim=c(x_min-range_x*.25, x_min+(range_x*1.25)),
-                      ylim=c(y_min-(range_y*.25), y_min+(range_y*1.25))) +
-      theme_void() +
-      theme(panel.background = element_rect(fill = "white"),
-            legend.text=element_text(size=18, margin = margin(r = 20, l=10)),
-            legend.title=element_blank(),
-            legend.spacing.y = unit(2, "lines"),
-            legend.position = "top") +
-      guides(alpha="none",
-             size="none",
-             fill="none",
-             color = guide_legend(override.aes = list(size = 5)))
-    
-p2 <- p1 #+
-        # next true point
-        #geom_point(data=df_tpt, aes(x=x_next, y=y_next), color="gold", shape=8, size=4, stroke=2.0)
-
-df_model_tpt <- df_model %>% filter(tpt==i) %>% filter(func.type==funcname)
-
-# cell edges
-x_edges <- seq(x_min - (range_x * 0.25), x_min + (range_x * 1.55), length.out = 100)
-y_edges <- seq(y_min - (range_y * 0.25), y_min + (range_y * 1.25), length.out = 100)
-# cell bounds
-x_mins <- head(x_edges, -1)
-x_maxs <- tail(x_edges, -1)
-y_mins <- head(y_edges, -1)
-y_maxs <- tail(y_edges, -1)
-# grid
-grid <- expand.grid(x_idx = seq_along(x_mins), y_idx = seq_along(y_mins))
-grid$x_min <- x_mins[grid$x_idx]
-grid$x_max <- x_maxs[grid$x_idx]
-grid$y_min <- y_mins[grid$y_idx]
-grid$y_max <- y_maxs[grid$y_idx]
-grid$x_center <- (grid$x_min + grid$x_max) / 2
-grid$y_center <- (grid$y_min + grid$y_max) / 2
-
-df_model_tpt <- df_model_tpt %>%
-                mutate(posterior = posterior+1000,
-                       posterior = posterior/sum(posterior)) %>%
-                mutate(sd_x=0.1,
-                       sd_y=0.1)
-
-
-ggplot() +
-        geom_rect(data=grid, aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max), linewidth=0.2, color="black", fill="white") +
-      #geom_point(data=df_model_tpt, aes(x=x_pred, y=y_pred), color="blue", size=.5, stroke=1) +
-      #geom_errorbar(data=df_model_tpt, aes(xmin=x_pred-sd_x, xmax=x_pred+sd_x, y=y_pred), width=0, color="blue") +
-      #geom_errorbar(data=df_model_tpt, aes(ymin=y_pred-sd_y, ymax=y_pred+sd_y, x=x_pred), width=0, color="blue") +
-      # model predictions
-      #geom_vline(xintercept=x_max) +
-      geom_rect(data=grid, aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max, alpha=d), fill="green") #+
-      #scale_fill_gradient(low = scales::alpha("green", 0), high = "green") +
-      # participant predictions
-      #geom_point(data=df_model_tpt, aes(x=x_pred, y=y_pred, color="agent2"), size=0.5, stroke=1, alpha=0.7)
-      #geom_point(data=df_tpt, aes(x=x_pred, y=y_pred, color="agent1"), size=1.5, stroke=1, alpha=0.7)
-
-  
-```
-
-
-
-
-```{r}
-gaussian_2d <- function(x_min, x_max, y_min, y_max, mu_x, mu_y, sd_x, sd_y) {
-  return((pnorm(x_max, mu_x, sd_x) - pnorm(x_min, mu_x, sd_x)) *
-         (pnorm(y_max, mu_y, sd_y) - pnorm(y_min, mu_y, sd_y)))
-}
-
-df_model_tpt <- data.frame(x_pred = c(1),#,2,3),
-                           y_pred = c(1)#,2,3)
-                           )
-df_model_tpt$sd_x = 0.2
-df_model_tpt$sd_y = 0.2
-df_model_tpt$posterior = 1/3
-
-# cell edges
-x_edges <- seq(-20, 20, length.out = 100)
-y_edges <- seq(-20, 20, length.out = 100)
-# cell bounds
-x_mins <- head(x_edges, -1)
-x_maxs <- tail(x_edges, -1)
-y_mins <- head(y_edges, -1)
-y_maxs <- tail(y_edges, -1)
-# grid
-grid <- expand.grid(x_idx = seq_along(x_mins), y_idx = seq_along(y_mins))
-grid$x_min <- x_mins[grid$x_idx]
-grid$x_max <- x_maxs[grid$x_idx]
-grid$y_min <- y_mins[grid$y_idx]
-grid$y_max <- y_maxs[grid$y_idx]
-grid$x_center <- (grid$x_min + grid$x_max) / 2
-grid$y_center <- (grid$y_min + grid$y_max) / 2
-
-grid <- grid %>%
-        rowwise() %>%
-        mutate(d = (pnorm(x_max, 0, 0.1, lower.tail=FALSE) - pnorm(x_min, 0, 0.1, lower.tail=FALSE)) * (pnorm(y_max, 0, 0.1, lower.tail=FALSE) - pnorm(y_min, 0, 0.1, lower.tail=FALSE)))
-
-# particles x grid idxs
-# density_arr <- sapply(1:nrow(df_model_tpt), function(i) {
-#   df_model_tpt$posterior[i] * gaussian_2d(
-#     x_min = grid$x_min,
-#     x_max = grid$x_max,
-#     y_min = grid$y_min,
-#     y_max = grid$y_max,
-#     mu_x = df_model_tpt$x_pred[i],
-#     mu_y = df_model_tpt$y_pred[i],
-#     sd_x = df_model_tpt$sd_x[i],
-#     sd_y = df_model_tpt$sd_y[i]
-#   )
-# })
-# 
-# density_vec <- rowSums(density_arr)
-# grid$d <- density_vec 
-grid <- grid %>%
-        filter(d != 0)
-
-
-
-p3 <- ggplot() +
-        geom_rect(data=grid, aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max), linewidth=0.2, color="black", fill="white") +
-      #geom_point(data=df_model_tpt, aes(x=x_pred, y=y_pred), color="blue", size=.5, stroke=1) +
-      #geom_errorbar(data=df_model_tpt, aes(xmin=x_pred-sd_x, xmax=x_pred+sd_x, y=y_pred), width=0, color="blue") +
-      #geom_errorbar(data=df_model_tpt, aes(ymin=y_pred-sd_y, ymax=y_pred+sd_y, x=x_pred), width=0, color="blue") +
-      # model predictions
-      #geom_vline(xintercept=x_max) +
-      geom_rect(data=grid, aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max, alpha=d), fill="green") #+
-      #scale_fill_gradient(low = scales::alpha("green", 0), high = "green") +
-      # participant predictions
-      #geom_point(data=df_model_tpt, aes(x=x_pred, y=y_pred, color="agent2"), size=0.5, stroke=1, alpha=0.7)
-      #geom_point(data=df_tpt, aes(x=x_pred, y=y_pred, color="agent1"), size=1.5, stroke=1, alpha=0.7)
-
-  
-p3    
-print(sort(density_vec, decreasing=T))
-```
-```{r}
-
-# cell edges
-x_edges <- seq(-20, 20, length.out = 100)
-y_edges <- seq(-1, 1, length.out = 2)
-# cell bounds
-x_mins <- head(x_edges, -1)
-x_maxs <- tail(x_edges, -1)
-y_mins <- head(y_edges, -1)
-y_maxs <- tail(y_edges, -1)
-# grid
-grid <- expand.grid(x_idx = seq_along(x_mins), y_idx = seq_along(y_mins))
-grid$x_min <- x_mins[grid$x_idx]
-grid$x_max <- x_maxs[grid$x_idx]
-grid$y_min <- y_mins[grid$y_idx]
-grid$y_max <- y_maxs[grid$y_idx]
-grid$x_center <- (grid$x_min + grid$x_max) / 2
-grid$y_center <- (grid$y_min + grid$y_max) / 2
-
-grid <- grid %>%
-        rowwise() %>%
-        mutate(d= (pnorm(x_max, 0,4) - pnorm(x_min, 0,4)))
-        #mutate(d = (pnorm(x_max, 0, 0.1) - pnorm(x_min, 0, 0.1)) * (pnorm(y_max, 0, 0.1) - pnorm(y_min, 0, 0.1)))
-
-grid <- grid #%>%
-        #mutate(d = d / max(d))
-        #filter(d != 0) 
-
-
-ggplot() +
-        geom_rect(data=grid, aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max),
-                  linewidth=0.2, color="black", fill="white") +
-        geom_rect(data=grid, aes(xmin = x_min, xmax = x_max, ymin = y_min, ymax = y_max, alpha=d), fill="green") #+
-
-```
-
-
-
-```{r}
-ggplot() +
-  geom_raster(data=grid, aes(x = x, y = y, fill=d), interpolate = TRUE) +
-  scale_fill_gradient(low="white", high="#516797") +
-  coord_equal() +
-  theme_minimal() +
-  labs(fill = "Density") #+
-  #geom_point(data = df_model_tpt, aes(x = x_pred, y = y_pred), color = "white", size = 2)
-
-```
-
 
 
 # Faceted by subj
