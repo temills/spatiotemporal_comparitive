@@ -354,8 +354,8 @@ def loo_crossval_results():
 
 def run_all():
     pairs = []
-    for participant_name in ["monkey", "kid_chs", "adult"]:#"adult", "kid_chs", ]:#["kid_chs", "monkey"]:
-        for model_name in ["lin_prev"]:#"lot", "gpnc", "gpsl", "ridge", "lin", "lin_prev"]:#"transformer_1", "transformer_4", "transformer_5", "transformer_6", "transformer_8", "transformer_10"]:#["transformer_2", "transformer_3", "transformer_13"]:#, "lot", "lot_no_recursion", "gpnc", "gpsl", "ridge", "lin", "lin_prev"]:
+    for participant_name in ["kid_chs"]: #,"monkey",  "adult"]
+        for model_name in ["lot", "gpnc", "gpsl", "ridge", "lin", "lin_prev", "transformer_1", "transformer_4", "transformer_5", "transformer_6", "transformer_8", "transformer_10", "transformer_2", "transformer_3", "transformer_13", "lot_no_recursion"]:
             pairs.append((participant_name, model_name))
     i=0
     for (participant_name, model_name) in pairs:

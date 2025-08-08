@@ -256,6 +256,7 @@ gpnc_fixed_path <- '../data/models/gpnc_fixed.csv'
 gpsl_path <- '../data/models/gpsl.csv'
 ridge_path <- '../data/models/ridge.csv'
 lin_path <- '../data/models/linear.csv'
+lin_1_path <- '../data/models/linear_1.csv'
 lin_prev_path <- '../data/models/lin_or_prev.csv'
 transformer_1_path <- '../data/models/transformer_1.csv'
 transformer_2_path <- '../data/models/transformer_2.csv'
@@ -342,9 +343,9 @@ get_df_participant_model <- function(df_participant, df_model) {
 
 write_preprocessed_data <- function() {
   path <- "preprocessed_data/"
-  model_paths <- list("lot"=lot_path, "lot_no_recursion"=lot_no_recursion_path, "gpnc_fixed"=gpnc_fixed_path, "gpnc"=gpnc_path, "gpsl"=gpsl_path, "ridge"=ridge_path, "lin"=lin_path, "lot_no_recursion"=lot_no_recursion_path, "lin_prev"=lin_prev_path, "transformer_1"=transformer_1_path,  "transformer_2"=transformer_2_path, "transformer_3"=transformer_3_path, "transformer_4"=transformer_4_path, "transformer_5"=transformer_5_path, "transformer_6"=transformer_6_path, "transformer_8"=transformer_8_path, "transformer_10"=transformer_10_path, "transformer_13"=transformer_13_path)
-  models = c("lin_prev")#"transformer_1", "transformer_4", "transformer_5", "transformer_6", "transformer_8", "transformer_10")#"transformer_2", "transformer_3", "transformer_13", "lot", "lot_no_recursion", "lin_prev", "gpnc", "gpsl", "ridge", "lin")
-  participants = c('monkey', 'kid_chs', 'adult')#, #, "kid", "monkey")
+  model_paths <- list("lot"=lot_path, "lot_no_recursion"=lot_no_recursion_path, "gpnc_fixed"=gpnc_fixed_path, "gpnc"=gpnc_path, "gpsl"=gpsl_path, "ridge"=ridge_path, "lin"=lin_path, "lin_1"=lin_1_path, "lot_no_recursion"=lot_no_recursion_path, "lin_prev"=lin_prev_path, "transformer_1"=transformer_1_path,  "transformer_2"=transformer_2_path, "transformer_3"=transformer_3_path, "transformer_4"=transformer_4_path, "transformer_5"=transformer_5_path, "transformer_6"=transformer_6_path, "transformer_8"=transformer_8_path, "transformer_10"=transformer_10_path, "transformer_13"=transformer_13_path)
+  models = c("transformer_1", "transformer_4", "transformer_5", "transformer_6", "transformer_8", "transformer_10", "transformer_2", "transformer_3", "transformer_13", "lot", "lot_no_recursion", "lin_prev", "gpnc", "gpsl", "ridge", "lin")
+  participants = c('kid_chs')#, 'adult')#, #, "kid", "monkey")
   for (i in seq_along(models)) {
     model_name <- models[i]
     model_path <- model_paths[[model_name]]
@@ -692,8 +693,6 @@ ggsave("../crossval_monkey_sep.png", width=12, height=5)
 # ```
 
 
-
-
 # LOO Crossvalidation
 ```{r}
 read_cv_model_fit_data <- function(participant) {
@@ -964,7 +963,7 @@ ggsave("../crossval_monkey_sep.png", width=12, height=5)
 ```{r}
 read_model_fit_data <- function(participant) {
   path <- "model_fits/"
-  models = c("lot", "gpnc", "gpsl", "ridge", "lin", "lin_prev", "lot_no_recursion", "transformer_2", "transformer_3", "transformer_13") 
+  models = c("lot", "gpnc", "gpsl", "ridge", "lin", "lin_1", "lin_prev", "lot_no_recursion", "transformer_2", "transformer_3", "transformer_13") 
   df <- data.frame()
   for (i in seq_along(models)) {
     model_name <- models[i]
@@ -1014,6 +1013,8 @@ ggplot(tmp) +
   #geom_histogram(aes(x=lot),alpha=0.5, fill="gold")
 
 ```
+
+
 # Dif by func
 ```{r}
 df_monkey_tmp <- df_monkey %>%
@@ -1052,8 +1053,6 @@ ggplot(data=df_monkey_tmp) +
 
 ```
 
-
-
 # Params
 ```{r}
 param_df <- df_kid_chs %>%
@@ -1073,7 +1072,6 @@ ggplot(data=param_df) +
   facet_wrap(~model)
 ```
 
-
 # Bootstrapping
 ```{r}
 compute_boot_ci <- function(x, conf = 0.95, R = 1000) {
@@ -1086,7 +1084,6 @@ compute_boot_ci <- function(x, conf = 0.95, R = 1000) {
   )
 }
 ```
-
 # 3 yo only
 ```{r}
 summary_df <- df_all %>%
@@ -1095,7 +1092,6 @@ summary_df <- df_all %>%
             summarize(ci = list(compute_boot_ci(LL)), .groups = "drop") %>%
             unnest(ci)
 ```
-
 ```{r, fig.width=10, fig.height=4}
 ggplot(summary_df, aes(x = model, y = mean, ymin = lower, ymax = upper, color=model, group=model)) +
   geom_point() +
@@ -1108,8 +1104,6 @@ ggplot(summary_df, aes(x = model, y = mean, ymin = lower, ymax = upper, color=mo
         strip.text=element_blank()) +
   facet_wrap(~subj_id, nrow=3)
 ```
-
-
 ```{r}
 # Precompute per model and subj_id
 summary_df <- df_monkey %>%
@@ -1130,15 +1124,12 @@ ggplot(summary_df, aes(x = model, y = mean, ymin = lower, ymax = upper, group = 
   geom_pointrange(position = position_dodge(width = 0.5)) +
   theme_minimal()
 ```
-
 ```{r}
 summary_df <- df_all %>%
   group_by(model, agent) %>%
   summarize(ci = list(compute_boot_ci(LL)), .groups = "drop") %>%
   unnest(ci)
 ```
-
-
 ```{r}
 ggplot(summary_df, aes(x = model, y = mean, ymin = lower, ymax = upper, color=model, group=model)) +
   geom_point() +
@@ -1162,6 +1153,7 @@ df_all <- df_all %>%
           mutate(model = ifelse(model=="gpsl", "Comp. GP", model),
               model = ifelse(model=="gpnc", "GP", model),
               model = ifelse(model=="lin", "Linear", model),
+              model = ifelse(model=="lin_1", "Linear_1", model),
               model = ifelse(model=="ridge", "Ridge", model),
               model = ifelse(model=="lot", "LoT", model),
               model = ifelse(model=="lin_prev", "Linear + Prev.", model),
@@ -1171,6 +1163,7 @@ df_all <- df_all %>%
               model = ifelse(model=="transformer_13", "Transformer (13)", model)
             )  %>%
             filter(model != "Nonrecursive LoT") %>%
+            filter(model != "Linear_1") %>%
             filter(!(model %in% c("Transformer (2)", "Transformer (3)", "Transformer (13)")))
 
 
@@ -1179,7 +1172,8 @@ subj_func_list <- unique((df_all %>% filter(model=="GP"))$subj_func)
 df_all <- df_all %>% filter(subj_func %in% subj_func_list)
 
 
-df_all$model = factor(df_all$model, levels = c("LoT",  "Comp. GP", "GP", "Ridge", "Linear + Prev.", "Linear"))#, "Nonrecursive LoT"))# "Transformer (2)", "Transformer (3)", "Transformer (13)")) 
+df_all$model = factor(df_all$model, levels = c("LoT",  "Comp. GP", "GP", "Ridge", "Linear + Prev.", "Linear"))
+#, "Linear_1", "Transformer (2)", "Transformer (3)", "Transformer (13)")) 
 
 df_all$agent = factor(df_all$agent, levels=c("Monkeys", "3 y/o", "4 y/o", "5 y/o", "6 y/o", "7 y/o", "Adults")) 
 # LL by model by subj, mean across functions
@@ -1258,11 +1252,8 @@ df_bootstrap <- map_dfr(1:n_boot, function(b) {
               summarize(mean_func_LL = mean(subj_func_LL), .groups = "drop")
 })      
 ```
-
-
 # split into train and test
 # fit params on train, compute LL on test
-
 ```{r, fig.width=10, fig.height=4}
 # What is distribution of means across subjects?
 df_bootstrap_summ <- df_bootstrap %>%
@@ -1317,7 +1308,6 @@ df_bootstrap <- df_bootstrap <- map_df(unique(df_kid_chs$subj_id), function(subj
                 bind_rows(map_df(unique(df_adult$subj_id), function(subj) get_bootstrap_df("adults", subj))) %>%
                 bind_rows(map_df(unique(df_monkey$subj_id), function(subj) get_bootstrap_df("monkeys", subj)))
 ```
-
 ```{r}
 df_bootstrap_summ <- df_bootstrap %>%
                      group_by(agent, model) %>%
@@ -1335,6 +1325,126 @@ ggplot(data=df_bootstrap_summ ) +
   facet_wrap(~agent, nrow=2)
 
 ```
+
+
+```{r}
+LL_by_subj <- df_all %>%
+          group_by(agent, model, subj_id, r_id,func.name) %>%
+          summarize(func_LL = sum(LL, na.rm = TRUE), .groups="drop") %>%
+          group_by(agent, model, subj_id, func.name) %>%
+          summarize(LL = mean(func_LL), .groups="drop") %>%
+          group_by(agent, model, subj_id) %>%
+          summarize(LL = mean(LL), .groups="drop")
+```
+
+```{r, fig.width=10, fig.height=4}
+param_df <- df_all %>%
+            distinct(agent, subj_id, sd_motor, sd_prev, p_lapse, p_prev, p_rand, model)
+
+# p_lapse by agent and model
+ggplot(data=param_df) +
+  geom_beeswarm(aes(x=model, color=model, y=p_lapse)) +
+  stat_summary(geom="point", fun="mean", color="gold", aes(x=model, y=p_lapse)) +
+  paper_theme +
+  theme(axis.text.x=element_blank(), legend.position="top") +
+  facet_wrap(~agent, nrow=2)
+```
+
+
+```{r}
+# Bootstrapped differences from top model
+
+# df should have top model specified
+compute_top_model <- function(df) {
+  res_df <- df %>% 
+            group_by(agent, model, subj_id, r_id,func.name) %>%
+            mutate(func_LL = sum(LL, na.rm = TRUE)) %>%
+            group_by(agent, model, subj_id, func.name) %>%
+            mutate(mean_LL = mean(func_LL)) %>%
+            group_by(agent, model, func.name) %>%
+            mutate(mean_LL = mean(mean_LL)) %>%
+            group_by(agent, model) %>%
+            mutate(mean_LL=mean(mean_LL)) %>%
+            group_by(agent, subj_id, r_id, func.name, n) %>%
+            mutate(is_top_model = mean_LL == max(mean_LL)) %>%
+            ungroup()
+  return(res_df)
+}
+
+compute_ll_diffs <- function(df) {
+  model_means <- df %>%
+                 group_by(agent, model, subj_id, r_id,func.name, is_top_model) %>%
+                 summarize(func_LL = sum(LL, na.rm = TRUE), .groups="drop") %>%
+                 group_by(agent, model, subj_id, func.name, is_top_model) %>%
+                 summarize(LL = mean(func_LL), .groups="drop") %>%
+                 group_by(agent, model, func.name, is_top_model) %>%
+                 summarize(LL = mean(LL), .groups="drop") %>%
+                 group_by(agent, model, is_top_model) %>%
+                 summarize(mean_LL=mean(LL), .groups="drop")
+  
+  res_df <- model_means %>%
+            group_by(agent, model) %>%
+            mutate(mean_LL_top = ifelse(is_top_model, mean_LL, NA)) %>%
+            group_by(agent) %>%
+            mutate(mean_LL_top = mean(mean_LL_top, na.rm=T)) %>%
+            mutate(diff_from_top = mean_LL - mean_LL_top)
+
+  return (res_df)
+}
+
+boot_df <- df_all %>% 
+           compute_top_model() %>%
+           mutate(data_id = paste0(agent, "_", subj_id, "_", r_id, "_", func.name, "_", n))
+
+set.seed(123)
+n_boot <- 1000
+
+resample_by_id <- function(data) {
+  ids <- unique(data$data_id)
+  boot_ids <- sample(ids, size = length(ids), replace = TRUE)
+
+  data %>% 
+    semi_join(tibble(data_id = boot_ids), by = "data_id")
+}
+
+boot_diffs <- map_dfr(1:n_boot, ~{
+  resampled <- boot_df %>%
+               resample_by_id()
+  res_df <- resampled %>%
+            compute_ll_diffs() %>%
+            #select(model, agent, diff_from_top) %>%
+            mutate(boot = .x)
+  return(res_df)
+})
+```
+
+```{r}
+library(readr)
+library(knitr)
+
+format_num <- function(x) {
+  return(sprintf("%.2f", round(x, 2)))
+}
+
+ci_summary <- boot_diffs %>%
+              group_by(model, agent) %>%
+              summarise(
+                #lower_diff = quantile(diff_from_top, 0.025),
+                #upper_diff = quantile(diff_from_top, 0.975),
+                #mean_diff = mean(diff_from_top),
+                lower_LL = quantile(mean_LL, 0.025),
+                upper_LL = quantile(mean_LL, 0.975),
+                mean_LL = mean(mean_LL)
+              ) %>%
+              mutate(entry = paste0("$", format_num(mean_LL), "$", " $[", format_num(lower_LL), ", ", format_num(upper_LL), "]$")) %>%
+              select(c(model,agent, entry)) %>%
+              pivot_wider(names_from="model", values_from="entry")
+
+
+cat(kable(ci_summary, format = "latex", booktabs = TRUE, escape = FALSE))
+
+```
+
 
 
 ## Paper figs

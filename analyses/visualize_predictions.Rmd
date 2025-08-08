@@ -330,8 +330,15 @@ for (i in (1:length(model_list))) {
 
 # Videos with model probability density
 ```{r}
+log_diff_exp <- function(log_a, log_b) {
+  #if (log_b > log_a) stop("log_b must be <= log_a")
+  return(log_a + log1p(-exp(log_b - log_a)))
+}
 gaussian_2d <- function(x_min, x_max, y_min, y_max, mu_x, mu_y, sd_x, sd_y) {
-  return ((pnorm(abs(x_max - mu_x), 0, sd_x) - pnorm(abs(x_min-mu_x), 0, sd_x)) * (pnorm(abs(y_max - mu_y), 0, sd_y) - pnorm(abs(y_min-mu_y), 0, sd_y)))
+  cdf_x <- log_diff_exp(pnorm((x_max - mu_x)/sd_x, log.p=T), pnorm((x_min - mu_x)/sd_x, log.p=T))
+  cdf_y <- log_diff_exp(pnorm((y_max - mu_y)/sd_y, log.p=T), pnorm((y_min - mu_y)/sd_y, log.p=T))
+  return (exp(cdf_x + cdf_y))
+  #return ((pnorm(abs(x_max - mu_x), 0, sd_x) - pnorm(abs(x_min-mu_x), 0, sd_x)) * (pnorm(abs(y_max - mu_y), 0, sd_y) - pnorm(abs(y_min-mu_y), 0, sd_y)))
   #return((pnorm(x_max, mu_x, sd_x) - pnorm(x_min, mu_x, sd_x)) * (pnorm(y_max, mu_y, sd_y) - pnorm(y_min, mu_y, sd_y)))
 }
 
@@ -411,9 +418,10 @@ make_func_vid <- function(funcname) {
         sd_y = df_model_tpt$sd_y[i]
       )
     })
-    
-    density_vec <- rowSums(density_arr)
-    grid$d <- density_vec
+    if (length(dim(density_arr)) > 1) {
+      density_arr <- rowSums(density_arr)
+    }
+    grid$d <- density_arr
     #grid <- grid %>% filter(d != 0)
     
     if (i<3) {
@@ -438,8 +446,8 @@ make_func_vid <- function(funcname) {
 }
 
 
-model_list <- c("LoT", "Nonrecursive LoT", "GP", "Comp. GP", "Ridge", "Linear", "Linear + Prev.", "Transformer (2)", "Transformer (3)", "Transformer (13)")
-participant_list <- c("3 yos", "4 yos", "5 yos", "6 yos", "7 yos", "Adults", "Monkeys", "Monkey 1", "Monkey 2")
+model_list <- c("Linear", "Linear + Prev.", "Transformer (2)", "Transformer (3)", "Transformer (13)", "LoT", "Nonrecursive LoT", "GP", "Comp. GP", "Ridge") 
+participant_list <- c("Monkey 1", "Monkey 2")#, "Monkeys")#, "3 yos", "4 yos", "5 yos", "6 yos", "7 yos", "Adults", "Monkey 1", "Monkey 2")
 
 for (i in (1:length(model_list))) {
   agent2 <- model_list[i]

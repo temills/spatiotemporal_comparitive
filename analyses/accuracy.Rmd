@@ -111,6 +111,36 @@ df_monkey <- preprocess_df_monkey(read.csv("data/participants/monkeys_all.csv"))
 df_all <- bind_rows(df_adult, df_monkey, df_kid)
 ```
 
+# Look at kids data
+```{r}
+df_kid <- preprocess_df_human(read.csv("../human_experiments/dots_app_kids/data/clean_data/data.csv"))#"data/participants/kids_chs.csv")) 
+```
+```{r}
+tmp <- df_kid %>%
+      group_by(subj_id) %>%
+      mutate(n_funcs = length(unique(func.name))) %>%
+      ungroup() %>%
+      group_by(subj_id, func.name) %>%
+      mutate(func_max_n=max(n)) %>%
+      ungroup()
+```
+
+```{r}
+table(tmp$func_max_n)
+
+tmp2 <- tmp %>%
+        group_by(subj_id, age) %>%
+        summarize(n_funcs=mean(n_funcs))
+
+ggplot(data=tmp2) +
+  geom_bar(aes(x=n_funcs)) +
+  geom_vline(xintercept=8) +
+  facet_wrap(~age)
+```
+
+
+
+
 # Check overall and final timepoint accuracy by agent 
 ```{r}
 mean_df <- df_all %>%
