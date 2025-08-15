@@ -111,36 +111,6 @@ df_monkey <- preprocess_df_monkey(read.csv("data/participants/monkeys_all.csv"))
 df_all <- bind_rows(df_adult, df_monkey, df_kid)
 ```
 
-# Look at kids data
-```{r}
-df_kid <- preprocess_df_human(read.csv("../human_experiments/dots_app_kids/data/clean_data/data.csv"))#"data/participants/kids_chs.csv")) 
-```
-```{r}
-tmp <- df_kid %>%
-      group_by(subj_id) %>%
-      mutate(n_funcs = length(unique(func.name))) %>%
-      ungroup() %>%
-      group_by(subj_id, func.name) %>%
-      mutate(func_max_n=max(n)) %>%
-      ungroup()
-```
-
-```{r}
-table(tmp$func_max_n)
-
-tmp2 <- tmp %>%
-        group_by(subj_id, age) %>%
-        summarize(n_funcs=mean(n_funcs))
-
-ggplot(data=tmp2) +
-  geom_bar(aes(x=n_funcs)) +
-  geom_vline(xintercept=8) +
-  facet_wrap(~age)
-```
-
-
-
-
 # Check overall and final timepoint accuracy by agent 
 ```{r}
 mean_df <- df_all %>%
@@ -247,7 +217,6 @@ for (x in 3:7) {
 
 ```
 
-
 # Slopes within patterns
 # frequentist trash
 ```{r}
@@ -255,7 +224,7 @@ compute_fit <- function(df) {
   m <- glmer(
             correct ~ 1 +                          # fixed intercept
                       tpt_std +                    # fixed slope 
-                      (1 | subj_id) +    # random intercept + slope for subject
+                      (1 + tpt_std | subj_id) +    # random intercept + slope for subject
                       (1 + tpt_std | func.name),   # random intercept + slope for function
             data = df,
             family = binomial(link = "logit")
@@ -496,6 +465,274 @@ for (x in 3:7) {
 }
 
 ```
+
+
+# Other kids analyses
+## Accuracy across sessions
+```{r}
+# What if they went out of it then immediately went back in? Should count this as a single session?
+df_kid <- df_kid %>%
+          group_by(subj_id) %>%
+          mutate(session = session-min(session)+1) %>%
+          mutate(n_sessions = max(session)) %>%
+          ungroup()
+
+time_bt_sessions <- df_kid %>%
+                    distinct(subj_id, session, start_time) %>%
+                    group_by(subj_id) %>%
+                    mutate(time_bt_first_and_last_session = max(start_time)-min(start_time)) %>%
+                    arrange(subj_id, session) %>%
+                    mutate(time_since_last_session = start_time - lag(start_time)) %>%
+                    ungroup() %>%
+                    select(-c("start_time"))
+  
+                    
+# Time since last session
+df_kid <- df_kid %>%
+          merge(time_bt_sessions, by=c("subj_id", "session"))
+       
+session_offsets <- df_kid %>%
+                    group_by(subj_id, session) %>%
+                    summarize(trials_per_session = max(trial_idx), .groups = "drop") %>%
+                    arrange(subj_id, session) %>%
+                    group_by(subj_id) %>%
+                    mutate(trials_in_prev_session = lag(trials_per_session, default = 0)) %>%
+                    mutate(trials_before_session = lag(cumsum(trials_per_session), default = 0)) 
+
+df_kid <- df_kid %>%
+       merge(session_offsets, by = c("subj_id", "session")) %>%
+       mutate(trial_idx_across_sessions = trial_idx + trials_before_session)
+
+
+```
+
+```{r}
+# if less than 1 hour between sessions, count it as a single session
+min_time_between_sessions = 1/24
+df_kid <- df_kid %>%
+       mutate(session = ifelse((session>1)&(time_since_last_session<min_time_between_sessions), session-1, session),
+              trial_idx = ifelse((session>1)&(time_since_last_session<min_time_between_sessions), trial_idx+trials_in_prev_session, trial_idx)) %>%
+      group_by(subj_id) %>%
+      mutate(n_sessions = max(session)) %>%
+      ungroup()
+# time since last session no longer meaningful
+```
+
+
+
+```{r}
+# Trial idx, across sessions
+
+# Trial idx, within sessions
+
+# Effect of within-session idx
+
+# Effect of session #
+compute_fit <- function(df) {
+  m <- glmer(
+            correct ~ 1 +                          # fixed intercept
+                      #trial_idx_across_sessions_std +
+                      trial_idx_std +                  # fixed slope for trial
+                      session_std +
+                      tpt_std +                    # fixed slope on tpt
+                      (trial_idx_std:session_std) +        # interaction of trial idx and session
+                      (1 + tpt_std + trial_idx_std + session_std | subj_id) +  # random intercept + slopes for subject
+                      (1 + tpt_std | func.name),  # random intercept + slopes for function
+            data = df,
+            family = binomial(link = "logit"),
+            control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5))
+  )
+  return(m)
+}
+
+df_std <- df_kid %>%
+          select(c("agent", "age", "correct", "tpt", "func.name", "subj_id", "session", "trial_idx", "trial_idx_across_sessions")) %>%
+          mutate(tpt_std = scale(tpt)[,1],
+                 trial_idx_std = scale(trial_idx)[,1],
+                 session_std = scale(session)[,1],
+                 trial_idx_across_sessions_std = scale(trial_idx_across_sessions)[,1])
+
+for (age_df in split(df_std, df_std$age)) {
+  print(unique(age_df$age))
+  m <- compute_fit(age_df)
+  print(summary(m))
+}
+
+```
+
+# Brm
+```{r}
+compute_fit <- function(df) {
+  fit <- brm(
+              correct ~ 1 +                          # fixed intercept
+                #trial_idx_across_sessions_std +
+                trial_idx_std +                  # fixed slope for trial
+                session_std +
+                tpt_std +                    # fixed slope on tpt
+                (trial_idx_std:session_std) +        # interaction of trial idx and session
+                #(1 + tpt_std | subj_id) +
+                (1 + tpt_std + trial_idx_std + session_std | subj_id) +              # random intercept + slopes for subject
+                (1 + tpt_std | func.name),            # random intercept + slopes for function
+    data = df,
+    family = bernoulli(link = "logit"),
+    prior = c(
+      prior(normal(0, 3), class = "Intercept"), # prior for fixed intercept
+      prior(normal(0, 3), class = "b"),         # prior for fixed slope
+      prior(exponential(1), class = "sd")       # hyperprior for random intercepts and slopes
+    ),
+    cores = 4, chains = 4, iter = 1000
+  )
+  return(fit)
+}
+
+df_std <- df_kid %>%
+          select(c("agent", "age", "correct", "tpt", "func.name", "subj_id", "session", "trial_idx", "trial_idx_across_sessions")) %>%
+          mutate(tpt_std = scale(tpt)[,1],
+                 trial_idx_std = scale(trial_idx)[,1],
+                 session_std = scale(session)[,1],
+                 trial_idx_across_sessions_std = scale(trial_idx_across_sessions)[,1])
+
+samples <- data.frame()
+for (age_df in split(df_std, df_std$age)) {
+  print(unique(age_df$age))
+  age_fit <- compute_fit(age_df)
+  print(summary(age_fit))
+  age_samples <- as_draws_df(age_fit) %>% mutate(age = age_df$age[[1]])
+  samples <- bind_rows(samples, age_samples)
+}
+
+```
+
+```{r}
+ggplot(samples) +
+  geom_density(aes(x = b_trial_idx_std), fill="green", alpha = 0.6) +
+  geom_density(aes(x = b_session_std), fill="purple", alpha = 0.6) +
+  geom_density(aes(x = b_tpt_std), fill="gold", alpha = 0.6) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(
+    title = "Posterior distribution of beta_tpt (standardized)",
+    x = "beta_tpt",
+    y = "Density"
+  ) +
+  facet_wrap(~age)
+
+summ <- samples %>%
+        group_by(age) %>%
+        summarize(
+          lower_90 = quantile(b_tpt_std, 0.05),
+          lower_95 = quantile(b_tpt_std, 0.025),
+          median = quantile(b_tpt_std, 0.5),
+          upper_95 = quantile(b_tpt_std, 0.975),
+          upper_90 = quantile(b_tpt_std, 0.95),
+          .groups="drop"
+        )
+```
+#GLMER over all ages
+```{r}
+# Effect of session #
+compute_fit <- function(df) {
+  m <- glmer(
+            correct ~ 1 +                          # fixed intercept
+                      trial_idx_across_sessions_std +
+                      #trial_idx_std +                  # fixed slope for trial
+                      #session_std +
+                      age_std +
+                      tpt_std +                    # fixed slope on tpt
+                      (age_std:tpt_std) +
+                      (age_std:trial_idx_across_sessions_std) +
+                      (tpt_std:trial_idx_across_sessions_std) +
+                      #(age_std:trial_idx_std) +
+                      #(age_std:session_std) +
+                      #(tpt_std:trial_idx_std) +
+                      #(tpt_std:session_std) +
+                      #(trial_idx_std:session_std) +        # interaction of trial idx and session
+                      (1 + tpt_std + trial_idx_across_sessions_std | subj_id) + # random intercept + slopes for subject
+                      (1 + tpt_std | func.name),            # random intercept + slopes for function
+            data = df,
+            family = binomial(link = "logit"),
+            control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5))
+  )
+  return(m)
+}
+
+df_std <- df_kid %>%
+          select(c("agent", "exact_age", "correct", "tpt", "func.name", "subj_id", "session", "trial_idx", "trial_idx_across_sessions")) %>%
+          mutate(tpt_std = scale(tpt)[,1],
+                 trial_idx_std = scale(trial_idx)[,1],
+                 session_std = scale(session)[,1],
+                 trial_idx_across_sessions_std = scale(trial_idx_across_sessions)[,1],
+                 age_std = scale(exact_age)[,1])
+
+m <- compute_fit(df_std)
+print(summary(m))
+
+```
+
+```{r}
+# Effect of session #
+compute_fit <- function(df) {
+  m <- glmer(
+            correct ~ 1 +                          # fixed intercept
+                      #trial_idx_across_sessions_std +
+                      trial_idx_std +                  # fixed slope for trial
+                      tpt_std +                    # fixed slope on tpt
+                      (trial_idx_std:tpt_std) +
+                      (1 + tpt_std + trial_idx_std | subj_id) + # random intercept + slopes for subject
+                      (1 + tpt_std | func.name),            # random intercept + slopes for function
+            data = df,
+            family = binomial(link = "logit"),
+            control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5))
+  )
+  return(m)
+}
+
+df_std <- df_adult %>%
+          select(c("agent", "correct", "tpt", "func.name", "subj_id", "trial_idx")) %>%
+          mutate(tpt_std = scale(tpt)[,1],
+                 trial_idx_std = scale(trial_idx)[,1])
+
+m <- compute_fit(df_std)
+print(summary(m))
+
+```
+
+
+
+
+
+```{r}
+ggplot(df_kid) +
+  stat_summary(geom="line", aes(x=session, y=correct)) +
+  geom_line(aes(x=session, y=correct, color=subj_id), alpha=0.5) +
+  guides(color="none") +
+  facet_wrap(~age)
+
+```
+## Including kids who failed IC
+```{r}
+df_kid_pre <- preprocess_df_human(read.csv("../human_experiments/dots_app_kids/data/clean_data/data_pre_exclusion.csv")) %>% filter(n>2) %>% mutate(agent="Kids")
+
+```
+## How close did kids get to failing IC?
+```{r}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 ```{r}
