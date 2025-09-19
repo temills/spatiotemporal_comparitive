@@ -215,7 +215,8 @@ for (f in func_order) {
 }
 
 p <- grid.arrange(grobs=plots, nrow=3)
-ggsave(plot=p, paste0(fig_dir, "stimuli.png"), width=8, height=3, dpi=1000)
+
+
 ```
 
 
@@ -223,8 +224,8 @@ ggsave(plot=p, paste0(fig_dir, "stimuli.png"), width=8, height=3, dpi=1000)
 ```{r}
 df_adult <- preprocess_df_adult(read.csv(paste0(data_dir, "participants/adults.csv"))) %>% filter(tpt>2) %>% mutate(agent="Adults")
 df_kid <- preprocess_df_children(read.csv(paste0(data_dir, "participants/kids.csv"))) %>% filter(tpt>2) %>% mutate(agent="Kids")
-df_monkey <- preprocess_df_monkey(read.csv(paste0(data_dir,  "participants/monkeys.csv"))) %>% filter(tpt>2) %>% mutate(agent="Monkeys")
-df_all <- bind_rows(df_adult, df_monkey, df_kid)
+df_monkey_test <- preprocess_df_monkey(read.csv(paste0(data_dir,  "participants/monkeys.csv"))) %>% filter(tpt>2) %>% mutate(agent="Monkeys")
+df_all <- bind_rows(df_adult, df_monkey_test, df_kid)
 ```
 
 # Compute overall and final timepoint accuracy by agent 
@@ -279,7 +280,7 @@ summary(m)
 
 # Relationship between kid and adult accuracy
 ```{r}
-df_comp <- bind_rows(df_adult, df_monkey, df_kid %>% mutate(agent=as.character(age))) %>%
+df_comp <- bind_rows(df_adult, df_monkey_test, df_kid %>% mutate(agent=as.character(age))) %>%
            group_by(agent, subj_id, func.name) %>%
            summarize(accuracy=mean(correct, na.rm=T), .groups="drop") %>%
            group_by(agent, func.name) %>%
@@ -296,7 +297,7 @@ for (x in 3:7) {
 
 # Monkey accuracy by individual
 ```{r}
-mean_df <- df_monkey %>%
+mean_df <- df_monkey_test %>%
            group_by(func.name, tpt, subj_id) %>%
            summarize(accuracy=mean(correct, na.rm=T), .groups="drop")
 
@@ -314,7 +315,7 @@ print(cor.test(func_accuracy_df$"Monkey 1", func_accuracy_df$"Monkey 2", method=
 
 # Relationship between humans and monkeys
 ```{r}
-df_comp <- bind_rows(df_adult, df_monkey, df_kid %>% mutate(agent=as.character(age))) %>%
+df_comp <- bind_rows(df_adult, df_monkey_test, df_kid %>% mutate(agent=as.character(age))) %>%
            group_by(agent, subj_id, func.name) %>%
            summarize(accuracy=mean(correct, na.rm=T), .groups="drop") %>%
            group_by(agent, func.name) %>%
@@ -431,10 +432,10 @@ df_adult_modeled <- read.csv(paste0(preprocessed_data_dir, 'inferred_accuracy/me
 df_kid_modeled <- read.csv(paste0(preprocessed_data_dir, 'inferred_accuracy/mean_kids.csv')) %>%
                   mutate(agent="Kids") %>%
                   rename(subj_id = r_id)
-df_monkey_modeled <- read.csv(paste0(preprocessed_data_dir, 'inferred_accuracy/mean_monkeys.csv')) %>%
+df_monkey_test_modeled <- read.csv(paste0(preprocessed_data_dir, 'inferred_accuracy/mean_monkeys.csv')) %>%
                      mutate(agent="Monkeys") %>%
                      rename(subj_id = r_id)
-df_all_modeled <- bind_rows(df_adult_modeled, df_kid_modeled, df_monkey_modeled)
+df_all_modeled <- bind_rows(df_adult_modeled, df_kid_modeled, df_monkey_test_modeled)
 ```
 # Mean p_true
 ```{r}
@@ -498,7 +499,7 @@ for (x in 3:7) {
 
 # Monkey accuracy by subj
 ```{r}
-mean_df <- df_monkey_modeled %>%
+mean_df <- df_monkey_test_modeled %>%
            group_by(func.name, tpt, subj_id) %>%
            summarize(accuracy=mean(prob_true, na.rm=T), .groups="drop")
 
@@ -532,3 +533,14 @@ for (x in 3:7) {
 
 # 
 ######################################
+
+
+
+# Monkey training 
+
+```{r}
+df_monkey_train <- preprocess_df_monkey(read.csv("data/participants/monkeys_train.csv"))
+
+
+
+```
