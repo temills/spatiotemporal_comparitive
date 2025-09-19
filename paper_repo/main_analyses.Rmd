@@ -295,6 +295,42 @@ df_monkey_train <- df_monkey_train %>%
 
 ```
 
+# Monkey accuracy analyses
+```{r}
+pattern_accuracy <- df_monkey_train %>%
+  filter(attempt_number == 1) %>%
+  group_by(subj_id, func.type) %>%
+  summarise(
+    n_trials = n(),
+    mean_accuracy_120 = mean(correct_120, na.rm = TRUE),
+    mean_distance_error = mean(dist_from_true, na.rm = TRUE),
+    final_accuracy = mean(correct_120[func_examples >= quantile(func_examples, 0.8)], na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  arrange(subj_id, desc(mean_accuracy_120))
+
+cat("ACCURACY BY PATTERN TYPE\n")
+cat("========================\n")
+for(monkey_name in c("Monkey 1", "Monkey 2")) {
+  cat(sprintf("\n%s (sorted by 120px accuracy):\n", monkey_name))
+  cat("Pattern Type                | Trials | 120px Acc | Final Acc | Mean Error\n")
+  cat("---------------------------|--------|-----------|-----------|----------\n")
+  
+  monkey_data <- pattern_accuracy %>% filter(subj_id == monkey_name)
+  for(i in 1:nrow(monkey_data)) {
+    pattern <- gsub("_", " ", monkey_data$func.type[i])
+    pattern <- str_to_title(pattern)
+    cat(sprintf("%-26s | %6d | %7.1f%% | %8.1f%% | %7.1f px\n",
+                pattern,
+                monkey_data$n_trials[i],
+                monkey_data$mean_accuracy_120[i] * 100,
+                monkey_data$final_accuracy[i] * 100,
+                monkey_data$mean_distance_error[i]))
+  }
+}
+
+```
+
 
 # Monkey training, accuracy over time plot
 ```{r, fig.width=10, fig.height=6}
@@ -402,6 +438,164 @@ for (x in 3:7) {
   print(cor.test(df_comp$Adults, df_comp[[as.character(x)]], method="pearson"))
 }
 
+```
+
+
+# Kids vs. Adults accuracy scatterplot
+```{r, fig.width=15, fig.height=3.5}
+
+
+df_path <- df_stim %>%
+  rename(func.name = seq_id) %>%
+  filter(tpt < 15) %>%
+  group_by(func.name) %>%
+  mutate(xmin = min(true_x, na.rm = TRUE),
+         xmax = max(true_x, na.rm = TRUE),
+         ymin = min(true_y, na.rm = TRUE),
+         ymax = max(true_y, na.rm = TRUE),
+         xmid = (xmin + xmax)/2,
+         ymid = (ymin + ymax)/2,
+         span = pmax(xmax - xmin, ymax - ymin),
+         span = ifelse(span == 0, 1e-9, span),
+         nx = (true_x - xmid) / span,
+         ny = (true_y - ymid) / span) %>%
+  ungroup() %>%
+  select(func.name, tpt, nx, ny)
+
+
+adult_acc <- df_adult %>%
+  group_by(func.name, subj_id) %>%
+  summarize(acc = mean(correct, na.rm = TRUE), .groups = "drop") %>%
+  group_by(func.name) %>%
+  summarize(mean_correct_adult = mean(acc, na.rm = TRUE), .groups = "drop")
+
+kid_age_acc <- df_kid %>%
+  group_by(age, func.name, subj_id) %>%
+  summarize(acc = mean(correct, na.rm = TRUE), .groups = "drop") %>%
+  group_by(age, func.name) %>%
+  summarize(mean_correct_age = mean(acc, na.rm = TRUE), .groups = "drop")
+
+age_comparison <- df_path %>%
+  left_join(adult_acc, by = "func.name") %>%
+  left_join(kid_age_acc, by = "func.name") %>%
+  rename(age_year = age, age_accuracy = mean_correct_age) %>%
+  filter(age_year %in% 3:7)
+
+age_adult_correlations <- age_comparison %>%
+  group_by(age_year) %>%
+  summarize(r_adult = cor(age_accuracy, mean_correct_adult, use = "complete.obs"), .groups = "drop")
+
+icon_size <- 0.08
+age_labels <- function(x) paste(x, "year olds")
+
+ggplot(data = age_comparison) +
+  geom_abline() +
+  geom_path(aes(x = age_accuracy + nx * icon_size,
+                y = mean_correct_adult + ny * icon_size,
+                group = func.name, color = func.name),
+            alpha = 0.7, size = 0.4) +
+  geom_point(aes(x = age_accuracy + nx * icon_size,
+                 y = mean_correct_adult + ny * icon_size,
+                 group = func.name, color = func.name),
+             alpha = 0.8, size = 0.7) +
+  geom_point(aes(x = age_accuracy + nx * icon_size,
+                 y = mean_correct_adult + ny * icon_size,
+                 group = func.name), color = "black",
+             alpha = 0.05, size = 0.1) +
+  facet_wrap(~age_year, nrow = 1, labeller = labeller(age_year = age_labels)) +
+  geom_text(data = age_adult_correlations,
+            aes(x = 0.87, y = 0.1,
+                label = paste("italic(r) == ", sprintf("%.2f", r_adult))),
+            size = 5, family = "Georgia", parse = TRUE) +
+  labs(x = "Children Accuracy", y = "Adult Accuracy") +
+  coord_cartesian(xlim = c(-0.02, 1.02), ylim = c(-0.02, 1.02)) +
+  scale_x_continuous(breaks = c(0, 0.5, 1)) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  guides(color = "none") +
+  paper_theme + theme(strip.background = element_blank())
+
+
+```
+
+# Humans (ages 3–7 and Adults) vs Monkeys scatter
+```{r, fig.width=17, fig.height=3.5}
+
+df_path_hm <- df_path
+
+monkey_acc <- df_monkey_test %>%
+  group_by(func.name, subj_id) %>%
+  summarize(acc = mean(correct, na.rm = TRUE), .groups = "drop") %>%
+  group_by(func.name) %>%
+  summarize(mean_correct_monkey = mean(acc, na.rm = TRUE), .groups = "drop")
+
+adult_acc <- df_adult %>%
+  group_by(func.name, subj_id) %>%
+  summarize(acc = mean(correct, na.rm = TRUE), .groups = "drop") %>%
+  group_by(func.name) %>%
+  summarize(mean_correct_adult = mean(acc, na.rm = TRUE), .groups = "drop")
+
+kid_age_acc <- df_kid %>%
+  group_by(age, func.name, subj_id) %>%
+  summarize(acc = mean(correct, na.rm = TRUE), .groups = "drop") %>%
+  group_by(age, func.name) %>%
+  summarize(mean_correct_age = mean(acc, na.rm = TRUE), .groups = "drop")
+
+# Assemble human groups: ages 3–7 and Adults
+human_vs_monkey <- df_path_hm %>%
+  left_join(monkey_acc, by = "func.name") %>%
+  left_join(kid_age_acc, by = "func.name") %>%
+  left_join(adult_acc, by = "func.name") %>%
+  mutate(age_year = as.character(age),
+         age_accuracy = mean_correct_age) %>%
+  select(func.name, tpt, nx, ny, mean_correct_monkey, age_year, age_accuracy) %>%
+  bind_rows(
+    df_path_hm %>%
+      left_join(monkey_acc, by = "func.name") %>%
+      left_join(adult_acc, by = "func.name") %>%
+      mutate(age_year = "Adult", age_accuracy = mean_correct_adult) %>%
+      select(func.name, tpt, nx, ny, mean_correct_monkey, age_year, age_accuracy)
+  ) %>%
+  filter(age_year %in% c("3","4","5","6","7","Adult"))
+
+# Per-facet correlations (Human vs Monkey)
+human_correlations <- human_vs_monkey %>%
+  distinct(func.name, age_year, mean_correct_monkey, age_accuracy) %>%
+  group_by(age_year) %>%
+  summarize(r_monkey = cor(age_accuracy, mean_correct_monkey, use = "complete.obs"), .groups = "drop")
+
+icon_size <- 0.08
+age_labels <- function(x) ifelse(x == "Adult", "Adults", paste(x, "year olds"))
+
+ggplot(data = human_vs_monkey) +
+  geom_abline() +
+  geom_path(aes(x = age_accuracy + nx * icon_size,
+                y = mean_correct_monkey + ny * icon_size,
+                group = func.name, color = func.name),
+            alpha = 0.7, size = 0.4) +
+  geom_point(aes(x = age_accuracy + nx * icon_size,
+                 y = mean_correct_monkey + ny * icon_size,
+                 group = func.name, color = func.name),
+             alpha = 0.8, size = 0.7) +
+  geom_point(aes(x = age_accuracy + nx * icon_size,
+                 y = mean_correct_monkey + ny * icon_size,
+                 group = func.name), color = "black",
+             alpha = 0.05, size = 0.1) +
+  facet_wrap(~age_year, nrow = 1, labeller = labeller(age_year = age_labels)) +
+  geom_text(data = human_correlations,
+            aes(x = 0.12, y = 0.9,
+                label = paste("italic(r) == ", sprintf("%.2f", r_monkey))),
+            size = 5, family = "Georgia", parse = TRUE) +
+  labs(x = "Human Accuracy", y = "Monkey Accuracy") +
+  coord_cartesian(xlim = c(-0.02, 1.02), ylim = c(-0.02, 1.02)) +
+  scale_x_continuous(breaks = c(0, 0.5, 1)) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  guides(color = "none") +
+  paper_theme + theme(strip.background = element_blank(),
+                      axis.title.x=element_text(size=22),
+                      axis.title.y=element_text(size=21),
+                      strip.text=element_text(size=19)) 
+
+# ggsave("figs/human_vs_monkeys.png", dpi=400, width=17, height=3.5)
 ```
 
 
