@@ -12,7 +12,6 @@ data {
   real<lower=0, upper=1> upper_bound_x[N];
   int<lower=1, upper=12> guess_num[N];  // timepoint of guess within function
   real guess_num_std[N];  // timepoint of guess within function
-  vector<lower=0, upper=1>[N] next_is_repeat; // next pt is at a repeat location
   int<lower=1> n_subjs; // number of subjects
   int<lower=1> subj[N]; // subj id
   int<lower=1> n_func_types; // number of function types

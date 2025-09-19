@@ -121,8 +121,8 @@ scale_df <- function(df) {
       mutate(guess_num = tpt - 2) %>%
       mutate(guess_num_std = (guess_num-mean(guess_num))/sd(guess_num))
   
-  df <- merge(df, is_repeat_df, by = c("func.type", "tpt"), suffixes=c("", ".temp")) %>%
-        subset(select = -c(X, X.temp, x_next.temp, y_next.temp))
+  #df <- merge(df, is_repeat_df, by = c("func.type", "tpt"), suffixes=c("", ".temp")) %>%
+  #      subset(select = -c(X, X.temp, x_next.temp, y_next.temp))
   df <- df[order(df$tpt),]
   return(df)
 }
@@ -161,7 +161,6 @@ run_inference_subj <- function(df, n_iter, n_chains, var_maps) {
     upper_bound_x = stan_df$upper_bound_x,
     lin_x_pred = stan_df$lin1_x_pred,
     lin_y_pred = stan_df$lin1_y_pred,
-    next_is_repeat = stan_df$next_is_repeat,
     guess_num = stan_df$guess_num,
     guess_num_std = stan_df$guess_num_std,
     n_subjs = length(unique(stan_df$subject_id)),
@@ -290,18 +289,15 @@ get_mean_df <- function(df, group) {
 
 ```
 
-```{r}
-tmp <- get_subj_df(df_monkey, "monkeys", "BP22")
-```
-
-
 # Load participant data
 ```{r, message=F}
-df_kid_chs <- preprocess_df_human(read.csv('../../human_experiments/dots_app_kids/data/clean_data/data.csv'))                                       
+df_kid_chs <- preprocess_df_human(read.csv('../data/participants/kids_chs.csv'))                                       
 df_kid <- preprocess_df_human(read.csv("../data/participants/kids.csv"))
 df_adult <-preprocess_df_human(read.csv("../data/participants/adults.csv"))
 df_monkey <-  preprocess_df_monkey(read.csv("../data/participants/monkeys_all.csv"))
 ```
+
+
 
 # Run inference, compute posterior means
 ```{r}
@@ -310,8 +306,8 @@ for (x in 3:7) {
   df_age <- df_kid_chs %>% filter(age==x)
   run_inference_group(df_age, paste0("kid_chs_", x))
 }
-run_inference_group(df_monkey, "monkeys")
-run_inference_group(df_adult, "adults")
+#run_inference_group(df_monkey, "monkeys")
+#run_inference_group(df_adult, "adults")
 
 #generate_videos(df_kid_chs, "kids_chs")
 ```

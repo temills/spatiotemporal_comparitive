@@ -155,6 +155,3 @@ ggplot(data=comp_df%>%filter(age==3)) +
   geom_vline(aes(xintercept=0), linetype="dashed") 
 ```
 
-
-
-

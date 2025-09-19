@@ -101,6 +101,68 @@ preprocess_df_monkey <- function(df) {
 ```
 
 
+# Plot all stimuli
+```{r}
+df_stim <- read.csv("data/models/lot.csv") %>%
+           distinct(tpt, true_x, true_y, seq_id)
+lims <- df_stim %>%
+  group_by(seq_id) %>%
+  summarize(xmin = min(true_x),
+            xmax = max(true_x),
+            ymin = min(true_y),
+            ymax = max(true_y),
+            .groups = "drop") %>%
+  rowwise() %>%
+  mutate(xrange = xmax - xmin,
+        yrange = ymax - ymin,
+        maxrange = max(xrange, yrange),
+        xmid = (xmin + xmax)/2,
+        ymid = (ymin + ymax)/2,
+        xmin = xmid - maxrange/2,
+        xmax = xmid + maxrange/2,
+        ymin = ymid - maxrange/2,
+        ymax = ymid + maxrange/2)
+
+plot_func <- function(f, lw) {
+  lim <- lims %>% filter(seq_id == f)
+  ggplot(df_stim %>% filter(seq_id == f)) +
+    geom_path(aes(x = true_x, y = true_y), linetype = "dotted") +
+    geom_point(aes(x = true_x, y = true_y, alpha = tpt)) +
+    paper_theme +
+    theme(axis.text.x  = element_blank(),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          axis.text.y  = element_blank(),
+          axis.line.x  = element_blank(), 
+          axis.line.y  = element_blank(), 
+          panel.border = element_rect(linewidth=lw, color="black"),
+          strip.text = element_blank()) +
+    coord_fixed(xlim = c(lim$xmin, lim$xmax),
+                ylim = c(lim$ymin, lim$ymax),
+                ratio = 1) +
+    guides(alpha = "none")
+}
+
+plots <- list()
+func_order <- c("line1", "stairs", "stairs_2", "square_spiral", "alternating_diff_2", "square_2", "alternating_diff_1", "123",
+                "radial_1", "zigzag_widening", "hourglass_1", "zigzag_1", "3_pts", "sine", "plus", "decreasing_y",
+                "triangle_1", "increasing_lines", "zigzag_3", "f_curly_2", "spiral_outward", "zigzag_2", "hexagon", "radial_increasing")
+i=0
+for (f in func_order) {
+  i=i+1
+  if (i%%8==0) {
+    lw = 1
+  } else {
+    lw= 0.1
+  }
+  plots[[length(plots) + 1]] <- plot_func(f, lw) + theme(plot.margin = margin(0.01, 0.01, 0.01, 0.01, "in"))
+}
+
+p <- grid.arrange(grobs=plots, nrow=3)
+ggsave(plot=p, "figs/stimuli.png", width=8, height=3, dpi=1000)
+```
+
+
 # Load participant data
 ```{r}
 df_adult <- preprocess_df_human(read.csv("data/participants/adults.csv")) %>% filter(n>2) %>% mutate(agent="Adults")
@@ -110,6 +172,92 @@ df_monkey_2 <- preprocess_df_monkey(read.csv("data/participants/monkeys_2.csv"))
 df_monkey <- preprocess_df_monkey(read.csv("data/participants/monkeys_all.csv")) %>% filter(n>2) %>% mutate(agent="Monkeys")
 df_all <- bind_rows(df_adult, df_monkey, df_kid)
 ```
+```{r}
+df_kid <- preprocess_df_human(read.csv("data/participants/kids_chs.csv")) %>% filter(n>2) %>% mutate(agent="Kids")
+
+# If sessions occur less than one hour apart, count them as a single session
+# (likely to due to accidentally leaving the browser)
+
+df_kid <- df_kid %>%
+          group_by(subj_id) %>%
+          mutate(session = session-min(session)+1) %>%
+          mutate(n_sessions = max(session)) %>%
+          ungroup()
+
+time_bt_sessions <- df_kid %>%
+                    distinct(subj_id, session, start_time) %>%
+                    group_by(subj_id) %>%
+                    mutate(time_bt_first_and_last_session = max(start_time)-min(start_time)) %>%
+                    arrange(subj_id, session) %>%
+                    mutate(time_since_last_session = start_time - lag(start_time)) %>%
+                    ungroup() %>%
+                    select(-c("start_time"))
+  
+# Time since last session
+df_kid <- df_kid %>%
+          merge(time_bt_sessions, by=c("subj_id", "session"))
+       
+session_offsets <- df_kid %>%
+                    group_by(subj_id, session) %>%
+                    summarize(trials_per_session = max(trial_idx), .groups = "drop") %>%
+                    arrange(subj_id, session) %>%
+                    group_by(subj_id) %>%
+                    mutate(trials_in_prev_session = lag(trials_per_session, default = 0)) %>%
+                    mutate(trials_before_session = lag(cumsum(trials_per_session), default = 0)) 
+
+df_kid <- df_kid %>%
+       merge(session_offsets, by = c("subj_id", "session")) %>%
+       mutate(trial_idx_across_sessions = trial_idx + trials_before_session)
+
+
+# if less than 1 hour between sessions, count it as a single session
+min_time_between_sessions = 1/24
+df_kid <- df_kid %>%
+          mutate(session = ifelse((session>1) & (time_since_last_session<min_time_between_sessions),
+                                  session - 1,
+                                  session),
+              trial_idx = ifelse((session>1) & (time_since_last_session<min_time_between_sessions),
+                                 trial_idx + trials_in_prev_session,
+                                 trial_idx)) %>%
+      group_by(subj_id) %>%
+      mutate(time_bt_first_and_last_session = max(start_time)-min(start_time)) %>%
+      mutate(n_sessions = max(session)) %>%
+      group_by(subj_id, session) %>%
+      mutate(trials_per_session = max(trial_idx)) %>%
+      ungroup() %>%
+      # no longer meaningful
+      select(-c(time_since_last_session, trials_before_session, trials_in_prev_session))
+
+
+df_kid <- df_kid %>%
+          # session duration is start_time 
+          group_by(subj_id) %>%
+          mutate(n_trials_total = max(trial_idx_across_sessions)) %>%
+          group_by(subj_id, session, tpt) %>%
+          mutate(trial_1_time_since_start = ifelse(trial_idx==1, trial_time_since_start, NA),
+                 trial_1_time_since_start = mean(trial_1_time_since_start, na.rm=T),
+                 trial_duration_sum = sum(trial_duration),
+                 session_duration = trial_1_time_since_start + trial_duration_sum) %>%
+          ungroup()
+
+```
+```{r}
+# mean n sessions
+n_session_df <- df_kid %>%
+                distinct(subj_id, n_sessions, n_trials_total) %>%
+                summarize(n_sessions=mean(n_sessions), n_trials_total=mean(n_trials_total))
+              
+per_session_df <- df_kid %>%
+                  distinct(session, subj_id, trials_per_session, session_duration) %>%
+                  summarize(session_duration=mean(session_duration),
+                            trials_per_session=mean(trials_per_session))
+            
+```
+
+
+
+
+
 
 # Check overall and final timepoint accuracy by agent 
 ```{r}
@@ -469,55 +617,6 @@ for (x in 3:7) {
 
 # Other kids analyses
 ## Accuracy across sessions
-```{r}
-# What if they went out of it then immediately went back in? Should count this as a single session?
-df_kid <- df_kid %>%
-          group_by(subj_id) %>%
-          mutate(session = session-min(session)+1) %>%
-          mutate(n_sessions = max(session)) %>%
-          ungroup()
-
-time_bt_sessions <- df_kid %>%
-                    distinct(subj_id, session, start_time) %>%
-                    group_by(subj_id) %>%
-                    mutate(time_bt_first_and_last_session = max(start_time)-min(start_time)) %>%
-                    arrange(subj_id, session) %>%
-                    mutate(time_since_last_session = start_time - lag(start_time)) %>%
-                    ungroup() %>%
-                    select(-c("start_time"))
-  
-                    
-# Time since last session
-df_kid <- df_kid %>%
-          merge(time_bt_sessions, by=c("subj_id", "session"))
-       
-session_offsets <- df_kid %>%
-                    group_by(subj_id, session) %>%
-                    summarize(trials_per_session = max(trial_idx), .groups = "drop") %>%
-                    arrange(subj_id, session) %>%
-                    group_by(subj_id) %>%
-                    mutate(trials_in_prev_session = lag(trials_per_session, default = 0)) %>%
-                    mutate(trials_before_session = lag(cumsum(trials_per_session), default = 0)) 
-
-df_kid <- df_kid %>%
-       merge(session_offsets, by = c("subj_id", "session")) %>%
-       mutate(trial_idx_across_sessions = trial_idx + trials_before_session)
-
-
-```
-
-```{r}
-# if less than 1 hour between sessions, count it as a single session
-min_time_between_sessions = 1/24
-df_kid <- df_kid %>%
-       mutate(session = ifelse((session>1)&(time_since_last_session<min_time_between_sessions), session-1, session),
-              trial_idx = ifelse((session>1)&(time_since_last_session<min_time_between_sessions), trial_idx+trials_in_prev_session, trial_idx)) %>%
-      group_by(subj_id) %>%
-      mutate(n_sessions = max(session)) %>%
-      ungroup()
-# time since last session no longer meaningful
-```
-
 
 
 ```{r}
@@ -713,6 +812,21 @@ ggplot(df_kid) +
 df_kid_pre <- preprocess_df_human(read.csv("../human_experiments/dots_app_kids/data/clean_data/data_pre_exclusion.csv")) %>% filter(n>2) %>% mutate(agent="Kids")
 
 ```
+```{r}
+ic_df <- df_kid_pre %>%
+               distinct(subj_id, passed_ic, age)
+
+ggplot(ic_df) +
+  geom_bar(aes(x=age, group=passed_ic, fill=passed_ic))
+
+
+ic_df %>%
+group_by(age, passed_ic) %>%
+summarize(count = n())
+  
+  
+```
+
 ## How close did kids get to failing IC?
 ```{r}
 

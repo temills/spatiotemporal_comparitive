@@ -1,0 +1,1296 @@
+---
+title: "visualize_predictions.Rmd"
+output: html_document
+date: "2025-08-08"
+---
+
+
+```{r, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.width=4, fig.height=3,fig.align = "center",cache=TRUE)
+library(ggplot2)
+library(reshape)
+library(grid)
+library(dplyr)
+library(gridExtra)
+library(lme4)
+library(reghelper)
+library(ggstar)
+library(RColorBrewer)
+library(robustbase)
+library(tidylog)
+library(tidyr)
+library(patchwork)
+library(cowplot)
+library(hash)
+library(rstan)
+library(png)
+library(gtable)
+library(ggimage)
+library(hash)
+library(purrr)
+library(stringr)
+library(ggforce)
+
+paper_theme <- theme_light() + theme(
+  axis.text.x=element_text(colour="#292929",
+                           size = 14), 
+  axis.title.x = element_text(size=18, family="Georgia"),
+  axis.title.y = element_text(size = 18, vjust = 1,  family="Georgia"),
+  axis.text.y  = element_text(size = 14, colour="#292929", family="Georgia"),
+  strip.text=element_text(size=16,color="black", family="Georgia"),
+  strip.background = element_rect(colour = "grey50", fill = "white"),
+  panel.background = element_rect(fill = "white", colour = "grey50"),
+  axis.ticks.x=element_blank(),axis.ticks.y=element_blank(),
+  axis.line.x = element_line(colour = "black"), 
+  axis.line.y = element_line(colour = "black"),
+  legend.title=element_text(size=18, family="Georgia"),
+  legend.text=element_text(size=15, family="Georgia"),
+  panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+
+
+preprocess_df_human <- function(df) {
+  df$id <- seq_len(nrow(df))
+  df$n <- df$tpt
+  df <- df[order(df$tpt),] %>%
+      rename(trial_idx=trial)
+  return(df)
+}
+
+
+get_ll <- function(df) {
+  logsumexp <- function(x) {
+    max_x <- max(x)
+    max_x + log(sum(exp(x - max_x)))
+  }
+  df <- df %>%
+    group_by(tpt, seq_id) %>%
+    mutate(norm = logsumexp(score)) %>%
+    ungroup() %>%
+    mutate(posterior = exp(score - norm)) 
+  return(df)
+}
+
+preprocess_df_model <- function(df_model) {
+  df_model$id <- seq.int(1,nrow(df_model))
+  df_model <- df_model %>%
+        get_ll() %>%
+        rename(func.name = seq_id) %>%
+        mutate(func.name = ifelse(func.name=="line", "line1", 
+                                  ifelse(func.name=="line2", "line", func.name)))
+  return(df_model)
+}
+
+
+df_adult <- preprocess_df_human(read.csv("data/adults.csv")) %>% arrange(tpt)
+df_lot <- preprocess_df_model(read.csv("data/lot.csv"))
+
+df_stimuli <- df_lot %>%
+              group_by(func.name, tpt) %>%
+              summarize(true_x=mean(true_x), true_y=mean(true_y)) %>%
+              group_by(func.name) %>%
+              arrange(tpt)
+
+
+df_stimuli <- df_stimuli %>% mutate(func_tpt = paste0(func.name, tpt)) %>% filter(func.name %in% unique(df_adult$func.name))
+df_adult <- df_adult %>% mutate(func_tpt = paste0(func.name, tpt))
+df_lot <- df_lot %>% mutate(func_tpt = paste0(func.name, tpt))
+
+```
+
+```{r}
+tmp <- df_lot %>%
+       group_by(func.name) %>%
+       summarize(max_tpt=max(tpt))
+```
+
+
+
+# Program learning visual
+```{r, fig.width=2.5, fig.height=2}
+ex_df <- read.csv("data/example_programs.csv") %>%
+         filter(!((func=="concat(move(), change_angle(int(-1)))") & (prediction_tpt>8)))
+x_min <- -1
+x_max <- 4.8
+y_min <- -1
+y_max <- 4.4
+
+fig_width = 1.5
+fig_height = 1.1
+
+ex_program_plot <- function(f) {
+  df <- ex_df %>% filter(func==f)
+  p <- ggplot(data=df) +
+       # true pattern
+       geom_path(data=df %>% filter(prediction_tpt<curr_tpt),
+                 aes(x=true_x, y=true_y), size=0.5, linetype="dotted") +
+       geom_point(data=df %>% filter(prediction_tpt<curr_tpt-1),
+                  aes(x=true_x, y=true_y), size=1.5, alpha=0.8, color="black") +
+       geom_star(data=df %>% filter(prediction_tpt==curr_tpt-1),
+                  aes(x=true_x, y=true_y), size = 2.5, starshape = 1, fill="black") +
+
+       # predictions
+       geom_path(data=df %>% filter(prediction_tpt>=curr_tpt-1),
+                 aes(x=pred_x, y=pred_y, color="LoT"), linewidth=0.8, linetype="dotted") +
+       geom_point(data=df %>% filter(prediction_tpt>=curr_tpt),
+                  aes(x=pred_x, y=pred_y, color="LoT"),
+                  shape=16, size=2, stroke=1) +
+        # theme
+        #scale_alpha(range=c(0.05,0.8)) +
+        scale_color_manual(values = c("Adults" = "#59ab9d", "LoT" = "#DBC740")) +
+        coord_cartesian(xlim=c(x_min, x_max), ylim=c(y_min, y_max)) +
+        theme_void() +
+        theme(panel.background = element_rect(fill = "white"),
+              plot.title = element_text(hjust = 0.5, size=18, family="Georgia")) +
+        guides(alpha="none", size="none", fill="none", color="none")
+
+  return(p)  
+}
+
+
+ex_data_plot <- function() {
+  df <- ex_df %>%
+        distinct(prediction_tpt, curr_tpt, true_x, true_y)
+  p <- ggplot(data=df) +
+       # true pattern
+       geom_path(data=df %>% filter(prediction_tpt<curr_tpt),
+                 aes(x=true_x, y=true_y), size=0.5, linetype="dotted") +
+       geom_point(data=df %>% filter(prediction_tpt<curr_tpt-1),
+                  aes(x=true_x, y=true_y), size=1.5, alpha=0.8, color="black") +
+       geom_star(data=df %>% filter(prediction_tpt==curr_tpt-1),
+                  aes(x=true_x, y=true_y), size = 2.5,starshape = 1, fill="black") +
+
+        # theme
+        #scale_alpha(range=c(0.05,0.8)) +
+        scale_color_manual(values = c("Adults" = "#59ab9d", "LoT" = "#DBC740")) +
+        coord_cartesian(xlim=c(x_min, x_max), ylim=c(y_min, y_max)) +
+        theme_void() +
+        theme(panel.background = element_rect(fill = "white"),
+              plot.title = element_text(hjust = 0.5, size=18, family="Georgia")) +
+        guides(alpha="none", size="none", fill="none", color="none")
+
+  return(p)  
+}
+ex_prediction_plot <- function() {
+  df <- ex_df
+  p <- ggplot(data=df) +
+       # true pattern
+       geom_path(data=df %>%
+                      distinct(prediction_tpt, curr_tpt, true_x, true_y) %>%
+                      filter(prediction_tpt<curr_tpt),
+                 aes(x=true_x, y=true_y), size=0.5, linetype="dotted") +
+       geom_point(data=df %>%
+                       distinct(prediction_tpt, curr_tpt, true_x, true_y) %>%
+                       filter(prediction_tpt<curr_tpt-1),
+                  aes(x=true_x, y=true_y), size=1.5, alpha=0.8, color="black") +
+       
+    geom_star(data=df %>%
+                       distinct(prediction_tpt, curr_tpt, true_x, true_y) %>%
+                       filter(prediction_tpt==curr_tpt-1),
+                  aes(x=true_x, y=true_y), size = 2.5,starshape = 1, fill="black") +
+       # Predictions
+       geom_point(data=df %>% filter(prediction_tpt==curr_tpt),
+                  aes(x=pred_x, y=pred_y, color="LoT",
+                   alpha=log(posterior)), shape=4, size=1.5, stroke=1) +
+                  #shape=16, size=2, stroke=1) +
+        # theme
+        scale_alpha(range=c(0.3,0.8)) +
+        scale_color_manual(values = c("Adults" = "#59ab9d", "LoT" = "#DBC740")) +
+        coord_cartesian(xlim=c(x_min, x_max), ylim=c(y_min, y_max)) +
+        theme_void() +
+        theme(panel.background = element_rect(fill = "white"),
+              plot.title = element_text(hjust = 0.5, size=18, family="Georgia")) +
+        guides(alpha="none", size="none", fill="none", color="none")
+
+  return(p)  
+}
+
+# plot data, predictions, programs
+p <- ex_data_plot()
+print(p)
+ggsave("../figs/example_program_data.png", width=fig_width, height=fig_height)
+p <- ex_prediction_plot()
+print(p)
+ggsave("../figs/example_program_predictions.png", width=fig_width, height=fig_height)
+for (f in unique(ex_df$func)) {
+  p <- ex_program_plot(f)
+  print(p)
+  ggsave(paste0("../figs/example_program_", f, ".png"), width=fig_width, height=fig_height)
+}
+
+```
+
+
+
+
+
+# LoT + Human sequences
+```{r, fig.width=14, fig.height=2}
+make_sequence_plots_facet <- function(func_name, t_min=NULL, t_max=NULL, n_top=NULL) {
+  
+  if (is.null(t_min)) t_min <- min(df_adult$tpt)
+  if (is.null(t_max)) t_max <- max(df_adult$tpt)
+  t_min <- max(t_min, min(df_adult$tpt))
+  t_max <- min(t_max, max(df_adult$tpt))
+  if (is.null(n_top)) n_top <- length(unique(df_lot$particle))
+  
+  
+  df_hum <- df_adult %>%
+            filter((func.name == func_name) & (tpt < t_max+1) & (tpt>=t_min)) 
+  
+  df_stim <- df_stimuli %>%
+            filter((func.name == func_name) & (tpt < t_max+1))
+  
+  df_mod <- df_lot %>%
+            filter((func.name == func_name) & (tpt < t_max+1) & (tpt>=t_min)) %>%
+            group_by(tpt) %>%
+            slice_max(n=n_top, order_by=posterior)
+            
+            
+  x_min <- min(min(min(df_stim$true_x, na.rm=TRUE), min(df_hum$pred_x, na.rm=TRUE)),
+               min(df_mod$pred_x, na.rm=TRUE))
+  x_max <- max(max(max(df_stim$true_x, na.rm=TRUE), max(df_hum$pred_x, na.rm=TRUE)),
+               max(df_mod$pred_x, na.rm=TRUE))
+  y_min <- min(min(min(df_stim$true_y, na.rm=TRUE), min(df_hum$pred_y, na.rm=TRUE)),
+               min(df_mod$pred_y, na.rm=TRUE))
+  y_max <- max(max(max(df_stim$true_y, na.rm=TRUE), max(df_hum$pred_y, na.rm=TRUE)),
+               max(df_mod$pred_y, na.rm=TRUE))
+  
+  plots <- list()
+  
+  for (t in t_min:t_max) {
+    df_tpt_hum <- subset(df_hum, (df_hum$tpt == t)) %>%
+                  mutate(agent="Adults") %>%
+                  mutate(posterior=1/20)
+    
+    df_tpt_mod <- subset(df_mod, (df_mod$tpt == t)) %>%
+                  mutate(agent="LoT")
+    df_tpt <- bind_rows(df_tpt_hum, df_tpt_mod)
+
+    df_last <- subset(df_stim, (df_stim$tpt == t-1))
+
+    df_hist <- df_stim[order(df_stim$tpt),] %>% filter(tpt < t)
+    df_prev <- df_stim[order(df_stim$tpt),] %>% filter(tpt < t-1)
+
+    p <- ggplot() +
+      geom_path(data=df_hist, aes(x=true_x, y=true_y), size=0.5, linetype="dotted") +
+      geom_point(data=df_prev, aes(x=true_x, y=true_y), size=1.5, alpha=0.8, color="black") +
+      geom_point(data=df_last, aes(x=true_x, y=true_y), size=4, shape="*") +
+      # geom_point(data=df_tpt_mod, aes(x=pred_x, y=pred_y, color="LoT", alpha=log(posterior)), shape=16, size=3.5) +
+      # geom_point(data=df_tpt, aes(x=pred_x, y=pred_y, color=agent), shape=16, size=3.5, alpha=0.6) +
+      geom_point(data=df_tpt, aes(x=pred_x, y=pred_y, color=agent, alpha=log(posterior)), shape=16, size=2, stroke=1) +
+      
+      
+      #geom_point(data=df_tpt_mod, aes(x=pred_x, y=pred_y, color="LoT"),shape=8, size=1.5, stroke=1) +
+      scale_alpha(range=c(0.05,0.8)) +
+      scale_color_manual(values = c("Adults" = "#59ab9d", "LoT" = "#DBC740")) + #"#FFD92F")) +
+      
+      coord_cartesian(xlim=c(x_min, x_max), ylim=c(y_min, y_max)) +
+      theme_void() +
+      theme(panel.background = element_rect(fill = "white"),
+            plot.title = element_text(hjust = 0.5, size=18, family="Georgia")) +
+      guides(alpha="none", size="none", fill="none", color="none") +
+      facet_wrap(~agent, nrow=2)
+    # ggtitle(sprintf("T=%d", t)) 
+    
+    plots[[length(plots) + 1]] <- p
+  }
+  return(plots)
+}
+
+
+
+
+
+make_sequence_plots <- function(func_name, t_min=NULL, t_max=NULL, n_top=NULL) {
+  
+  if (is.null(t_min)) t_min <- min(df_adult$tpt)
+  if (is.null(t_max)) t_max <- max(df_adult$tpt)
+  t_min <- max(t_min, min(df_adult$tpt))
+  t_max <- min(t_max, max(df_adult$tpt))
+  if (is.null(n_top)) n_top <- length(unique(df_lot$particle))
+  
+  
+  df_hum <- df_adult %>%
+            filter((func.name == func_name) & (tpt < t_max+1) & (tpt>=t_min)) 
+  
+  df_stim <- df_stimuli %>%
+            filter((func.name == func_name) & (tpt < t_max+1))
+  
+  df_mod <- df_lot %>%
+            filter((func.name == func_name) & (tpt < t_max+1) & (tpt>=t_min)) %>%
+            group_by(tpt) %>%
+            slice_max(n=n_top, order_by=posterior)
+            
+            
+  x_min <- min(min(min(df_stim$true_x, na.rm=TRUE), min(df_hum$pred_x, na.rm=TRUE)),
+               min(df_mod$pred_x, na.rm=TRUE))
+  x_max <- max(max(max(df_stim$true_x, na.rm=TRUE), max(df_hum$pred_x, na.rm=TRUE)),
+               max(df_mod$pred_x, na.rm=TRUE))
+  y_min <- min(min(min(df_stim$true_y, na.rm=TRUE), min(df_hum$pred_y, na.rm=TRUE)),
+               min(df_mod$pred_y, na.rm=TRUE))
+  y_max <- max(max(max(df_stim$true_y, na.rm=TRUE), max(df_hum$pred_y, na.rm=TRUE)),
+               max(df_mod$pred_y, na.rm=TRUE))
+  # x_min <- min(min(df_stim$true_x, na.rm=TRUE), min(df_hum$pred_x, na.rm=TRUE))
+  # x_max <- max(max(df_stim$true_x, na.rm=TRUE), max(df_hum$pred_x, na.rm=TRUE))
+  # y_min <- min(min(df_stim$true_y, na.rm=TRUE), min(df_hum$pred_y, na.rm=TRUE))
+  # y_max <- max(max(df_stim$true_y, na.rm=TRUE), max(df_hum$pred_y, na.rm=TRUE))
+  
+  x_rng <- x_max - x_min
+  y_rng <- y_max - y_min
+  
+  
+  plots <- list()
+  
+  for (t in t_min:t_max) {
+    df_tpt_hum <- subset(df_hum, (df_hum$tpt == t)) %>%
+                  mutate(agent="Adults")
+    
+    df_tpt_mod <- subset(df_mod, (df_mod$tpt == t)) %>%
+                  mutate(agent="LoT")
+
+    df_last <- subset(df_stim, (df_stim$tpt == t-1))
+
+    df_hist <- df_stim[order(df_stim$tpt),] %>% filter(tpt < t)
+    df_prev <- df_stim[order(df_stim$tpt),] %>% filter(tpt < t-1)
+
+    p <- ggplot() +
+      geom_path(data=df_hist, aes(x=true_x, y=true_y), size=0.5, linetype="dotted") +
+      geom_point(data=df_prev, aes(x=true_x, y=true_y), size=1.5, alpha=0.8, color="black") +
+      geom_star(data=df_last, aes(x=true_x, y=true_y), size = 2, starshape = 1, fill="black") +
+      geom_point(data=df_tpt_hum, aes(x=pred_x, y=pred_y, color="Adults"), shape=16, size=3.5, alpha=0.6) +
+      
+      # geom_point(data=df_tpt_mod, aes(x=pred_x, y=pred_y, alpha=log(posterior)), shape=8, size=1.5, color="blue", stroke=1) +
+      geom_point(data=df_tpt_mod, aes(x=pred_x, y=pred_y, color="LoT", alpha=log(posterior)), shape=4, size=1.2, stroke=1.2) +
+      scale_alpha(range=c(0.01,0.7)) +
+      scale_color_manual(values = c("Adults" = "#59ab9d", "LoT" = "#DBC740")) + #"#FFD92F")) +
+      
+      coord_cartesian(xlim=c(x_min, x_max), ylim=c(y_min, y_max)) +
+      theme_void() +
+      theme(panel.background = element_rect(fill = "white"),
+            plot.title = element_text(hjust = 0.5, size=18, family="Georgia")) +
+      guides(alpha="none", size="none", fill="none", color="none")
+    # ggtitle(sprintf("T=%d", t)) 
+    
+    plots[[length(plots) + 1]] <- p
+  }
+  return(plots)
+}
+
+func <- "3_lines_of_3"
+plots <- make_sequence_plots(func, t_min=2, t_max=14)
+plots <- lapply(plots, function(p) {
+  p + theme(plot.margin = margin(0.05, 0.01, 0.05, 0.01, "in"))
+})
+p1 <- grid.arrange(grobs=plots, nrow=1)
+
+func <- "triangle_spiral"
+plots <- make_sequence_plots(func, t_min=6, t_max=12)
+plots <- lapply(plots, function(p) {
+  p + theme(plot.margin = margin(0.05, 0.01, 0.05, 0.01, "in"))
+})
+p2 <- grid.arrange(grobs=plots, nrow=1)
+
+func <- "growing_stairs_1"
+plots <- make_sequence_plots(func, t_min=6, t_max=14)
+plots <- lapply(plots, function(p) {
+  p + theme(plot.margin = margin(0.05, 0.01, 0.05, 0.01, "in"))
+})
+p3 <- grid.arrange(grobs=plots, nrow=1)
+
+func <- "growing_stairs_2"
+plots <- make_sequence_plots(func, t_min=6, t_max=12)
+plots <- lapply(plots, function(p) {
+  p + theme(plot.margin = margin(0.05, 0.01, 0.05, 0.01, "in"))
+})
+p7 <- grid.arrange(grobs=plots, nrow=1)
+
+func <- "increasing_lines"
+plots <- make_sequence_plots(func, t_min=2, t_max=8)
+plots <- lapply(plots, function(p) {
+  p + theme(plot.margin = margin(0.05, 0.01, 0.05, 0.01, "in"))
+})
+p4 <- grid.arrange(grobs=plots, nrow=1)
+
+func <- "zigzag_increasing_widening"
+plots <- make_sequence_plots(func, t_min=10, t_max=16)
+plots <- lapply(plots, function(p) {
+  p + theme(plot.margin = margin(0.05, 0.01, 0.05, 0.01, "in"))
+})
+p5 <- grid.arrange(grobs=plots, nrow=1)
+
+func <- "alternating_diff_1"
+plots <- make_sequence_plots(func, t_min=3, t_max=9)
+plots <- lapply(plots, function(p) {
+  p + theme(plot.margin = margin(0.05, 0.01, 0.05, 0.01, "in"))
+})
+p6 <- grid.arrange(grobs=plots, nrow=1)
+
+p_all <- grid.arrange(grobs=list(p2,p6,p4,p7), nrow=4) #p1,p5,p3,
+
+legend <- cowplot::get_legend(plots[[1]] +
+                              guides(color = guide_legend()) +
+                              theme(legend.position = "top",
+                                    legend.title = element_blank(),
+                                    #legend.spacing.x = unit(15, "cm"), 
+                                    legend.text = element_text(size = 18,
+                                                                margin = margin(r = 15, l=5))))
+final_plot <- plot_grid(
+  legend,
+  p_all,
+  ncol = 1,
+  rel_heights = c(0.08, 1) 
+)
+
+final_plot
+ggsave(plot=final_plot, "../figs/example_neurips_predictions.png", width=10.4, height=5.6, bg="white")
+```
+
+# Save all seqs
+```{r}
+for (func in unique(df_adult$func.name)) {
+  plots <- make_sequence_plots(func, t_min=2, t_max=10)
+  plots <- lapply(plots, function(p) {
+    p + theme(plot.margin = margin(0.2, 0.05, 0.2, 0.05, "in"))
+  })
+  p <- grid.arrange(grobs=plots, nrow=1)
+  ggsave(plot=p, paste0("seq_imgs/", func, ".png"), width=14, height=3.5,dpi=400)
+}
+```
+
+# Model only
+
+```{r, fig.width=10. fig.height=3}
+model_sequence_plots <- function(func_name, t_min=NULL, t_max=NULL, n_top=NULL) {
+  
+  if (is.null(t_min)) t_min <- min(df_adult$tpt)
+  if (is.null(t_max)) t_max <- max(df_adult$tpt)
+  t_min <- max(t_min, min(df_adult$tpt))
+  t_max <- min(t_max, max(df_adult$tpt))
+  if (is.null(n_top)) n_top <- length(unique(df_lot$particle))
+  
+  df_stim <- df_stimuli %>%
+            filter((func.name == func_name) & (tpt < t_max+1))
+  
+  df_mod <- df_lot %>%
+            filter((func.name == func_name) & (tpt < t_max+1) & (tpt>=t_min)) %>%
+            group_by(tpt) %>%
+            slice_max(n=n_top, order_by=posterior)
+            
+            
+  x_min <- min(min(df_stim$true_x, na.rm=TRUE), min(df_mod$pred_x, na.rm=TRUE))
+  x_max <- max(max(df_stim$true_x, na.rm=TRUE), max(df_mod$pred_x, na.rm=TRUE))
+  y_min <- min(min(df_stim$true_y, na.rm=TRUE), min(df_mod$pred_y, na.rm=TRUE))
+  y_max <- max(max(df_stim$true_y, na.rm=TRUE), max(df_mod$pred_y, na.rm=TRUE))
+  
+  plots <- list()
+  
+  for (t in t_min:t_max) {
+    df_tpt_mod <- subset(df_mod, (df_mod$tpt == t))
+
+    df_last <- subset(df_stim, (df_stim$tpt == t-1))
+
+    df_hist <- df_stim[order(df_stim$tpt),] %>% filter(tpt < t)
+    df_prev <- df_stim[order(df_stim$tpt),] %>% filter(tpt < t-1)
+
+    p <- ggplot() +
+      geom_path(data=df_hist, aes(x=true_x, y=true_y), size=0.5, linetype="dotted") +
+      geom_point(data=df_prev, aes(x=true_x, y=true_y), size=1.5, alpha=0.8, color="black") +
+      geom_text(data=df_last, aes(x=true_x, y=true_y), size=4, label="★") +
+      # geom_point(data=df_tpt_mod, aes(x=pred_x, y=pred_y, color="LoT", alpha=log(posterior)), shape=16, size=3.5) +
+      geom_point(data=df_tpt_mod, aes(x=pred_x, y=pred_y, color="LoT", alpha=log(posterior)),shape=8, size=1.5, stroke=1) +
+      #geom_point(data=df_tpt_mod, aes(x=pred_x, y=pred_y, color="LoT"),shape=8, size=1.5, stroke=1) +
+      scale_alpha(range=c(0.05,0.8)) +
+      scale_color_manual(values = c("Adults" = "#59ab9d", "LoT" = "#DBC740")) + #"#FFD92F")) +
+      
+      coord_cartesian(xlim=c(x_min, x_max), ylim=c(y_min, y_max)) +
+      theme_void() +
+      theme(panel.background = element_rect(fill = "white"),
+            plot.title = element_text(hjust = 0.5, size=18, family="Georgia")) +
+      guides(alpha="none", size="none", fill="none", color="none") #+
+    # ggtitle(sprintf("T=%d", t)) 
+    
+    plots[[length(plots) + 1]] <- p
+  }
+  return(plots)
+}
+
+df_lot <- preprocess_df_model(read.csv("../data/models/lot.csv"))
+
+# Save extended predictions and programs and probabilities
+for (func in unique(df_lot$func.name)) {
+  #for (t_min in c(3, 9)) {
+  plots <- model_sequence_plots(func, t_min=2, t_max=10)
+  plots <- lapply(plots, function(p) {
+    p + theme(plot.margin = margin(0.2, 0.05, 0.2, 0.05, "in"))
+  })
+  p <- grid.arrange(grobs=plots, nrow=1)
+  ggsave(plot=p, paste0("model_seq_imgs2/", func, ".png"), width=14, height=2.5,dpi=400)
+  #}
+}
+
+
+```
+
+
+# Extended predictions
+```{r, fig.height=8}
+preprocess_model_extended <- function(df) {
+  logsumexp <- function(x) {
+    max_x <- max(x)
+    max_x + log(sum(exp(x - max_x)))
+  }
+  df <- df %>%
+        group_by(curr_tpt, prediction_tpt, seq_id) %>%
+        mutate(norm = logsumexp(score)) %>%
+        ungroup() %>%
+        mutate(posterior = exp(score - norm))  %>%
+        group_by(curr_tpt, prediction_tpt, seq_id) %>%
+        mutate(r = rank(desc(posterior))) %>%
+        ungroup() %>%
+        rename(func.name=seq_id)
+}
+
+df_lot_ext <- preprocess_model_extended(read.csv('../data/models/lot_extended.csv')) %>% mutate(model="LoT")
+
+df_stim <- df_stimuli
+
+df_model <- df_lot_ext %>% mutate(hyp=func)
+
+
+plot_tpt <- function(seq, t) {
+    df_true <- df_stim %>%
+               filter(func.name==seq) %>%
+               filter(tpt<t) %>%
+               mutate(max_tpt=t-1)
+  
+    df_model_points <- df_model %>%
+                      group_by(func.name, curr_tpt, model) %>%
+                      filter(func.name==seq) %>% 
+                      filter(curr_tpt == t) %>%
+                      #filter(prediction_tpt >= curr_tpt) %>%
+                      filter(prediction_tpt <= curr_tpt+n_extended) 
+    
+    df_model_path <- df_model %>%
+                    group_by(func.name, curr_tpt, model) %>%
+                    filter(func.name==seq)  %>% 
+                    filter(curr_tpt == t) %>%
+                    #filter(prediction_tpt >= curr_tpt-1) %>%
+                    filter(prediction_tpt <= curr_tpt+n_extended) %>%
+                    group_by(model) %>%
+                    mutate(pred_x = ifelse(prediction_tpt==curr_tpt-1, true_x, pred_x)) %>%
+                    mutate(pred_y = ifelse(prediction_tpt==curr_tpt-1, true_y, pred_y))  %>%
+                    ungroup()
+    
+    x_min = min(min(df_true$true_x), min(df_model_points$pred_x))
+    y_min = min(min(df_true$true_y), min(df_model_points$pred_y))
+
+    p <- ggplot() +
+        scale_alpha_continuous(range = c(0.3, 1)) +
+        # Predicted patterns
+        geom_path(data=df_model_path%>%filter(prediction_tpt<=curr_tpt),
+                  aes(x=pred_x, y=pred_y, group=model, color=model),
+                  linetype="solid", alpha=0.9, linewidth=0.8) +
+        geom_path(data=df_model_path, aes(x=pred_x, y=pred_y, group=model, color=model), 
+                   linetype="solid", alpha=0.6, linewidth=0.8) +
+        geom_point(data=df_model_points %>% filter(prediction_tpt<=curr_tpt),
+                   aes(x=pred_x, y=pred_y, group=model, color=model),
+                   size=2.5, alpha=0.9) +
+        geom_point(data=df_model_points,
+                   aes(x=pred_x, y=pred_y, group=model, color=model),
+                   size=2.5, alpha=0.6) +
+      
+        # True pattern
+        geom_path(data=df_true, aes(x=true_x, y=true_y), linetype="dotted", linewidth=0.8) +
+        geom_point(data=df_true %>% filter(tpt < max_tpt), aes(x=true_x, y=true_y, alpha=tpt), size=2.5) +
+        geom_text(data=df_true %>% filter(tpt == max_tpt), aes(x=true_x, y=true_y),  size=4, label="★") +
+        geom_text(data=df_model_points,
+                    aes(x = -Inf, y = Inf, label = paste0(hyp, "\n", posterior)),
+                    size=2.5,
+                    hjust = 0, vjust = 1.1) +
+                    #nudge_x = -0.02) +
+                    #family = "Arial Narrow", 
+                    #fontface = "bold.italic") +
+
+        #scale_color_manual(values = list("LoT"="blue")) +
+        paper_theme +
+        theme(legend.title=element_blank(),
+              axis.title.x = element_blank(),
+              axis.title.y = element_blank(),
+              axis.text.x = element_blank(),
+              axis.text.y = element_blank(),
+              strip.text=element_blank(),
+              panel.border = element_rect(color = "black", fill = NA, size = 0.5),
+              strip.text.y.right = element_blank()
+              ) +
+        
+        guides(alpha="none",
+               color = "none",
+               shape = "none") +
+        facet_wrap(~particle, scales="free")
+
+    return(p)
+}
+
+
+n_extended = 10
+
+
+f <- "alternating_diff_1"
+t <- 3
+p <- plot_tpt(f, t)
+print(p)
+
+# 
+# for (f in unique(df_lot$func.name)) {
+#   print(f)
+#   for (t in (1:20)) {
+#       if (length((df_lot%>%filter((curr_tpt==t)&(func.name==f)))$pred_x) > 0) {
+#           print(length((df_lot%>%filter((curr_tpt==t)&(func.name==f)))$pred_x))
+#           p <- plot_tpt(f, t)
+#           ggsave(plot=p, paste0("extension_example_imgs/", f, "_", t, ".png"), width=10, height=6,dpi=400)
+#       }
+#   }
+# }
+
+
+
+```
+
+
+
+
+
+```{r, fig.width=10. fig.height=3}
+tmp <- df_lot %>%
+       filter(func.name=="alternating_diff_1") %>%
+       group_by(tpt) %>%
+       slice_max(n=3, order_by=posterior) %>%
+       select(c(tpt, func, posterior)) %>%
+       filter(tpt>1)
+
+
+func <- "alternating_diff_1"
+plots <- model_sequence_plots(func, t_min=3, t_max=11, n_top=15)
+plots <- lapply(plots, function(p) {
+  p + theme(plot.margin = margin(0.05, 0.01, 0.05, 0.01, "in"))
+})
+p3 <- grid.arrange(grobs=plots, nrow=1)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# V2
+
+```{r}
+f_list <- c(#"increasing_lines","increasing_lines","increasing_lines",
+            "growing_stairs_1","growing_stairs_1", "growing_stairs_1",
+            #"triangle_1","triangle_1","triangle_1",
+            #"sine_line", "sine_line", "sine_line",
+            #"alternating_diff_2","alternating_diff_2","alternating_diff_2",
+            "hexagon_spiral", "hexagon_spiral", "hexagon_spiral", 
+            #"square_1","square_1","square_1",
+            "square_spiral","square_spiral","square_spiral", 
+            "triangle_spiral", "triangle_spiral","triangle_spiral",
+             "growing_stairs_2","growing_stairs_2","growing_stairs_2")
+            #"zigzag_1", "zigzag_1", "zigzag_1")
+            #"zigzag_2", "zigzag_2","zigzag_2")
+            #"zigzag_increasing", "zigzag_increasing", "zigzag_increasing")
+
+#"growing_stairs_1", "triangle_spiral",
+
+t_list <- c(#6,7,8,
+            9,10,11,
+            #3,4,5,
+            #2,3,4,
+            #2,3,4,
+            6,7,8,
+            #3,4,5,
+            4,5,6,
+            6,7,8,
+            #3,4,5,
+            5,6,7)#,
+            #12,13,14)
+            #9,10,11)
+
+
+stim <- bind_rows(
+          mapply(function(f, t) {
+            df_stimuli %>% filter(func.name == f, tpt < t)  %>% mutate(pred_tpt=t) %>% mutate(facet_var=paste0(f,t))
+          }, f_list, t_list, SIMPLIFY = FALSE)
+        )
+
+lot <- bind_rows(
+          mapply(function(f, t) {
+            df_lot %>% filter(func.name == f, tpt == t)  %>% mutate(pred_tpt=t) %>% mutate(facet_var=paste0(f,t))
+          }, f_list, t_list, SIMPLIFY = FALSE)
+        ) %>%
+        group_by(func.name) %>%
+        mutate(min_x=min(pred_x), min_y=min(pred_y), max_x=max(pred_x), max_y=max(pred_y))
+hum <- bind_rows(
+          mapply(function(f, t) {
+            df_adult %>% filter(func.name == f, tpt == t) %>% mutate(pred_tpt=t) %>% mutate(facet_var=paste0(f,t))
+          }, f_list, t_list, SIMPLIFY = FALSE)
+        ) %>%
+        group_by(func.name) %>%
+        mutate(min_x=min(pred_x), min_y=min(pred_y), max_x=max(pred_x), max_y=max(pred_y))
+set.seed(1)
+facet_levels <- paste0(f_list, t_list)
+
+stim$facet_var <- factor(stim$facet_var, levels = facet_levels)
+lot$facet_var  <- factor(lot$facet_var,  levels = facet_levels)
+hum$facet_var  <- factor(hum$facet_var,  levels = facet_levels)
+
+#stim$facet_var <- factor(stim$facet_var, levels = sample(unique(stim$facet_var)))
+#lot$facet_var <- factor(lot$facet_var, levels = sample(unique(lot$facet_var)))
+#hum$facet_var <- factor(hum$facet_var, levels = sample(unique(hum$facet_var)))
+p2 <- ggplot(data=stim) +
+      geom_path(data=stim, aes(x=true_x, y=true_y), linetype="dotted", color="darkgrey") + 
+      geom_point(data=stim, aes(x=true_x, y=true_y, alpha=tpt), size=1.5) +
+      scale_alpha_continuous(range = c(0.4, 1)) +
+      geom_point(data=lot, aes(x=pred_x, y=pred_y, color="LoT"), shape=16, size=2.9, alpha=0.6) +
+      geom_point(data=hum, aes(x=pred_x, y=pred_y, color="Adults"), shape=1, size=1.2, stroke=0.8, alpha=0.8) +
+      geom_point(data=hum, aes(x=min_x, y=min_y), alpha=0) +
+      geom_point(data=lot, aes(x=min_x, y=min_y), alpha=0) +
+      geom_point(data=hum, aes(x=max_x, y=max_y), alpha=0) +
+      geom_point(data=lot, aes(x=max_x, y=max_y), alpha=0) +
+      #geom_point(data=df_lot%>%filter((tpt==t)&(func.name==f)), aes(x=pred_x, y=pred_y, color="LoT"), size=2,  shape=1, stroke=1) +
+  
+      scale_color_manual(values = c("Adults" = "#59ab9d", "LoT" = "#FFD92F")) +
+      paper_theme + 
+      theme(strip.text=element_blank(),
+            axis.text.x=element_blank(),
+            axis.text.y = element_blank(),
+            axis.title.x=element_blank(),
+            axis.title.y=element_blank(),
+            axis.line.x = element_blank(),
+            axis.line.y = element_blank(),
+            panel.spacing.x = unit(0.01, "lines"),
+            panel.spacing.y = unit(0.4, "lines") ,
+            legend.title=element_blank()
+            ) +
+      guides(color="none", alpha="none") +
+      #coord_fixed()
+     facet_wrap(~facet_var, scales="free", nrow=7, dir = "h")
+  
+p2
+ggsave("tmp5.png", width=5, height=8)
+```
+
+# Combine plots
+```{r, fig.width=10}
+
+legend <- cowplot::get_legend(p2 +
+                              guides(color = guide_legend()) +
+                              theme(legend.position = "top",
+                                    legend.title = element_blank(),
+                                    legend.text = element_text(size = 12)))
+                                    #margin = margin(r = 15, l=5))))
+final_plot <- plot_grid(
+  legend,
+  p2,
+  ncol = 1,
+  rel_heights = c(0.05, 1) 
+)
+
+final_plot
+ggsave("example_neurips_predictions.png", width=4, height=5.4, bg="white")
+```
+
+
+
+
+
+###################################
+
+# Plot all sequences and predictions
+```{r, fig.width=10, fig.height=4}
+# Eventually rescale these
+
+p1 <- ggplot(df_adult) +
+  geom_point(data=df_stimuli, aes(x=true_x, y=true_y), size=1) +
+  geom_path(data=df_stimuli, aes(x=true_x, y=true_y), linetype="dotted", color="darkgrey") + 
+  geom_point(aes(x=pred_x, y=pred_y, color=tpt), alpha=0.5, size=1) +
+  scale_color_gradient2(low="blue", mid="red", high="gold", midpoint=10, name="Timepoint") +
+  paper_theme + 
+  theme(strip.text=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        axis.line.x = element_blank(),
+        axis.line.y = element_blank(),
+        panel.spacing.x = unit(0.1, "lines"),
+        panel.spacing.y = unit(0.1, "lines"),
+        ) +
+  facet_wrap(~func.name, scales="free", nrow=10) +
+  guides(color="none")
+p1
+
+ggsave("tmp.png", width=5, height=8)
+
+```
+
+# Individual timepoint imgs
+```{r, fig.width=10, fig.height=3.5}
+make_tpt_img <- function(f) {
+  f_list <- c(f) #c("stairs", "stairs_2", "square_spiral", "alternating_diff_2", "square_2", "alternating_diff_1",
+              #"hexagon", "radial_1", "zigzag_widening", "hourglass_1", "zigzag_1", "3_pts")
+  #t_list <- c(t) #c(3,6,7,4,2,8,9,5,3,2,5,6)
+  stim <- df_stimuli %>% filter(func.name == f)
+
+  lot <- df_lot %>% filter(func.name == f)
+  hum <- df_adult %>% filter(func.name == f)
+  ggplot() +
+      geom_path(data=stim, aes(x=true_x, y=true_y), linetype="dotted", color="darkgrey") + 
+      geom_point(data=stim, aes(x=true_x, y=true_y), size=2) +
+      geom_point(data=lot, aes(x=pred_x, y=pred_y, color="LoT", alpha=posterior), size=2, stroke=1) +
+      geom_point(data=hum, aes(x=pred_x, y=pred_y, color="Adults"), size=2, alpha=0.5) +
+      #geom_point(data=df_lot%>%filter((tpt==t)&(func.name==f)), aes(x=pred_x, y=pred_y, color="LoT"), size=2,  shape=1, stroke=1) +
+  
+      scale_color_manual(values = c("Adults" = "#66C2A5", "LoT" = "gold")) +
+      paper_theme + 
+      theme(strip.text=element_blank(),
+            axis.text.x=element_blank(),
+            axis.text.y = element_blank(),
+            axis.title.x=element_blank(),
+            axis.title.y=element_blank(),
+            axis.line.x = element_blank(),
+            axis.line.y = element_blank()
+            ) +
+      guides(color="none", alpha="none") +
+      facet_wrap(~tpt, nrow=1)
+     #facet_wrap(~func.name, scales="free", nrow=2)
+  
+  ggsave(paste0("tpt_imgs_progression/", f, ".png"), width=10, height=3)
+
+}
+
+
+for (f in unique(df_adult$func.name)) {
+  dir.create(paste0("tpt_imgs_progression/", f))
+  #for (t in c(1:20)) {
+  make_tpt_img(f, t)
+  #}
+}
+
+
+#plots <- mapply(plot_tpt, arg1_list, arg2_list, SIMPLIFY = FALSE)
+
+#plot_grid(plotlist = plots, nrow = 2, align = "hv", axis = "tblr")
+#wrap_plots(plots, nrow = 2)
+
+```
+
+
+###################################
+
+# Plot all sequences and predictions
+```{r, fig.width=10, fig.height=4}
+
+p1 <- ggplot(df_adult) +
+  geom_point(data=df_stimuli, aes(x=true_x, y=true_y), size=1) +
+  geom_path(data=df_stimuli, aes(x=true_x, y=true_y), linetype="dotted", color="darkgrey") + 
+  geom_point(aes(x=pred_x, y=pred_y, color=tpt), alpha=0.5, size=1) +
+  scale_color_gradient2(low="blue", mid="red", high="gold", midpoint=10, name="Timepoint") +
+  paper_theme + 
+  theme(strip.text=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        axis.line.x = element_blank(),
+        axis.line.y = element_blank(),
+        panel.spacing.x = unit(0.1, "lines"),
+        panel.spacing.y = unit(0.1, "lines"),
+        ) +
+  facet_wrap(~func.name, scales="free", nrow=5) +
+  guides(color="none")
+p1
+
+ggsave("tmp.png", width=10, height=4)
+
+```
+
+# Individual timepoint imgs
+```{r, fig.width=10, fig.height=3.5}
+make_tpt_img <- function(f, t) {
+  f_list <- c(f) #c("stairs", "stairs_2", "square_spiral", "alternating_diff_2", "square_2", "alternating_diff_1",
+              #"hexagon", "radial_1", "zigzag_widening", "hourglass_1", "zigzag_1", "3_pts")
+  t_list <- c(t) #c(3,6,7,4,2,8,9,5,3,2,5,6)
+  stim <- bind_rows(
+            mapply(function(f, t) {
+              df_stimuli %>% filter(func.name == f, tpt < t)
+            }, f_list, t_list, SIMPLIFY = FALSE)
+          )
+  
+  lot <- bind_rows(
+            mapply(function(f, t) {
+              df_lot %>% filter(func.name == f, tpt == t)
+            }, f_list, t_list, SIMPLIFY = FALSE)
+          )
+  hum <- bind_rows(
+            mapply(function(f, t) {
+              df_adult %>% filter(func.name == f, tpt == t)
+            }, f_list, t_list, SIMPLIFY = FALSE)
+          )
+  ggplot() +
+      geom_path(data=stim, aes(x=true_x, y=true_y), linetype="dotted", color="darkgrey") + 
+      geom_point(data=stim, aes(x=true_x, y=true_y), size=2) +
+      geom_point(data=lot, aes(x=pred_x, y=pred_y, color="LoT", alpha=posterior), size=2, stroke=1) +
+      geom_point(data=hum, aes(x=pred_x, y=pred_y, color="Adults"), size=2, alpha=0.5) +
+      #geom_point(data=df_lot%>%filter((tpt==t)&(func.name==f)), aes(x=pred_x, y=pred_y, color="LoT"), size=2,  shape=1, stroke=1) +
+  
+      scale_color_manual(values = c("Adults" = "gold", "LoT" = "#66C2A5")) +
+      paper_theme + 
+      theme(strip.text=element_blank(),
+            axis.text.x=element_blank(),
+            axis.text.y = element_blank(),
+            axis.title.x=element_blank(),
+            axis.title.y=element_blank(),
+            axis.line.x = element_blank(),
+            axis.line.y = element_blank()
+            ) +
+      guides(color="none", alpha="none") +
+    coord_fixed()
+     #facet_wrap(~func.name, scales="free", nrow=2)
+  
+  ggsave(paste0("tpt_imgs_alpha/", f, "/", t, ".png"), width=3, height=3)
+
+}
+
+
+for (f in unique(df_adult$func.name)) {
+  dir.create(paste0("tpt_imgs_alpha/", f))
+  for (t in c(1:20)) {
+    make_tpt_img(f, t)
+  }
+}
+
+
+#plots <- mapply(plot_tpt, arg1_list, arg2_list, SIMPLIFY = FALSE)
+
+#plot_grid(plotlist = plots, nrow = 2, align = "hv", axis = "tblr")
+#wrap_plots(plots, nrow = 2)
+
+```
+#zigzag1,6
+#square_spir
+
+# Faceted timepoint images for selected functions/timepoints
+```{r}
+# f_list <- c("3_pts", "alternating_diff_1", "alternating_diff_2", "alternating_diff_3", "alternating_diff_3","f_curly_1", "growing_stairs_1", "growing_stairs_1", "growing_stairs_1", "growing_stairs_1", "hourglass_2", "increasing_lines", "inceasing_lines", "line",  "plus", "plus", "radial", "radial_increasing", "sine", "sine_line", "sine_line", "sine_line", "spiky_circle_1")#, "spiky_circle_1", "square_1", "square_spiral")#, "square_spiral", "square_spiral", "stairs_2", "triangle_spiral", "triangle_spiral",  "zigzag_1", "zigzag_2", "zigzag_2", "zigzag_3", "zigzag_increasing", "zigzag_increasing", "zigzag_increasing")
+# t_list <- c(6,4,4,3,7,13,4,5,8,10,4,3,5,6,6,7,5,5,9,3,4,14,5)#,7,3,4)#,9,11,6,4,7,5,7,10, 9, 5,9,10)
+# stim <- bind_rows(
+#           mapply(function(f, t) {
+#             df_stimuli %>% filter(func.name == f, tpt < t)  %>% mutate(pred_tpt=t) %>% mutate(facet_var=paste0(f,t))
+#           }, f_list, t_list, SIMPLIFY = FALSE)
+#         )
+# 
+# lot <- bind_rows(
+#           mapply(function(f, t) {
+#             df_lot %>% filter(func.name == f, tpt == t)  %>% mutate(pred_tpt=t) %>% mutate(facet_var=paste0(f,t))
+#           }, f_list, t_list, SIMPLIFY = FALSE)
+#         )
+# hum <- bind_rows(
+#           mapply(function(f, t) {
+#             df_adult %>% filter(func.name == f, tpt == t) %>% mutate(pred_tpt=t) %>% mutate(facet_var=paste0(f,t))
+#           }, f_list, t_list, SIMPLIFY = FALSE)
+#         )
+# set.seed(1)
+# stim$facet_var <- factor(stim$facet_var, levels = sample(unique(stim$facet_var)))
+# lot$facet_var <- factor(lot$facet_var, levels = sample(unique(lot$facet_var)))
+# hum$facet_var <- factor(hum$facet_var, levels = sample(unique(hum$facet_var)))
+# p2 <- ggplot(data=stim) +
+#       geom_path(data=stim, aes(x=true_x, y=true_y), linetype="dotted", color="darkgrey") + 
+#       geom_point(data=stim, aes(x=true_x, y=true_y, alpha=tpt), size=1.5) +
+#       scale_alpha_continuous(range = c(0.4, 1)) +
+#       geom_point(data=lot, aes(x=pred_x, y=pred_y, color="LoT"), shape=16, size=2.9, alpha=0.6) +
+#       geom_point(data=hum, aes(x=pred_x, y=pred_y, color="Adults"), shape=1, size=1.2, stroke=0.8, alpha=0.8) +
+#       #geom_point(data=df_lot%>%filter((tpt==t)&(func.name==f)), aes(x=pred_x, y=pred_y, color="LoT"), size=2,  shape=1, stroke=1) +
+#   
+#       scale_color_manual(values = c("Adults" = "#59ab9d", "LoT" = "#FFD92F")) +
+#       paper_theme + 
+#       theme(strip.text=element_blank(),
+#             axis.text.x=element_blank(),
+#             axis.text.y = element_blank(),
+#             axis.title.x=element_blank(),
+#             axis.title.y=element_blank(),
+#             axis.line.x = element_blank(),
+#             axis.line.y = element_blank(),
+#             panel.spacing.x = unit(0.1, "lines"),
+#             panel.spacing.y = unit(0.1, "lines") ,
+#             legend.title=element_blank()
+#             ) +
+#       guides(color="none", alpha="none") +
+#       #coord_fixed()
+#      facet_wrap(~facet_var, scales="free", nrow=3)
+#   
+# p2
+# ggsave("tmp2.png", width=10, height=4)
+```
+
+```{r}
+f_list <- c(#"increasing_lines","increasing_lines","increasing_lines",
+            "hexagon_spiral", "hexagon_spiral", "hexagon_spiral", 
+            "alternating_diff_2","alternating_diff_2","alternating_diff_2",
+            "growing_stairs_1","growing_stairs_1", "growing_stairs_1",
+            #"triangle_1","triangle_1","triangle_1",
+            "sine_line", "sine_line", "sine_line",
+            #"square_1","square_1","square_1",
+            "square_spiral","square_spiral","square_spiral", 
+            "triangle_spiral", "triangle_spiral","triangle_spiral",
+             "growing_stairs_2","growing_stairs_2","growing_stairs_2")
+            #"zigzag_1", "zigzag_1", "zigzag_1")
+            #"zigzag_2", "zigzag_2","zigzag_2")
+            #"zigzag_increasing", "zigzag_increasing", "zigzag_increasing")
+
+#"growing_stairs_1", "triangle_spiral",
+
+t_list <- c(#6,7,8,
+            6,7,8,
+            2,3,4,
+            9,10,11,
+            #3,4,5,
+            2,3,4,
+            #3,4,5,
+            4,5,6,
+            6,7,8,
+            #3,4,5,
+            5,6,7)#,
+            #12,13,14)
+            #9,10,11)
+
+
+stim <- bind_rows(
+          mapply(function(f, t) {
+            df_stimuli %>% filter(func.name == f, tpt < t)  %>% mutate(pred_tpt=t) %>% mutate(facet_var=paste0(f,t))
+          }, f_list, t_list, SIMPLIFY = FALSE)
+        )
+
+lot <- bind_rows(
+          mapply(function(f, t) {
+            df_lot %>% filter(func.name == f, tpt == t)  %>% mutate(pred_tpt=t) %>% mutate(facet_var=paste0(f,t))
+          }, f_list, t_list, SIMPLIFY = FALSE)
+        ) %>%
+        group_by(func.name) %>%
+        mutate(min_x=min(pred_x), min_y=min(pred_y), max_x=max(pred_x), max_y=max(pred_y))
+hum <- bind_rows(
+          mapply(function(f, t) {
+            df_adult %>% filter(func.name == f, tpt == t) %>% mutate(pred_tpt=t) %>% mutate(facet_var=paste0(f,t))
+          }, f_list, t_list, SIMPLIFY = FALSE)
+        ) %>%
+        group_by(func.name) %>%
+        mutate(min_x=min(pred_x), min_y=min(pred_y), max_x=max(pred_x), max_y=max(pred_y))
+set.seed(1)
+facet_levels <- paste0(f_list, t_list)
+
+stim$facet_var <- factor(stim$facet_var, levels = facet_levels)
+lot$facet_var  <- factor(lot$facet_var,  levels = facet_levels)
+hum$facet_var  <- factor(hum$facet_var,  levels = facet_levels)
+
+#stim$facet_var <- factor(stim$facet_var, levels = sample(unique(stim$facet_var)))
+#lot$facet_var <- factor(lot$facet_var, levels = sample(unique(lot$facet_var)))
+#hum$facet_var <- factor(hum$facet_var, levels = sample(unique(hum$facet_var)))
+p2 <- ggplot(data=stim) +
+      geom_path(data=stim, aes(x=true_x, y=true_y), linetype="dotted", color="darkgrey") + 
+      geom_point(data=stim, aes(x=true_x, y=true_y, alpha=tpt), size=1.5) +
+      scale_alpha_continuous(range = c(0.4, 1)) +
+      geom_point(data=lot, aes(x=pred_x, y=pred_y, color="LoT"), shape=16, size=2.9, alpha=0.6) +
+      geom_point(data=hum, aes(x=pred_x, y=pred_y, color="Adults"), shape=1, size=1.2, stroke=0.8, alpha=0.8) +
+      geom_point(data=hum, aes(x=min_x, y=min_y), alpha=0) +
+      geom_point(data=lot, aes(x=min_x, y=min_y), alpha=0) +
+      geom_point(data=hum, aes(x=max_x, y=max_y), alpha=0) +
+      geom_point(data=lot, aes(x=max_x, y=max_y), alpha=0) +
+      #geom_point(data=df_lot%>%filter((tpt==t)&(func.name==f)), aes(x=pred_x, y=pred_y, color="LoT"), size=2,  shape=1, stroke=1) +
+  
+      scale_color_manual(values = c("Adults" = "#59ab9d", "LoT" = "#FFD92F")) +
+      paper_theme + 
+      theme(strip.text=element_blank(),
+            axis.text.x=element_blank(),
+            axis.text.y = element_blank(),
+            axis.title.x=element_blank(),
+            axis.title.y=element_blank(),
+            axis.line.x = element_blank(),
+            axis.line.y = element_blank(),
+            panel.spacing.x = unit(0.4, "lines"),
+            panel.spacing.y = unit(0.01, "lines") ,
+            legend.title=element_blank()
+            ) +
+      guides(color="none", alpha="none") +
+      #coord_fixed()
+     facet_wrap(~facet_var, scales="free", nrow=3, dir = "v")
+  
+p2
+ggsave("tmp5.png", width=10, height=4)
+```
+
+```{r}
+ "#66C2A5" "#FC8D62" "#8DA0CB" "#E78AC3" "#A6D854" "#FFD92F"
+```
+
+
+# Combine plots
+```{r, fig.width=10}
+# Add legends
+# Reorder top plot
+# Add titles
+# Change colors -- dif LoT color?
+
+legend_a <- cowplot::get_legend(p1 +
+                              guides(color = guide_colorbar(label.position = "top",
+                                                            label.vjust = -0.7,
+                                                            title="Timepoint",
+                                                            title.hjust=0.5)) +
+                              theme(legend.position = "top",
+                                    legend.text = element_text(size = 12),
+                                    legend.title = element_text(size=16)))
+title_a <- ggdraw() + 
+  draw_label("A) All stimuli and predictions", fontfamily = "Georgia", size = 22, hjust = 0, x = 0)
+
+title_and_legend_a <- plot_grid(
+  title_a, 
+  ggdraw(legend_a), 
+  nrow = 1, 
+  rel_widths = c(1.5, 1),
+  align = "v"
+)
+
+
+legend_b <- cowplot::get_legend(p2 +
+                              guides(color = guide_legend()) +
+                              theme(legend.position = "top",
+                                    legend.title = element_blank()))
+                                    #legend.text = element_text(
+                                    #size = 14,
+                                    #margin = margin(r = 15, l=5))))
+title_b <- ggdraw() + 
+  draw_label("B) Example predictions", fontfamily = "Georgia", size = 22, hjust = 0, x = 0)
+
+title_and_legend_b <- plot_grid(
+  title_b, 
+  ggdraw(legend_b), 
+  nrow = 1, 
+  rel_widths = c(1.5, 1),
+  align = "v"
+)
+
+
+# Plots without titles
+#p2_nolabel <- p2 + theme(plot.title = element_blank(), axis.title.y=element_text(margin=margin(r=10))) + guides(fill="none")
+#p3_nolabel <- p3 + ggtitle("B) Best fitting models") + theme(plot.title = element_text(size = 24, family="Georgia",  hjust = -0.125, margin=margin(b=25))) + guides(fill="none")
+
+# Final layout: top row of titles, then grid of plots
+top <- plot_grid(title_and_legend_a, p1, ncol = 1, rel_heights=c(.11,1))
+bottom <- plot_grid(title_and_legend_b, p2, ncol = 1, rel_heights=c(.11,1))
+
+final_plot <- plot_grid(
+  top,
+  bottom,
+  ncol = 1,
+  rel_heights = c(1.2, 1) 
+)
+
+final_plot
+ggsave("tmp3.png", width=10, height=7.5, bg="white")
+```
+
+
+
+
+
+```{r, fig.width=14, fig.height=2.5}
+
+make_sequence_plots <- function(func_name, t_min=NULL, t_max=NULL) {
+  
+  if (is.null(t_min)) t_min <- min(df_adult$tpt)
+  if (is.null(t_max)) t_max <- max(df_adult$tpt)
+  t_min <- max(t_min, min(df_adult$tpt))
+  t_max <- min(t_max, max(df_adult$tpt))
+  
+  df_seq <- df_adult %>%
+            filter((func.name == func_name) & (tpt <= t_max+1)) %>%
+            group_by(tpt) %>%
+            mutate(mean_x=mean(pred_x, na.rm=TRUE), 
+                   mean_y=mean(pred_y, na.rm=TRUE), 
+                   distance = ((mean_x - pred_x)**2 + (mean_y-pred_y)**2)**0.5) %>%
+            mutate(mean_distance = mean(distance), sd_distance = sd(distance)) %>%
+            filter((distance < mean_distance + 2*sd_distance) | is.na(distance))
+            
+  
+  
+
+  
+  x_min <- min(min(df_seq$true_x, na.rm=TRUE), min(df_seq$pred_x, na.rm=TRUE))
+  x_max <- max(max(df_seq$true_x, na.rm=TRUE), max(df_seq$pred_x, na.rm=TRUE))
+  y_min <- min(min(df_seq$true_y, na.rm=TRUE), min(df_seq$pred_y, na.rm=TRUE))
+  y_max <- max(max(df_seq$true_y, na.rm=TRUE), max(df_seq$pred_y, na.rm=TRUE))
+  
+  plots <- list()
+  
+  for (t in t_min:t_max) {
+    df_tpt <- subset(df_seq, (df_seq$tpt == t))
+
+    df_last <- subset(df_seq, (df_seq$tpt == t-1))
+
+    df_hist <- df_seq[order(df_seq$tpt),] %>% filter(tpt < t)
+    df_prev <- df_seq[order(df_seq$tpt),] %>% filter(tpt < t-1)
+
+    p <- ggplot() +
+      geom_path(data=df_hist, aes(x=true_x, y=true_y), size=0.5, linetype="dotted") +
+      geom_point(data=df_prev, aes(x=true_x, y=true_y), size=1.5, alpha=0.1, color="black") +
+       geom_text(data=df_last, aes(x=true_x, y=true_y), size=5, label="★") +
+      #geom_point(data=df_tpt, aes(x=true_x, y=true_y), color="gold", shape=1, size=4, stroke=1.5) +
+      geom_point(data=df_tpt, aes(x=pred_x, y=pred_y), alpha=0.9, size=2,  shape=1, stroke=1, color="#59ab9d") +
+      geom_point(data=df_tpt, aes(x=pred_x, y=pred_y), alpha=0.3, size=2, color="#8DD3C7") +
+
+      coord_cartesian(xlim=c(x_min, x_max), ylim=c(y_min, y_max)) +
+      theme_void() +
+      theme(panel.background = element_rect(fill = "white"),
+            plot.title = element_text(hjust = 0.5, size=18, family="Georgia")) +
+      guides(alpha="none", size="none", fill="none", color="none") #+
+    # ggtitle(sprintf("T=%d", t)) 
+    
+    plots[[length(plots) + 1]] <- p
+  }
+  
+  return(plots)
+}
+
+func <- "stairs_2"
+plots <- make_sequence_plots(func, t_min=3, t_max=8)
+
+# Add margins to each plot
+plots <- lapply(plots, function(p) {
+  p + theme(plot.margin = margin(0.2, 0.05, 0.2, 0.05, "in"))
+})
+
+p <- grid.arrange(grobs=plots, nrow=1)
+
+ggsave(plot=p,"figs/example_stairs_2.png", width=14, height=2.5,dpi=400)
+
+```
+
+
