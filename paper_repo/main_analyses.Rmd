@@ -152,6 +152,35 @@ preprocess_df_monkey <- function(df) {
   return(df)
 }
 
+add_rank_time_column <- function(dataframe) {
+  # Convert 'time' column to a date format, ignoring the clock time information
+  dataframe$date <- as.Date(dataframe$Current_time, format = "%a %b %d %H:%M:%S %Y")
+    unique_dates <- dataframe %>%
+    distinct(date) %>%
+    arrange(date) %>%
+    mutate(rank_time = row_number())
+  
+  h <- hash()
+  for (i in 1:nrow(unique_dates)) {
+    date <- unique_dates$date[i]
+    rank_time <- unique_dates$rank_time[i]
+    h[date] = rank_time
+  }
+
+  dataframe <- dataframe %>%
+                rowwise() %>%
+                mutate(ranked_day = h[[as.character(date)]])
+  
+  return(dataframe)
+}
+
+
+capitalize_words <- function(s) {
+  words <- str_split(s, " ")[[1]]
+  words <- ifelse(words == "to", "to", str_to_title(words))
+  paste(words, collapse = " ")
+}
+
 data_dir <- "data/"
 preprocessed_data_dir <- "preprocessed_data/"
 fig_dir <- "figs/"
@@ -220,11 +249,91 @@ p <- grid.arrange(grobs=plots, nrow=3)
 ```
 
 
-# Load participant data
+# Monkey training, preprocessing
+```{r}
+
+df_monkey_train <- preprocess_df_monkey(read.csv("data/participants/monkeys_train.csv"))
+
+df_monkey_train$id <- seq.int(1,nrow(df_monkey_train))
+df_monkey_train <- add_rank_time_column(df_monkey_train)
+
+ranked_days <- df_monkey_train %>%
+  group_by(subj_id) %>%
+  distinct(ranked_day) %>%
+  arrange(ranked_day) %>%
+  mutate(rank_day = row_number()) %>%
+  ungroup()
+
+unique_sequences_df <- df_monkey_train %>%
+  group_by(func.name, tpt) %>%
+  top_n(n = 1, wt = id) %>%
+  select(func.name, tpt, true_x, true_y) %>%
+  ungroup()
+
+df_monkey_train <- df_monkey_train %>%
+  left_join(unique_sequences_df, by = c("func.name", "tpt")) %>%
+    left_join(ranked_days, by = c("subj_id", "ranked_day")) %>%
+    rowwise() %>%
+    mutate(func.type = gsub("\\.\\d+$", "", func.name)) %>%
+      mutate(correct_120 = ifelse(dist_from_true < 120, 1, 0)) %>%
+
+      rowwise() %>%
+      mutate(func.type = gsub("\\.\\d+$", "", func.name),
+                  t_id = paste(r_id, func.name, game_n)) %>%
+    group_by(subj_id) %>%
+    mutate(rank_day = rank_day - min(rank_day)+1) %>%
+    filter((guess_number <= 10) | is.na(guess_number)) %>%
+    group_by(func.type) %>%
+    mutate(min_rank_day = min(rank_day)) %>%
+    ungroup() %>%
+    arrange(min_rank_day) %>%
+    mutate(func.type = factor(func.type, levels = unique(func.type))) %>%
+    arrange(rank_day, game_n, tpt) %>%
+    group_by(subj_id, func.type) %>%
+    mutate(func_examples = cumsum(!duplicated(t_id))) 
+
+
+```
+
+
+# Monkey training, accuracy over time plot
+```{r, fig.width=10, fig.height=6}
+
+df_monkey_train$scaled_func_examples <- floor(df_monkey_train$func_examples/10)*10
+xmin <- min(df_monkey_train$scaled_func_examples)
+xmax <- max(df_monkey_train$scaled_func_examples)
+xscale <- xmax - xmin
+
+pretty_label <- function(x) sapply(gsub("_", " ", x), capitalize_words)
+
+ggplot(data=df_monkey_train %>% filter(attempt_number == 1), aes(x=scaled_func_examples, y=correct_120, group=subj_id, color=subj_id)) +
+
+        stat_summary(fun="mean", geom="line", size=0.5, alpha=0.9) +
+        stat_summary(fun="mean", geom="point", size=1) +
+        stat_summary(fun="mean", geom="point", color="white", size=0.25) +
+        stat_summary(fun.data="mean_se", geom="errorbar", width=1) +
+        scale_color_manual(values = c("dodgerblue", "orange"), labels=c("Monkey 1", "Monkey 2")) +
+        scale_x_continuous(breaks=c(0,100, 200)) +
+        scale_y_continuous(breaks=c(0,0.5,1)) +
+        guides(alpha="none", color="none") +
+        coord_cartesian(xlim=c(xmin, xmax+10), ylim=c(0,1.08)) +
+        facet_wrap(~func.type, nrow=4, labeller = labeller(func.type = pretty_label)) +
+        paper_theme +
+        labs(x="Pattern example number", y="Accuracy" ) +
+        
+        paper_theme+ theme(legend.title = element_blank(),
+                     strip.background = element_blank(),
+                     strip.text = element_text(size=12)) 
+
+```
+
+# Load participant data for test sequences
 ```{r}
 df_adult <- preprocess_df_adult(read.csv(paste0(data_dir, "participants/adults.csv"))) %>% filter(tpt>2) %>% mutate(agent="Adults")
 df_kid <- preprocess_df_children(read.csv(paste0(data_dir, "participants/kids.csv"))) %>% filter(tpt>2) %>% mutate(agent="Kids")
 df_monkey_test <- preprocess_df_monkey(read.csv(paste0(data_dir,  "participants/monkeys.csv"))) %>% filter(tpt>2) %>% mutate(agent="Monkeys")
+
+
 df_all <- bind_rows(df_adult, df_monkey_test, df_kid)
 ```
 
@@ -295,7 +404,12 @@ for (x in 3:7) {
 
 ```
 
-# Monkey accuracy by individual
+
+
+
+
+
+# Monkey test accuracy by individual
 ```{r}
 mean_df <- df_monkey_test %>%
            group_by(func.name, tpt, subj_id) %>%
@@ -536,11 +650,3 @@ for (x in 3:7) {
 
 
 
-# Monkey training 
-
-```{r}
-df_monkey_train <- preprocess_df_monkey(read.csv("data/participants/monkeys_train.csv"))
-
-
-
-```
