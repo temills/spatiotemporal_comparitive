@@ -13,3 +13,4 @@ models/
 human_experiments/
 individual_differences/
 figs/videos/
+*.rds

@@ -1,0 +1,534 @@
+---
+title: "Main accuracy-based analyses"
+output: html_document
+---
+
+```{r, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, fig.width=4, fig.height=3,fig.align = "center",cache=TRUE)
+library(ggplot2)
+library(reshape)
+library(grid)
+library(dplyr)
+library(gridExtra)
+library(lme4)
+library(reghelper)
+library(RColorBrewer)
+library(robustbase)
+library(tidylog)
+library(brms)
+library(tidyr)
+library(hash)
+library(rstan)
+library(png)
+library(gtable)
+library(ggimage)
+library(hash)
+library(purrr)
+library(stringr)
+library(ggforce)
+
+paper_theme <- theme_light() + theme(
+  axis.text.x=element_text(colour="#292929", size = 14), 
+  axis.title.x = element_text(size=18, family="Georgia"),
+  axis.title.y = element_text(size = 18, vjust = 1,  family="Georgia"),
+  axis.text.y  = element_text(size = 14, colour="#292929", family="Georgia"),
+  strip.text=element_text(size=16,color="black", family="Georgia"),
+  strip.background = element_rect(colour = "grey50", fill = "white"),
+  panel.background = element_rect(fill = "white", colour = "grey50"),
+  axis.ticks.x=element_blank(),axis.ticks.y=element_blank(),
+  axis.line.x = element_line(colour = "black"), 
+  axis.line.y = element_line(colour = "black"),
+  legend.title=element_text(size=18, family="Georgia"),
+  legend.text=element_text(size=15, family="Georgia"),
+  panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+sm <- 1e-10
+
+preprocess_df_adult <- function(df) {
+  df <- df[order(df$tpt),] %>%
+        rename(pred_x = response_x, pred_y = response_y, func.name = seq_id, subj_id = subject_id) %>%
+        group_by(subj_id, trial_idx, tpt) %>%
+        mutate(true_dist=((true_x-prev_x)**2. + (true_y-prev_y)**2.)**0.5) %>%
+        mutate(err_x=pred_x-true_x) %>%
+        mutate(err_y=pred_y-true_y) %>%
+        mutate(norm_err_x = err_x/(true_dist+sm)) %>%
+        mutate(norm_err_y = err_y/(true_dist+sm)) %>%
+        mutate(abs_err = ((err_x**2)+(err_y**2)) **0.5) %>%  
+        mutate(abs_rel_err = abs_err/(true_dist)) %>%
+        mutate(dist_from_prev = (((pred_x-true_x)**2)+((pred_y-true_y)**2)) **0.5) %>%
+        ungroup() %>%
+        mutate(scaled_err = scale(abs_rel_err)[,1])
+  return(df)
+}
+
+preprocess_df_children <- function(df) {
+  df_kid <- df[order(df$tpt),] %>%
+        rename(pred_x = response_x, pred_y = response_y, func.name = seq_id, subj_id = subject_id) %>%
+        group_by(subj_id, trial_idx, tpt) %>%
+        mutate(true_dist=((true_x-prev_x)**2. + (true_y-prev_y)**2.)**0.5) %>%
+        mutate(err_x=pred_x-true_x) %>%
+        mutate(err_y=pred_y-true_y) %>%
+        mutate(norm_err_x = err_x/(true_dist+sm)) %>%
+        mutate(norm_err_y = err_y/(true_dist+sm)) %>%
+        mutate(abs_err = ((err_x**2)+(err_y**2)) **0.5) %>%  
+        mutate(abs_rel_err = abs_err/(true_dist)) %>%
+        mutate(dist_from_prev = (((pred_x-true_x)**2)+((pred_y-true_y)**2)) **0.5) %>%
+        ungroup() %>%
+        mutate(scaled_err = scale(abs_rel_err)[,1])
+  
+  # Update session numbers so that activity < 1 hr apart is recorded as a single session
+  df_kid <- df_kid %>%
+            group_by(subj_id) %>%
+            mutate(session = session-min(session)+1) %>%
+            mutate(n_sessions = max(session)) %>%
+            ungroup()
+
+  time_bt_sessions <- df_kid %>%
+                      distinct(subj_id, session, start_time) %>%
+                      group_by(subj_id) %>%
+                      mutate(time_bt_first_and_last_session = max(start_time)-min(start_time)) %>%
+                      arrange(subj_id, session) %>%
+                      mutate(time_since_last_session = start_time - lag(start_time)) %>%
+                      ungroup() %>%
+                      select(-c("start_time"))
+  
+  df_kid <- df_kid %>%
+            merge(time_bt_sessions, by=c("subj_id", "session"))
+         
+  session_offsets <- df_kid %>%
+                      group_by(subj_id, session) %>%
+                      summarize(trials_per_session = max(trial_idx), .groups = "drop") %>%
+                      arrange(subj_id, session) %>%
+                      group_by(subj_id) %>%
+                      mutate(trials_in_prev_session = lag(trials_per_session, default = 0)) %>%
+                      mutate(trials_before_session = lag(cumsum(trials_per_session), default = 0)) 
+  
+  df_kid <- df_kid %>%
+         merge(session_offsets, by = c("subj_id", "session")) %>%
+         mutate(trial_idx_across_sessions = trial_idx + trials_before_session)
+  
+  # if less than 1 hour between sessions, count it as a single session
+  min_time_between_sessions = 1/24
+  df_kid <- df_kid %>%
+            mutate(session = ifelse((session>1) & (time_since_last_session<min_time_between_sessions),
+                                    session - 1,
+                                    session),
+                trial_idx = ifelse((session>1) & (time_since_last_session<min_time_between_sessions),
+                                   trial_idx + trials_in_prev_session,
+                                   trial_idx)) %>%
+        group_by(subj_id) %>%
+        mutate(n_sessions = max(session)) %>%
+        group_by(subj_id, session) %>%
+        mutate(trials_per_session = max(trial_idx)) %>%
+        ungroup() %>%
+        group_by(subj_id) %>%
+        mutate(n_trials_total = max(trial_idx_across_sessions)) %>%
+        group_by(subj_id, session, tpt) %>%
+        mutate(trial_1_time_since_start = ifelse(trial_idx==1, trial_time_since_start, NA),
+               trial_1_time_since_start = mean(trial_1_time_since_start, na.rm=T),
+               trial_duration_sum = sum(trial_duration),
+               session_duration = trial_1_time_since_start + trial_duration_sum) %>%
+        ungroup() %>%
+        select(-c(trial_1_time_since_start, trial_duration_sum, start_time, time_since_last_session, trials_before_session, trials_in_prev_session))
+}
+
+
+preprocess_df_monkey <- function(df) {
+  df <- df %>%
+        rename(tpt = n)
+  
+  df <- df[order(df$tpt),] %>%
+        rename(true_x=x_next, true_y=y_next, prev_x=x_curr, prev_y=y_curr, pred_x=x_pred,
+               subj_id = monkey_name, pred_y = y_pred, func.name = func_id) %>%
+        group_by(r_id, game_n, tpt) %>%
+        mutate(true_dist=((true_x-prev_x)**2. + (true_y-prev_y)**2.)**0.5) %>%
+        mutate(err_x=pred_x-true_x) %>%
+        mutate(err_y=pred_y-true_y) %>%
+        mutate(abs_err = ((err_x**2)+(err_y**2)) **0.5) %>%  
+        mutate(abs_rel_err = abs_err/(true_dist)) %>%
+        mutate(dist_from_prev = (((pred_x-true_x)**2)+((pred_y-true_y)**2)) **0.5) %>%
+        mutate(r_id = as.character(r_id)) %>%
+        ungroup()
+  return(df)
+}
+
+data_dir <- "data/"
+preprocessed_data_dir <- "preprocessed_data/"
+fig_dir <- "figs/"
+```
+
+# Plot stimuli
+```{r}
+df_stim <- read.csv(paste0(data_dir, "models/lot.csv")) %>%
+           distinct(tpt, true_x, true_y, seq_id)
+lims <- df_stim %>%
+  group_by(seq_id) %>%
+  summarize(xmin = min(true_x),
+            xmax = max(true_x),
+            ymin = min(true_y),
+            ymax = max(true_y),
+            .groups = "drop") %>%
+  rowwise() %>%
+  mutate(xrange = xmax - xmin,
+        yrange = ymax - ymin,
+        maxrange = max(xrange, yrange),
+        xmid = (xmin + xmax)/2,
+        ymid = (ymin + ymax)/2,
+        xmin = xmid - maxrange/2,
+        xmax = xmid + maxrange/2,
+        ymin = ymid - maxrange/2,
+        ymax = ymid + maxrange/2)
+
+plot_func <- function(f, lw) {
+  lim <- lims %>% filter(seq_id == f)
+  ggplot(df_stim %>% filter(seq_id == f)) +
+    geom_path(aes(x = true_x, y = true_y), linetype = "dotted") +
+    geom_point(aes(x = true_x, y = true_y, alpha = tpt)) +
+    paper_theme +
+    theme(axis.text.x  = element_blank(),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          axis.text.y  = element_blank(),
+          axis.line.x  = element_blank(), 
+          axis.line.y  = element_blank(), 
+          panel.border = element_rect(linewidth=lw, color="black"),
+          strip.text = element_blank()) +
+    coord_fixed(xlim = c(lim$xmin, lim$xmax),
+                ylim = c(lim$ymin, lim$ymax),
+                ratio = 1) +
+    guides(alpha = "none")
+}
+
+plots <- list()
+func_order <- c("line", "stairs", "stairs_2", "square_spiral", "alternating_diff_2", "square_2", "alternating_diff_1", "123",
+                "radial_1", "zigzag_widening", "hourglass_1", "zigzag_1", "3_pts", "sine", "plus", "decreasing_y",
+                "triangle_1", "increasing_lines", "zigzag_3", "f_curly_2", "spiral_outward", "zigzag_2", "hexagon", "radial_increasing")
+i=0
+for (f in func_order) {
+  i=i+1
+  if (i%%8==0) {
+    lw = 1
+  } else {
+    lw= 0.1
+  }
+  plots[[length(plots) + 1]] <- plot_func(f, lw) + theme(plot.margin = margin(0.01, 0.01, 0.01, 0.01, "in"))
+}
+
+p <- grid.arrange(grobs=plots, nrow=3)
+ggsave(plot=p, paste0(fig_dir, "stimuli.png"), width=8, height=3, dpi=1000)
+```
+
+
+# Load participant data
+```{r}
+df_adult <- preprocess_df_adult(read.csv(paste0(data_dir, "participants/adults.csv"))) %>% filter(tpt>2) %>% mutate(agent="Adults")
+df_kid <- preprocess_df_children(read.csv(paste0(data_dir, "participants/kids.csv"))) %>% filter(tpt>2) %>% mutate(agent="Kids")
+df_monkey <- preprocess_df_monkey(read.csv(paste0(data_dir,  "participants/monkeys.csv"))) %>% filter(tpt>2) %>% mutate(agent="Monkeys")
+df_all <- bind_rows(df_adult, df_monkey, df_kid)
+```
+
+# Compute overall and final timepoint accuracy by agent 
+```{r}
+mean_df <- df_all %>%
+           group_by(agent, func.name, tpt, subj_id) %>%
+           summarize(accuracy=mean(correct, na.rm=T), .groups="drop") %>%
+           group_by(agent, func.name, tpt) %>%
+           summarize(accuracy=mean(accuracy, na.rm=T))
+
+print(mean_df %>% group_by(agent) %>% summarize(accuracy=mean(accuracy)))
+print(mean_df %>% filter(tpt==max(tpt)) %>% group_by(agent) %>% summarize(accuracy=mean(accuracy, na.rm=T)))
+
+# Compute highest and lowest accuracy patterns
+func_accuracy_df <- mean_df %>%
+                group_by(agent, func.name) %>%
+                summarize(accuracy=mean(accuracy), .groups="drop") %>%
+                pivot_wider(names_from=agent, values_from=accuracy)
+```
+
+# Compute accuracy by age
+```{r}
+age_df <- df_kid %>%
+          group_by(subj_id, func.name, tpt) %>%
+          summarize(accuracy=mean(correct), age=mean(age), .groups="drop")
+
+print(age_df %>% group_by(func.name, age) %>%
+                 summarize(accuracy=mean(accuracy)), .groups="drop") %>%
+                 group_by(age) %>%
+                 summarize(accuracy=mean(accuracy))
+
+print(age_df %>% filter(tpt==max(tpt)) %>% 
+                 group_by(func.name, age) %>%
+                 summarize(accuracy=mean(accuracy), .groups="drop") %>%
+                 group_by(age) %>%
+                 summarize(accuracy=mean(accuracy)))
+```
+
+# Estimate effect of age on accuracy
+```{r}
+exact_age_df <- df_kid %>%
+                select(c(exact_age, age, subj_id, func.name, tpt, correct)) %>%
+                mutate(exact_age_std = scale(exact_age)[,1],
+                       tpt_std = scale(tpt)[,1],)
+
+m <- glmer(correct ~ 1 + exact_age_std + tpt_std + (exact_age_std:tpt_std) + (1+tpt_std|func.name) + (1+tpt_std|subj_id),
+           data=exact_age_df,
+           family = binomial(link = "logit"), control=glmerControl(optimizer = "bobyqa", optCtrl=list(maxfun=1000000)))
+
+summary(m)
+```
+
+# Relationship between kid and adult accuracy
+```{r}
+df_comp <- bind_rows(df_adult, df_monkey, df_kid %>% mutate(agent=as.character(age))) %>%
+           group_by(agent, subj_id, func.name) %>%
+           summarize(accuracy=mean(correct, na.rm=T), .groups="drop") %>%
+           group_by(agent, func.name) %>%
+           summarize(accuracy=mean(accuracy, na.rm=T), .groups="drop") %>%
+           pivot_wider(names_from="agent", values_from=accuracy) %>%
+           na.omit()
+
+for (x in 3:7) {
+  print(paste0("age ", x))
+  print(cor.test(df_comp$Adults, df_comp[[as.character(x)]], method="pearson"))
+}
+
+```
+
+# Monkey accuracy by individual
+```{r}
+mean_df <- df_monkey %>%
+           group_by(func.name, tpt, subj_id) %>%
+           summarize(accuracy=mean(correct, na.rm=T), .groups="drop")
+
+print(mean_df %>% group_by(subj_id) %>% summarize(accuracy=mean(accuracy)))
+print(mean_df %>% filter(tpt==max(tpt)) %>% group_by(subj_id) %>% summarize(accuracy=mean(accuracy, na.rm=T)))
+
+# Highest and lowest accuracy patterns
+func_accuracy_df <- mean_df %>% group_by(subj_id, func.name) %>% summarize(accuracy=mean(accuracy)) %>% pivot_wider(names_from=subj_id, values_from=accuracy)
+```
+
+# Relationship between monkeys
+```{r}
+print(cor.test(func_accuracy_df$"Monkey 1", func_accuracy_df$"Monkey 2", method="pearson"))
+```
+
+# Relationship between humans and monkeys
+```{r}
+df_comp <- bind_rows(df_adult, df_monkey, df_kid %>% mutate(agent=as.character(age))) %>%
+           group_by(agent, subj_id, func.name) %>%
+           summarize(accuracy=mean(correct, na.rm=T), .groups="drop") %>%
+           group_by(agent, func.name) %>%
+           summarize(accuracy=mean(accuracy, na.rm=T), .groups="drop") %>%
+           pivot_wider(names_from="agent", values_from=accuracy) %>%
+           na.omit()
+
+print("Adults")
+print(cor.test(df_comp$Monkeys, df_comp$Adults, method="pearson"))
+for (x in 3:7) {
+  print(paste0("age ", x))
+  print(cor.test(df_comp$Monkeys, df_comp[[as.character(x)]], method="pearson"))
+}
+
+```
+
+# Learning within patterns
+```{r}
+compute_fit <- function(df) {
+  m <- glmer(
+            correct ~ 1 +                          # fixed intercept
+                      tpt_std +                    # fixed slope 
+                      (1 + tpt_std | subj_id) +    # random intercept + slope for subject
+                      (1 + tpt_std | func.name),   # random intercept + slope for function
+            data = df,
+            family = binomial(link = "logit")
+  )
+  return(m)
+}
+
+df_std <- df_all %>%
+          mutate(agent = ifelse(agent=="Kids", paste0(age, " y/o"), agent)) %>%
+          filter(tpt>2) %>%
+          select(c("agent", "correct", "tpt", "func.name", "subj_id")) %>%
+          mutate(tpt_std = scale(tpt)[,1])
+
+for (agent_df in split(df_std, df_std$agent)) {
+  print(unique(agent_df$agent))
+  m <- compute_fit(agent_df)
+  print(summary(m))
+}
+
+```
+
+# Meta-learning in kids
+```{r}
+compute_fit <- function(df) {
+  m <- glmer(
+            correct ~ 1 +                          # fixed intercept
+                      trial_idx_across_sessions_std + # fixed slope for sequence order
+                      age_std +                    # fixed slope for age
+                      tpt_std +                    # fixed slope for tpt
+                      (age_std:tpt_std) +
+                      (age_std:trial_idx_across_sessions_std) +
+                      (tpt_std:trial_idx_across_sessions_std) +
+                      (1 + tpt_std + trial_idx_across_sessions_std | subj_id) + # random intercept + slopes for subject
+                      (1 + tpt_std | func.name),            # random intercept + slopes for function
+            data = df,
+            family = binomial(link = "logit"),
+            control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5))
+  )
+  return(m)
+}
+
+df_std <- df_kid %>%
+          select(c("agent", "exact_age", "correct", "tpt", "func.name", "subj_id", "session", "trial_idx", "trial_idx_across_sessions")) %>%
+          mutate(tpt_std = scale(tpt)[,1],
+                 trial_idx_std = scale(trial_idx)[,1],
+                 session_std = scale(session)[,1],
+                 trial_idx_across_sessions_std = scale(trial_idx_across_sessions)[,1],
+                 age_std = scale(exact_age)[,1])
+
+m <- compute_fit(df_std)
+print(summary(m))
+
+```
+
+# Meta-learning in adults
+```{r}
+compute_fit <- function(df) {
+  m <- glmer(
+            correct ~ 1 +                          # fixed intercept
+                      trial_idx_std +                  # fixed slope for sequence order
+                      tpt_std +                    # fixed slope on tpt
+                      (trial_idx_std:tpt_std) +
+                      (1 + tpt_std + trial_idx_std | subj_id) + # random intercept + slopes for subject
+                      (1 + tpt_std | func.name),            # random intercept + slopes for function
+            data = df,
+            family = binomial(link = "logit"),
+            control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5))
+  )
+  return(m)
+}
+
+df_std <- df_adult %>%
+          select(c("agent", "correct", "tpt", "func.name", "subj_id", "trial_idx")) %>%
+          mutate(tpt_std = scale(tpt)[,1],
+                 trial_idx_std = scale(trial_idx)[,1])
+
+m <- compute_fit(df_std)
+print(summary(m))
+
+```
+
+
+# Analogous analyses for inferred accuracy
+#########################################
+
+# Compute overall and final timepoint accuracy by agent 
+```{r}
+df_adult_modeled <- read.csv(paste0(preprocessed_data_dir, 'inferred_accuracy/mean_adults.csv')) %>%
+                    mutate(agent="Adults") %>%
+                    rename(subj_id = r_id)
+df_kid_modeled <- read.csv(paste0(preprocessed_data_dir, 'inferred_accuracy/mean_kids.csv')) %>%
+                  mutate(agent="Kids") %>%
+                  rename(subj_id = r_id)
+df_monkey_modeled <- read.csv(paste0(preprocessed_data_dir, 'inferred_accuracy/mean_monkeys.csv')) %>%
+                     mutate(agent="Monkeys") %>%
+                     rename(subj_id = r_id)
+df_all_modeled <- bind_rows(df_adult_modeled, df_kid_modeled, df_monkey_modeled)
+```
+# Mean p_true
+```{r}
+mean_df <- df_all_modeled %>%
+           group_by(agent, func.name, tpt, subj_id) %>%
+           summarize(accuracy=mean(prob_true, na.rm=T), .groups="drop") %>%
+           group_by(agent, func.name, tpt) %>%
+           summarize(accuracy=mean(accuracy, na.rm=T))
+
+print(mean_df %>% group_by(agent) %>%
+                  summarize(accuracy = mean(accuracy)))
+print(mean_df %>% filter(tpt==max(tpt)) %>%
+                  group_by(agent) %>%
+                  summarize(caccuracy=mean(accuracy, na.rm=T)))
+
+# Compute highest and lowest accuracy patterns
+func_accuracy_df <- mean_df %>%
+                    group_by(agent, func.name) %>%
+                    summarize(accuracy=mean(accuracy), .groups="drop") %>%
+                    pivot_wider(names_from=agent, values_from=accuracy)
+```
+# Compute inferred accuracy by age
+```{r}
+age_df <- df_kid_modeled %>%
+         group_by(age, func.name, tpt, subj_id) %>%
+         summarize(accuracy=mean(prob_true, na.rm=T), .groups="drop") %>%
+         group_by(age, func.name, tpt) %>%
+         summarize(accuracy=mean(accuracy, na.rm=T))
+
+print(age_df %>%
+      group_by(func.name, age) %>%
+      summarize(accuracy=mean(accuracy)), .groups="drop") %>%
+      group_by(age) %>%
+      summarize(accuracy=mean(accuracy))
+
+print(age_df %>%
+      filter(tpt==max(tpt)) %>% 
+      group_by(func.name, age) %>%
+      summarize(accuracy=mean(accuracy), .groups="drop") %>%
+      group_by(age) %>%
+      summarize(accuracy=mean(accuracy)))
+```
+
+# Relationship between kid and adult accuracy
+```{r}
+df_comp <- df_all_modeled %>%
+           mutate(agent = ifelse(agent=="Kids", paste0(age, " y/o"), agent)) %>%
+           group_by(agent, subj_id, func.name) %>%
+           summarize(accuracy=mean(prob_true, na.rm=T), .groups="drop") %>%
+           group_by(agent, func.name) %>%
+           summarize(accuracy=mean(accuracy, na.rm=T), .groups="drop") %>%
+           pivot_wider(names_from="agent", values_from=accuracy) %>%
+           na.omit()
+
+for (x in 3:7) {
+  print(paste0("age ", x))
+  print(cor.test(df_comp$Adults, df_comp[[paste0(x, " y/o")]], method="pearson"))
+}
+
+```
+
+# Monkey accuracy by subj
+```{r}
+mean_df <- df_monkey_modeled %>%
+           group_by(func.name, tpt, subj_id) %>%
+           summarize(accuracy=mean(prob_true, na.rm=T), .groups="drop")
+
+print(mean_df %>% group_by(subj_id) %>%
+                  summarize(accuracy=mean(accuracy)))
+print(mean_df %>% filter(tpt==max(tpt)) %>% 
+                  group_by(subj_id) %>%
+                  summarize(accuracy=mean(accuracy, na.rm=T)))
+
+# Highest and lowest accuracy patterns
+func_accuracy_df <- mean_df %>%
+                    group_by(subj_id, func.name) %>%
+                    summarize(accuracy=mean(accuracy)) %>%
+                    pivot_wider(names_from=subj_id, values_from=accuracy)
+```
+# Relationship between monkeys
+```{r}
+print(cor.test(func_accuracy_df$"Monkey 1", func_accuracy_df$"Monkey 2", method="pearson"))
+```
+
+# Relationship between human and monkey inferred accuracy
+```{r}
+print("Adults")
+print(cor.test(df_comp$Monkeys, df_comp$Adults, method="pearson"))
+for (x in 3:7) {
+  print(paste0("age ", x))
+  print(cor.test(df_comp$Monkeys, df_comp[[paste0(x, " y/o")]], method="pearson"))
+}
+
+```
+
+# 
+######################################

@@ -318,16 +318,15 @@ df_mean_monkey <- get_mean_df(df_monkey, "monkeys")  %>% mutate(r_id = as.charac
 ```
 
 ```{r}
-df_kid_chs <- df_kid_chs %>% filter(subject_id != "6QWTWP")
-
+df_kid_chs <- df_kid_chs
 df_mean_kid_chs <- data.frame()
 for (x in 3:7) {
   df_mean_kid_chs <- bind_rows(df_mean_kid_chs, get_mean_df(df_kid_chs%>%filter(age==x), paste0("kid_chs_", x)))
 }
 
 write.csv(df_mean_kid_chs, "posterior_means/mean_kid_chs.csv")
-write.csv(df_mean_adult, "posterior_means/mean_adult.csv")
-write.csv(df_mean_monkey, "posterior_means/mean_monkey.csv")
+#write.csv(df_mean_adult, "posterior_means/mean_adult.csv")
+#write.csv(df_mean_monkey, "posterior_means/mean_monkey.csv")
 ```
 # Or load cached posterior means
 ```{r}

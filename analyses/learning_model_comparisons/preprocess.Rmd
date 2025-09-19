@@ -335,8 +335,6 @@ write_preprocessed_data <- function() {
     if (model_name == "lin_prev") {
       df_model <- preprocess_model_lin_or_prev(read.csv(model_path))
     } else if (model_name %in% c("transformer_1", "transformer_4", "transformer_5", "transformer_6", "transformer_8", "transformer_10", "transformer_2", "transformer_3", "transformer_13")) {
-      print("here")
-      print(model_path)
       df_model <- preprocess_model(read.csv(model_path)) %>%
                   scale_transformer()
     } else {

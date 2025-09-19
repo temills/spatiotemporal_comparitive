@@ -101,6 +101,65 @@ preprocess_df_monkey <- function(df) {
 ```
 
 
+```{r}
+# Clean up data
+# df <- read.csv("data/participants/monkeys0.csv")
+# tmp <- df %>%
+#        select(-c("X", "X.1", "X.2", "width", "height", "attempt_number", "level", "dist_from_prev", "dist_from_true")) %>%
+#       mutate(func.type=ifelse(func.type=="example_line", "line", func.type),
+#              func_id=ifelse(func_id=="example_line", "line", func_id),
+#              monkey_name=ifelse(monkey_name=="BP22", "Monkey 1", monkey_name),
+#              monkey_name=ifelse(monkey_name=="BP24", "Monkey 2", monkey_name))
+# write.csv(tmp, "data/participants/monkeys.csv", row.names=F)
+
+# df <- read.csv("data/participants/kids0.csv")
+# tmp <- df %>%
+#        select(-c("X", "passed_ic", "func_scale"))
+# rand_string <- function(n, length = 8) {
+#   replicate(n, paste0(sample(c(letters, LETTERS, 0:9), length, replace = TRUE), collapse = ""))
+# }
+# unique_ids <- unique(tmp$subject_id)
+# mapping <- setNames(rand_string(length(unique_ids), length = 8), unique_ids)
+# tmp$subject_id <- mapping[as.character(tmp$subject_id)]
+# 
+# write.csv(tmp, "data/participants/kids.csv", row.names=F)
+
+# tmp <- read.csv("data/NeurIPS_data/lot.csv") %>%
+#        select(-c(args, choices, sampled_sd_x, sampled_sd_y))
+# write.csv(tmp, "data/NeurIPS_data/lot.csv", row.names=F)
+
+
+# tmp <- read.csv("data/models/lot0.csv") %>%
+#        select(-c(args, sample, choices, sampled_sd_x, sampled_sd_y))
+# write.csv(tmp, "data/participants/lot.csv", row.names=F)
+
+# tmp <- read.csv("data/models/lot_nonrecursive0.csv") %>%
+#        select(-c(args, choices, sampled_sd_x, sampled_sd_y))
+# write.csv(tmp, "data/participants/lot_nonrecursive.csv", row.names=F)
+
+#tmp <- read.csv("data/models/linear0.csv") %>%
+       #select(-c(changepoints, sampled_sd_x, sampled_sd_y))
+#write.csv(tmp, "data/participants/linear.csv", row.names=F)
+
+
+# df <- read.csv("data/models/linear_or_prev0.csv") 
+# tmp <- df %>%
+#        select(-c(sample_sd_x, sample_sd_y, args, choices, sd_x, sd_y, pred_x, pred_y)) %>%
+#        rename(component_weight=weights, mean_x = means_x, mean_y = means_y)
+# write.csv(tmp, "data/participants/linear_or_prev.csv", row.names=F)
+
+# 
+# df <- read.csv("data/models/gp0.csv") 
+# tmp <- df %>%
+#        select(-c(noise_x, noise_y, var_x, var_y, weight))
+# write.csv(tmp, "data/participants/gp.csv", row.names=F)
+
+# df <- read.csv("data/models/gp0.csv") 
+# tmp <- df %>%
+#        select(-c(noise_x, noise_y, var_x, var_y, weight, prev_x, prev_y))
+# write.csv(tmp, "data/participants/gp.csv", row.names=F)
+```
+
 # Plot all stimuli
 ```{r}
 df_stim <- read.csv("data/models/lot.csv") %>%

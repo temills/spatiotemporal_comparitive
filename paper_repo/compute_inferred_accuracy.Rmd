@@ -1,0 +1,223 @@
+---
+title: "Compute inferred accuracy"
+output: html_document
+---
+
+```{r, include=FALSE, echo=FALSE, cache=T}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, fig.width=4, fig.height=3, fig.align = "center", cache=TRUE)
+library(ggplot2)
+library(reshape)
+library(grid)
+library(dplyr)
+library(robustbase)
+library(tidylog)
+library(hash)
+library(rstan)
+library(gtable)
+library(tidyr)
+library(matrixStats)
+library(forcats)
+
+inv_logit <- function(x) { exp(x)/(1+exp(x))}
+
+scale_df <- function(df) {
+  df <- df %>%
+        mutate(r_id = subj_id) %>%
+        mutate(range_x = (max_x-min_x),
+               range_y = (max_y=min_y),
+               range_xy=max(range_x, range_y)) %>%
+        mutate(upper_bound_y = range_y/range_xy,
+               upper_bound_x = range_x/range_xy) %>%
+        mutate(prev_x = (prev_x-min_x)/range_xy,
+               pred_x = (pred_x-min_x)/range_xy,
+               true_x = (true_x-min_x)/range_xy,
+               prev_y = (prev_y-min_y)/range_xy,
+               pred_y = (pred_y-min_y)/range_xy,
+               true_y = (true_y-min_y)/range_xy,
+               max_y = (max_y-min_y)/range_xy,
+               min_x = (min_x-min_x)/range_xy,
+               max_x = (max_x-min_x)/range_xy,
+               min_y = (min_y-min_y)/range_xy) %>%
+        mutate(guess_num = tpt - 2) %>%
+        mutate(guess_num_std = (guess_num-mean(guess_num))/sd(guess_num))
+  df <- df[order(df$tpt),]
+  return(df)
+}
+
+preprocess_df_human <- function(df) {
+  df <- df %>%         
+        filter(!(is.na(trial_idx))) %>%
+        rename(pred_x = response_x, pred_y = response_y, func.name = seq_id, subj_id = subject_id) %>%
+        mutate(r_id = subj_id) %>%
+        scale_df()
+  return(df)
+}
+
+preprocess_df_monkey <- function(df) {
+  df <- df[order(df$n),] %>%
+      rename(tpt = n, subj_id = monkey_name, func.name = func.type, prev_x = x_curr, prev_y = y_curr, pred_x = x_pred, pred_y = y_pred, true_x = x_next, true_y = y_next) %>%
+      scale_df()
+  return(df)
+}
+
+preprocessed_data_dir <- "preprocessed_data/"
+data_dir <- "data/"
+stan_model_dir <- "stan_models/"
+```
+
+# Inference helpers
+```{r}
+run_inference_subj <- function(df, n_iter, n_chains, var_maps) {
+  stan_df <- df %>% filter(!is.na(pred_x) & (!is.na(pred_y)))
+  stan_data <- list(
+    N = length(stan_df$pred_x),
+    pred_x = stan_df$pred_x,
+    pred_y = stan_df$pred_y,
+    true_x = stan_df$true_x,
+    true_y = stan_df$true_y,
+    prev_x = stan_df$prev_x,
+    prev_y = stan_df$prev_y,
+    upper_bound_y = stan_df$upper_bound_y,
+    upper_bound_x = stan_df$upper_bound_x,
+    guess_num = stan_df$guess_num,
+    guess_num_std = stan_df$guess_num_std,
+    n_subjs = length(unique(stan_df$subj_id)),
+    subj = setNames(var_maps$subj_id[stan_df$subj_id], NULL),
+    n_func_types = length(unique(stan_df$func.name)),
+    func_type = setNames(var_maps$func_type[stan_df$func.name], NULL)
+  )
+  fit <- stan(file=paste0(stan_model_dir, "inferred_accuracy.stan"),
+              data=stan_data,
+              iter=n_iter,
+              chains=n_chains,
+              cores=n_chains)
+  return (fit)
+}
+
+run_inference_group <- function(df, group, n_iter=2000, n_chains=4) {
+  for (subj in unique(df$subj_id)) {
+      df_subj <- df %>% filter(subj_id==subj)
+    var_maps <- list("func_type"= setNames(as.numeric(factor(unique(df_subj$func.name))), unique(df_subj$func.name)),
+                     "subj_id"= setNames(as.numeric(factor(unique(df_subj$subj_id))), unique(df_subj$subj_id)))
+    
+    fit <- run_inference_subj(df_subj, n_iter, n_chains, var_maps)
+    saveRDS(fit, file = paste0(preprocessed_data_dir, "stan_fits/", group, "/", subj, ".rds"))
+  }
+}
+```
+
+
+# Load participant data
+```{r, message=F}
+df_kid <- preprocess_df_human(read.csv(paste0(data_dir, 'participants/kids.csv')))            
+df_adult <-preprocess_df_human(read.csv(paste0(data_dir, 'participants/adults.csv')))   
+df_monkey <-  preprocess_df_monkey(read.csv(paste0(data_dir, 'participants/monkeys.csv')))   
+```
+
+# Run inference for each group
+```{r}
+for (x in 3:7) {
+  df_age <- df_kid %>% filter(age==x)
+  run_inference_group(df_age, paste0("kids_", x))
+}
+run_inference_group(df_monkey, "monkeys")
+run_inference_group(df_adult, "adults")
+
+```
+
+
+# Refactor posterior samples and compute means
+```{r}
+refactor_posterior_samples <- function(posterior_samples, var_maps) {
+  refactored_post <- posterior_samples %>%
+                     pivot_longer(cols = starts_with(c("beta_func_type.", "beta_guess_num_func_type.")), # select cols
+                     names_to = c(".value", "func_type"),
+                     names_pattern = "(beta_func_type|beta_guess_num_func_type)\\.(\\d+)",
+                     values_to = c("beta_func_type", "beta_guess_num_func_type"))
+  refactored_post$func.name <- names(var_maps$func_type)[match(refactored_post$func_type, var_maps$func_type)]
+
+  refactored_post <- refactored_post %>%
+                     mutate(p_true = inv_logit(use_true_icpt+beta_func_type)) %>%
+                     mutate(p_rand = p_rand_strategy.2*(1-p_true),
+                            p_prev = p_rand_strategy.1*(1-p_true))
+
+  return(refactored_post)
+}
+
+compute_posterior_mean_subj <- function(participant_df, group, subj) {
+  df_subj <- participant_df %>% filter(subj_id==subj)
+
+  var_maps <- list("func_type"= setNames(as.numeric(factor(unique(df_subj$func.name))), unique(df_subj$func.name)),
+                   "subj_id"= setNames(as.numeric(factor(unique(df_subj$subj_id))), unique(df_subj$subj_id)))
+  
+  fit <- readRDS(file = paste0(preprocessed_data_dir, "stan_fits/", group, "/", subj, ".rds"))
+  
+  posterior_samples <- as.data.frame(rstan::extract(fit))
+  posterior_samples$subj = subj
+  post_subj <- refactor_posterior(posterior_samples, var_maps)
+  
+  df_subj <- merge(df_subj, post_subj, "func.name") %>%
+               mutate(LL_true = log(dnorm(pred_x, mean=true_x, sd=motor_sd)) +
+                                log(dnorm(pred_y, mean=true_y, sd=motor_sd)), 
+                      LL_prev = log(dnorm(pred_x, mean=prev_x, sd=motor_sd)) +
+                                log(dnorm(pred_y, mean=prev_y, sd=motor_sd)), 
+                      LL_rand = log(dunif(pred_x, min=min_x, max=max_x)) +
+                                log(dunif(pred_y, min=min_y, max=max_y))) %>%
+               mutate(logprob_true = LL_true + log(p_true),
+                      logprob_prev = LL_prev + log(p_prev),
+                      logprob_rand = LL_rand + log(p_rand)) %>%
+              rowwise() %>%
+              mutate(logprob_norm = logSumExp(c(logprob_true, logprob_prev, logprob_rand))) %>%
+              ungroup() %>%
+              mutate(logprob_true = logprob_true-logprob_norm,
+                     logprob_prev = logprob_prev-logprob_norm,
+                     logprob_rand = logprob_rand-logprob_norm) %>%
+              mutate(prob_true = exp(logprob_true),
+                     prob_prev = exp(logprob_prev),
+                     prob_rand = exp(logprob_rand))
+  
+  return(df_subj)
+}
+
+compute_posterior_mean_group <- function(df, group) {
+  df_all <- data.frame()
+  for (subj in unique(df$subj_id)) {
+    # for each prediction, mean prob under each model
+    df_subj <- compute_posterior_mean_subj(df, group, subj)  %>%
+               filter(guess_num>0) %>%
+               group_by(func.name, tpt, r_id) %>%
+               summarize(pred_x=mean(pred_x),
+                         pred_y=mean(pred_y),
+                         true_x=mean(true_x),
+                         true_y=mean(true_y),
+                         motor_sd=mean(motor_sd),
+                         prob_true=mean(prob_true),
+                         prob_rand=mean(prob_rand),
+                         prob_prev=mean(prob_prev)) %>%
+               ungroup()
+    
+    df_all <- bind_rows(df_all, df_subj)
+  }
+
+  df_all <- df_all %>% mutate(guess_num = tpt-2)
+  return(df_all)
+}
+
+```
+
+# Save posterior means
+```{r}
+df_mean_adult <- get_mean_df(df_adult, "adults")
+df_mean_monkey <- get_mean_df(df_monkey, "monkeys")  %>% mutate(r_id = as.character(r_id))
+s
+df_mean_kid <- data.frame()
+for (x in 3:7) {
+  df_mean_kid <- bind_rows(df_mean_kid, get_mean_df(df_kid %>% filter(age==x), paste0("Kids", x)))
+}
+age_df <- df_kid %>% distinct(subj_id, age, exact_age)
+df_mean_kid <- df_mean_kid %>% merge(age_df, by=c("subj_id"))
+
+write.csv(df_mean_kids, paste0(posterior_mean_dir, "mean_kids.csv"))
+write.csv(df_mean_adult, paste0(posterior_mean_dir, "mean_adults.csv"))
+write.csv(df_mean_monkey, paste0(posterior_mean_dir, "mean_monkeys.csv"))
+```
