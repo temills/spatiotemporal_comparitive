@@ -11,6 +11,7 @@ analyses/p_true_analyses/*.csv
 analyses/NeurIPS_analyses/tmp_imgs/
 models/
 !paper_repo/data/models/
+paper_repo/compute_model_likelihoods_preprocessing.Rmd
 human_experiments/
 individual_differences/
 figs/videos/
