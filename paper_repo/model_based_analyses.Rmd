@@ -49,7 +49,6 @@ preprocessed_data_dir <- "preprocessed_data/"
 fig_dir <- "figs/"
 ```
 
-
 # Analyze fits
 ```{r}
 read_model_fit_data <- function(participant) {
@@ -232,9 +231,47 @@ cat(kable(kids_table_df, format = "latex", booktabs = TRUE, escape = FALSE))
 ```
 
 ```{r}
-param_df <- table_df %>%
-       select(c(agent, model, p_prev, p_rand, sd_motor))
-print(param_df)
+top_model_df <- df_all %>%
+                group_by(agent, model, subj_id, r_id, func.name) %>%
+                summarize(func_LL = sum(LL, na.rm = TRUE),
+                          p_lapse=mean(p_lapse),
+                          sd_motor=mean(sd_motor),
+                          sd_prev=mean(sd_prev),
+                          p_prev=mean(p_prev),
+                          p_rand=mean(p_rand),
+                          .groups="drop") %>%
+                group_by(agent, model, subj_id) %>%
+                summarize(LL = mean(func_LL, na.rm=TRUE),
+                          p_lapse=mean(p_lapse),
+                          sd_motor=mean(sd_motor),
+                          sd_prev=mean(sd_prev),
+                          p_prev=mean(p_prev),
+                          p_rand=mean(p_rand),
+                          .groups="drop") %>%
+                group_by(agent, subj_id) %>%
+                slice_max(LL) %>%
+                ungroup()
+
+
+top_model_param_df <- top_model_df %>%
+                      group_by(agent) %>%
+                      summarize(p_lapse=mean(p_lapse),
+                                sd_motor=mean(sd_motor),
+                                sd_prev=mean(sd_prev),
+                                p_prev=mean(p_prev),
+                                p_rand=mean(p_rand)) 
+print(top_model_param_df)
+
+top_model_count_df <- top_model_df %>%
+                      group_by(agent, model) %>%
+                      summarize(model_count=n()) %>%
+                      ungroup() %>%
+                      complete(agent, model, fill = list(model_count = 0)) %>%
+                      group_by(agent) %>%
+                      mutate(tot = sum(model_count),
+                             model_prop = model_count / tot) %>%
+                      ungroup()
+print(top_model_count_df)
 ```
 
 # Visualize likelihood results
@@ -668,7 +705,6 @@ for (i in c(1,2,3,4,5,6,8,10,13)) {
   file <- paste0("preprocessed_data/model_likelihoods/transformer_", i, "_monkeys.csv")
   ll_monkey_test <- bind_rows(ll_monkey_test, read.csv(file)%>%mutate(context_len = i))
 }
-
 ll_monkey_all <- bind_rows(ll_monkey_train %>% mutate(mode="train"),
                            ll_monkey_test %>% mutate(mode="test")) %>%
                            mutate(correct_distance = correct_distance/screen_w) %>%
@@ -752,6 +788,7 @@ ll_monkey_transformer <- ggplot(data = ll_monkey_delta) +
 ll_monkey_transformer
 ggsave(plot=ll_monkey_transformer, paste0(fig_dir, "ll_monkey_transformer.png"), width=8, height=4, bg="white", dpi=400)
 ```
+
 
 # NeurIPS data: Program-learning example
 ########################################
@@ -997,108 +1034,3 @@ final_plot <- plot_grid(
 final_plot
 ggsave(plot=final_plot, paste0(fig_dir, "example_neurips_predictions.png"), width=10.4, height=5.6, bg="white")
 ```
-
-
-
-
-#Aggregate transformer fits to monkey training/ test
-```{r}
-ll_monkey_train <- data.frame()
-for (i in c(1,2,3,4,5,6,8,10,13)) {
-  file <- paste0("preprocessed_data/model_likelihoods/monkey_training/transformer_", i, "_monkeys_train.csv")
-  ll_monkey_train <- bind_rows(ll_monkey_train, read.csv(file)%>%mutate(context_len = i))
-}
-ll_monkey_test <- data.frame()
-for (i in c(1,2,3,4,5,6,8,10,13)) {
-  file <- paste0("preprocessed_data/model_likelihoods/transformer_", i, "_monkeys.csv")
-  ll_monkey_test <- bind_rows(ll_monkey_test, read.csv(file)%>%mutate(context_len = i))
-}
-ll_monkey_all <- bind_rows(ll_monkey_train %>% mutate(mode="train"),
-                           ll_monkey_test %>% mutate(mode="test")) %>%
-                           mutate(correct_distance = correct_distance/screen_w) %>%
-                          mutate(correct_distance = max(correct_distance))
-n_samples <- 100
-n_rows <- nrow(ll_monkey_all)
-all_samples_x <- rnorm(n_rows * n_samples)
-all_samples_y <- rnorm(n_rows * n_samples)
-ll_monkey_all <- ll_monkey_all %>%
-  mutate(
-    model_error_x = (model_pred_x - true_x),
-    model_error_y = (model_pred_y - true_y),
-    model_error = sqrt(model_error_x^2 + model_error_y^2),
-    err_x = (pred_x - true_x),
-    err_y = (pred_y - true_y),
-    abs_err = sqrt(err_x^2 + err_y^2),
-  ) %>%
-  rowwise() %>%
-  mutate(
-    model_correct = {
-      start_idx <- (row_number() - 1) * n_samples + 1
-      end_idx <- row_number() * n_samples
-      samples_x <- model_pred_x + model_std_x * all_samples_x[start_idx:end_idx]
-      samples_y <- model_pred_y + model_std_y * all_samples_y[start_idx:end_idx]
-      mask <- (samples_x > 0) & (samples_x < 1) & (samples_y > 0) & (samples_y < 1)
-      samples_x <- subset(samples_x, mask)
-      samples_y <- subset(samples_y, mask)
-      distances <- sqrt((samples_x - true_x)^2 + (samples_y - true_y)^2)
-      mean(distances < correct_distance)
-    }
-  ) %>%
-  ungroup()
-ll_monkey_delta <- ll_monkey_all %>%
-  group_by(context_len, mode) %>%
-  summarise(
-    mean_LL = mean(LL, na.rm = TRUE),
-    se_LL = sd(LL, na.rm = TRUE) / sqrt(n()),
-    lower_LL = mean_LL - 1.96 * se_LL,
-    upper_LL = mean_LL + 1.96 * se_LL,
-    .groups = "drop"
-  ) %>%
-  group_by(mode) %>%
-  mutate(max_LL = max(mean_LL, na.rm = TRUE)) %>%
-  ungroup() %>%
-  mutate(
-    delta_LL = mean_LL - max_LL,
-    delta_lower = lower_LL - max_LL,
-    delta_upper = upper_LL - max_LL
-  )
-```
-
-
-#Plot monkey LLs relative to best context length for all context lengths
-```{r}
-ll_monkey_transformer <- ggplot(data = ll_monkey_delta) +
-  geom_ribbon(aes(x = context_len, ymin = delta_lower, ymax = delta_upper,
-                  fill = mode), alpha = 0.3) +
-  geom_line(aes(x = context_len, y = delta_LL,
-                color = mode, linetype = mode),
-            size = 1, alpha = 0.8) +
-  geom_point(aes(x = context_len, y = delta_LL,
-                 color = mode),
-             size = 3) +
-  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
-  scale_color_manual(values = c("test" = "#A07CDE", "train" = "#DEA968"),
-                     labels = c("Test", "Train")) +
-  scale_fill_manual(values = c("test" = "#A07CDE", "train" = "#DEA968"),
-                    labels = c("Test", "Train")) +
-  scale_linetype_manual(values = c("test" = "solid", "train" = "dashed"),
-                        labels = c("Test", "Train")) +
-  scale_x_continuous(breaks = 1:13) +
-  labs(x = "Transformer context length",
-       y = expression("Mean LL - LL"[max]*"")) +
-  paper_theme +
-  theme(
-    legend.title = element_blank(),
-    legend.position = "inside",
-    legend.position.inside = c(0.85, 0.9),
-    legend.justification = c(0.5, 0.5),
-    legend.background = element_rect(fill = "white", color = "gray80", size = 0.3),
-    legend.box.margin = margin(8, 8, 8, 8)
-  )
-ll_monkey_transformer
-
-ggsave(plot=ll_monkey_transformer, paste0(fig_dir, "ll_monkey_transformer.png"), width=5, height=4, bg="white", dpi=400)
-```
-
-
-
