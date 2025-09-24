@@ -11,9 +11,10 @@ analyses/p_true_analyses/*.csv
 analyses/NeurIPS_analyses/tmp_imgs/
 models/
 !paper_repo/data/models/
-paper_repo/compute_model_likelihoods_preprocessing.Rmd
 paper_repo/preprocessed_data/model_likelihoods/preprocessing/*.csv
+paper_repo/preprocessed_data/model_likelihoods/monkey_training/preprocessing/*.csv
 human_experiments/
 individual_differences/
 figs/videos/
-*.rds
+*.rdsanalyses/monkeys/transformer/*.csv
+*.ipynb_checkpoints

@@ -335,7 +335,7 @@ for(monkey_name in c("Monkey 1", "Monkey 2")) {
 # Monkey training, accuracy over time plot
 ```{r, fig.width=10, fig.height=6}
 
-df_monkey_train$scaled_func_examples <- floor(df_monkey_train$func_examples/10)*10
+df_monkey_train$scaled_func_examples <- floor(df_monkey_train$func_examples/15)*15
 xmin <- min(df_monkey_train$scaled_func_examples)
 xmax <- max(df_monkey_train$scaled_func_examples)
 xscale <- xmax - xmin
