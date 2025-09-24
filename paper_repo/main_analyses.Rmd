@@ -153,7 +153,6 @@ preprocess_df_monkey <- function(df) {
 }
 
 add_rank_time_column <- function(dataframe) {
-  # Convert 'time' column to a date format, ignoring the clock time information
   dataframe$date <- as.Date(dataframe$Current_time, format = "%a %b %d %H:%M:%S %Y")
     unique_dates <- dataframe %>%
     distinct(date) %>%
@@ -245,14 +244,13 @@ for (f in func_order) {
 
 p <- grid.arrange(grobs=plots, nrow=3)
 
-
 ```
 
 
 # Monkey training, preprocessing
 ```{r}
 
-df_monkey_train <- preprocess_df_monkey(read.csv("data/participants/monkeys_train.csv"))
+df_monkey_train <- preprocess_df_monkey(read.csv("data/participants/monkeys_train.csv")) 
 
 df_monkey_train$id <- seq.int(1,nrow(df_monkey_train))
 df_monkey_train <- add_rank_time_column(df_monkey_train)
@@ -313,7 +311,7 @@ cat("ACCURACY BY PATTERN TYPE\n")
 cat("========================\n")
 for(monkey_name in c("Monkey 1", "Monkey 2")) {
   cat(sprintf("\n%s (sorted by 120px accuracy):\n", monkey_name))
-  cat("Pattern Type                | Trials | 120px Acc | Final Acc | Mean Error\n")
+  cat("Pattern Type               | Trials | 120px Acc | Final Acc | Mean Error\n")
   cat("---------------------------|--------|-----------|-----------|----------\n")
   
   monkey_data <- pattern_accuracy %>% filter(subj_id == monkey_name)
@@ -381,14 +379,17 @@ mean_df <- df_all %>%
            group_by(agent, func.name, tpt) %>%
            summarize(accuracy=mean(accuracy, na.rm=T))
 
-print(mean_df %>% group_by(agent) %>% summarize(accuracy=mean(accuracy)))
-print(mean_df %>% filter(tpt==max(tpt)) %>% group_by(agent) %>% summarize(accuracy=mean(accuracy, na.rm=T)))
+print(mean_df %>% group_by(agent) %>% summarize(overall_accuracy=mean(accuracy)))
+print(mean_df %>% filter(tpt==max(tpt)) %>% group_by(agent) %>% summarize(final_tpt_accuracy=mean(accuracy, na.rm=T)))
 
 # Compute highest and lowest accuracy patterns
+print(mean_df %>% group_by(agent, func.name) %>% summarize(accuracy=mean(accuracy)) %>% group_by(agent) %>% filter((accuracy==max(accuracy)) | (accuracy==min(accuracy))))
+
 func_accuracy_df <- mean_df %>%
                 group_by(agent, func.name) %>%
                 summarize(accuracy=mean(accuracy), .groups="drop") %>%
-                pivot_wider(names_from=agent, values_from=accuracy)
+                pivot_wider(names_from=agent, values_from=accuracy) 
+
 ```
 
 # Compute accuracy by age
@@ -400,13 +401,13 @@ age_df <- df_kid %>%
 print(age_df %>% group_by(func.name, age) %>%
                  summarize(accuracy=mean(accuracy)), .groups="drop") %>%
                  group_by(age) %>%
-                 summarize(accuracy=mean(accuracy))
+                 summarize(overall_accuracy=mean(accuracy))
 
 print(age_df %>% filter(tpt==max(tpt)) %>% 
                  group_by(func.name, age) %>%
                  summarize(accuracy=mean(accuracy), .groups="drop") %>%
                  group_by(age) %>%
-                 summarize(accuracy=mean(accuracy)))
+                 summarize(final_tpt_accuracy=mean(accuracy)))
 ```
 
 # Estimate effect of age on accuracy
@@ -598,19 +599,14 @@ ggplot(data = human_vs_monkey) +
 # ggsave("figs/human_vs_monkeys.png", dpi=400, width=17, height=3.5)
 ```
 
-
-
-
-
-
 # Monkey test accuracy by individual
 ```{r}
 mean_df <- df_monkey_test %>%
            group_by(func.name, tpt, subj_id) %>%
            summarize(accuracy=mean(correct, na.rm=T), .groups="drop")
 
-print(mean_df %>% group_by(subj_id) %>% summarize(accuracy=mean(accuracy)))
-print(mean_df %>% filter(tpt==max(tpt)) %>% group_by(subj_id) %>% summarize(accuracy=mean(accuracy, na.rm=T)))
+print(mean_df %>% group_by(subj_id) %>% summarize(overall_accuracy=mean(accuracy)))
+print(mean_df %>% filter(tpt==max(tpt)) %>% group_by(subj_id) %>% summarize(final_tpt_accuracy=mean(accuracy, na.rm=T)))
 
 # Highest and lowest accuracy patterns
 func_accuracy_df <- mean_df %>% group_by(subj_id, func.name) %>% summarize(accuracy=mean(accuracy)) %>% pivot_wider(names_from=subj_id, values_from=accuracy)
@@ -649,7 +645,8 @@ compute_fit <- function(df) {
                       (1 + tpt_std | subj_id) +    # random intercept + slope for subject
                       (1 + tpt_std | func.name),   # random intercept + slope for function
             data = df,
-            family = binomial(link = "logit")
+            family = binomial(link = "logit"),
+            control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5))
   )
   return(m)
 }
@@ -667,7 +664,6 @@ for (agent_df in split(df_std, df_std$agent)) {
 }
 
 ```
-
 # Meta-learning in kids
 ```{r}
 compute_fit <- function(df) {
@@ -754,10 +750,10 @@ mean_df <- df_all_modeled %>%
            summarize(accuracy=mean(accuracy, na.rm=T))
 
 print(mean_df %>% group_by(agent) %>%
-                  summarize(accuracy = mean(accuracy)))
+                  summarize(overall_accuracy = mean(accuracy)))
 print(mean_df %>% filter(tpt==max(tpt)) %>%
                   group_by(agent) %>%
-                  summarize(caccuracy=mean(accuracy, na.rm=T)))
+                  summarize(final_tpt_accuracy=mean(accuracy, na.rm=T)))
 
 # Compute highest and lowest accuracy patterns
 func_accuracy_df <- mean_df %>%
@@ -777,14 +773,14 @@ print(age_df %>%
       group_by(func.name, age) %>%
       summarize(accuracy=mean(accuracy)), .groups="drop") %>%
       group_by(age) %>%
-      summarize(accuracy=mean(accuracy))
+      summarize(overall_accuracy=mean(accuracy))
 
 print(age_df %>%
       filter(tpt==max(tpt)) %>% 
       group_by(func.name, age) %>%
       summarize(accuracy=mean(accuracy), .groups="drop") %>%
       group_by(age) %>%
-      summarize(accuracy=mean(accuracy)))
+      summarize(final_tpt_accuracy=mean(accuracy)))
 ```
 
 # Relationship between kid and adult accuracy
@@ -812,10 +808,10 @@ mean_df <- df_monkey_test_modeled %>%
            summarize(accuracy=mean(prob_true, na.rm=T), .groups="drop")
 
 print(mean_df %>% group_by(subj_id) %>%
-                  summarize(accuracy=mean(accuracy)))
+                  summarize(overall_accuracy=mean(accuracy)))
 print(mean_df %>% filter(tpt==max(tpt)) %>% 
                   group_by(subj_id) %>%
-                  summarize(accuracy=mean(accuracy, na.rm=T)))
+                  summarize(final_tpt_accuracy=mean(accuracy, na.rm=T)))
 
 # Highest and lowest accuracy patterns
 func_accuracy_df <- mean_df %>%
@@ -838,9 +834,4 @@ for (x in 3:7) {
 }
 
 ```
-
-# 
-######################################
-
-
 
