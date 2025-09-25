@@ -8,6 +8,7 @@ knitr::opts_chunk$set(echo = TRUE,fig.width=4, fig.height=3,fig.align = "center"
 library(ggplot2)
 library(reshape)
 library(grid)
+library(purrr)
 library(extrafont)
 library(dplyr)
 library(RColorBrewer)
@@ -253,15 +254,20 @@ top_model_df <- df_all %>%
                 ungroup()
 
 
-top_model_param_df <- top_model_df %>%
-                      group_by(agent) %>%
-                      summarize(p_lapse=mean(p_lapse),
-                                sd_motor=mean(sd_motor),
-                                sd_prev=mean(sd_prev),
-                                p_prev=mean(p_prev),
-                                p_rand=mean(p_rand)) 
-print(top_model_param_df)
+top_model_param_table_df <- top_model_df %>%
+                            group_by(agent) %>%
+                            summarize(p_lapse=format_num(mean(p_lapse)),
+                                      sd_motor=format_num(mean(sd_motor)),
+                                      sd_prev=format_num(mean(sd_prev)),
+                                      p_prev=format_num(mean(p_prev)),
+                                      p_rand=format_num(mean(p_rand))) %>%
+                            select(c("agent", "sd_motor", "p_prev", "sd_prev", "p_rand")) %>%
+                            arrange(factor(agent, levels=c("Monkeys", "3 y/o", "4 y/o", "5 y/o", "6 y/o", "7 y/o", "Adults")))
+cat(kable(top_model_param_table_df, format = "latex", booktabs = TRUE, escape = FALSE))
 
+```
+
+```{r}
 top_model_count_df <- top_model_df %>%
                       group_by(agent, model) %>%
                       summarize(model_count=n()) %>%
