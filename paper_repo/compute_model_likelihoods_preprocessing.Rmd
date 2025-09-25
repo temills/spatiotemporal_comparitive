@@ -154,6 +154,7 @@ df_adult <- preprocess_df_human(read.csv(paste0(data_dir, "participants/adults.c
 df_kid <- preprocess_df_human(read.csv(paste0(data_dir, "participants/kids.csv")))
 df_monkey <- preprocess_df_monkey(read.csv(paste0(data_dir, "participants/monkeys.csv")))
 ```
+
 # Save preprocessed test data for scipy parameter fitting
 ```{r, message = False}
 get_model_data <- function(df_model, s_id, t,  model_type) {
@@ -222,7 +223,7 @@ get_df_participant_model <- function(df_participant, df_model) {
 }
 
 write_preprocessed_data <- function() {
-  models = c("lot", "lot_nonrecursive", "linear_or_prev", "gp", "comp_gp", "ridge", "linear", "transformer_1", "transformer_4", "transformer_5", "transformer_6", "transformer_8", "transformer_10", "transformer_2", "transformer_3", "transformer_13")
+  models = c("transformer_1", "transformer_2", "transformer_3", "transformer_4", "transformer_5", "transformer_6", "transformer_8", "transformer_10",  "transformer_13", "lot", "lot_nonrecursive", "linear_or_prev", "gp", "comp_gp", "ridge", "linear")
   participants = c('kids', 'adults', "monkeys")
   for (i in seq_along(models)) {
     model_name <- models[i]
@@ -243,7 +244,7 @@ write_preprocessed_data <- function() {
          df_participant <- preprocess_df_monkey(read.csv(paste0(data_dir, "participants/monkeys.csv")))
       }
 
-      df_participant_model <- get_df_participant_model(df_participant, df_model)
+      df_participant_model <- get_df_participant_model(df_participant, df_model) %>% filter(!is.na(model_pred_x))
       print(length(unique(df_participant_model$func.name)))
       out_file <- paste(preprocessed_data_dir, "model_likelihoods/preprocessing/", model_name, "_", participants[j], ".csv", sep="")
       write.csv(df_participant_model, out_file)
@@ -252,8 +253,6 @@ write_preprocessed_data <- function() {
 }
 
 write_preprocessed_data()
-
-
 
 ```
 
@@ -293,4 +292,3 @@ write_preprocessed_data_monkey_training <- function() {
 write_preprocessed_data_monkey_training()
 
 ```
-

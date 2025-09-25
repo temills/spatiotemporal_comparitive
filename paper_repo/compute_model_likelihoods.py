@@ -119,4 +119,4 @@ def run_monkey_train():
 
 if __name__=="__main__":
     run_test()
-    #run_monkey_train()
+    run_monkey_train()
