@@ -40,6 +40,10 @@ paper_theme <- theme_light() + theme(
     legend.text=element_text(size=15, family="Georgia"),
     panel.grid.major = element_blank(), panel.grid.minor = element_blank())
 
+format_num <- function(x) {
+  return(sprintf("%.2f", round(x, 2)))
+}
+
 logsumexp <- function(x) {
   max_x <- max(x)
   max_x + log(sum(exp(x - max_x)))
@@ -54,7 +58,7 @@ fig_dir <- "figs/"
 ```{r}
 read_model_fit_data <- function(participant) {
   path <- "model_fits/"
-  models = c("lot", "gp", "comp_gp", "ridge", "linear", "linear_or_prev", "lot_nonrecursive", "transformer_2", "transformer_3", "transformer_13") 
+  models = c("lot","linear", "gp", "comp_gp", "ridge", "linear_or_prev", "lot_nonrecursive", "transformer_2", "transformer_3", "transformer_13") 
   df <- data.frame()
   for (i in seq_along(models)) {
     model_name <- models[i]
@@ -79,13 +83,63 @@ df_monkey <- read_model_fit_data("monkeys") %>%
 
 ```
 
+# What is going on?
+```{r}
+tmp <- df_kid %>%
+       group_by(agent, func.name, model) %>%
+       summarize(LL=mean(LL))
+
+df_LL <- df_kid %>%
+            group_by(agent, model, subj_id, r_id, func.name) %>%
+            summarize(func_LL = sum(LL, na.rm = TRUE), .groups="drop") %>%
+            group_by(agent, model, subj_id, func.name) %>%
+            summarize(LL = mean(func_LL), .groups="drop") %>%
+            group_by(agent, model, func.name) %>%
+            summarize(LL = mean(LL), .groups="drop") 
+  
+#df_LL$agent <- factor(df_LL$agent, levels=c("Monkeys", "3 y/o", "4 y/o", "5 y/o", "6 y/o", "7 y/o", "Adults"))
+
+ggplot(data=df_LL) +
+    geom_boxplot(aes(x=agent, y=LL, fill=model), outliers=F) +
+    #scale_fill_manual(values = colormap) +
+    ylab("Log likelihood") +
+    paper_theme + 
+    theme(
+      axis.title.x = element_blank(),
+      legend.title=element_blank()
+    )
+```
+```{r}
+ggplot(data=df_kid%>%filter(func.name=="alternating_diff_1")) +
+  geom_point(aes(x=true_x, y=true_y), color="blue") +
+  #geom_point(aes(x=pred_x, y=pred_y), alpha=0.2, color="gold") +
+  geom_point(aes(x=model_pred_x, y=model_pred_y), alpha=0.2, color="red") +
+  facet_wrap(~func.name+model)
+```
+```{r}
+ggplot(df_all %>% filter(agent=="Adults") %>% filter(model=="Linear")) +
+  geom_point(aes(x=true_x, y=true_y), color="blue") +
+  geom_point(aes(x=pred_x, y=pred_y), alpha=0.2, color="gold") +
+  geom_point(aes(x=model_pred_x, y=model_pred_y), alpha=0.2, color="red") +
+  facet_wrap(~func.name)
+```
+
+```{r}
+p2 <- make_boxplot(df_all, colormap)
+print(p2)
+p3 <- make_barplot(df_all, colormap)
+print(p3)
+```
+
+
+
 # Combine data
 ```{r}
 df_all <- bind_rows(df_adult, df_kid, df_monkey) %>%
           mutate(model = ifelse(model=="comp_gp", "Comp. GP", model),
                   model = ifelse(model=="gp", "GP", model),
                   model = ifelse(model=="linear", "Linear", model),
-                  model = ifelse(model=="ridge", "Ridge", model),
+                  model = ifelse(model=="ridge", "Polynomial", model),
                   model = ifelse(model=="lot", "LoT", model),
                   model = ifelse(model=="linear_or_prev", "Linear + Prev.", model),
                   model = ifelse(model=="lot_nonrecursive", "Nonrecursive LoT", model),
@@ -96,16 +150,16 @@ df_all <- bind_rows(df_adult, df_kid, df_monkey) %>%
 df_all_nonrecursive <- df_all %>% 
                       filter(!(model %in% c("Transformer (2)", "Transformer (3)", "Transformer (13)")))
 df_all_nonrecursive$model = factor(df_all_nonrecursive$model,
-                                   levels = c("Linear", "Linear + Prev.",  "Ridge",  "GP",  "Comp. GP", "LoT", "Nonrecursive LoT")) #Transformer (2)", "Transformer (3)", "Transformer (13)")) 
+                                   levels = c("Linear", "Linear + Prev.",  "Polynomial",  "GP",  "Comp. GP", "LoT", "Nonrecursive LoT")) #Transformer (2)", "Transformer (3)", "Transformer (13)")) 
 
 df_all_transformer <- df_all %>%
                       filter(model != "Nonrecursive LoT") %>% 
                       filter(!(func.name %in% c("123", "decreasing_y", "radial_increasing")))
-df_all_transformer$model = factor(df_all_transformer$model, levels = c("Linear", "Linear + Prev.",  "Ridge",  "GP",  "Comp. GP", "LoT", "Transformer (2)", "Transformer (3)", "Transformer (13)"))
+df_all_transformer$model = factor(df_all_transformer$model, levels = c("Linear", "Linear + Prev.",  "Polynomial",  "GP",  "Comp. GP", "LoT", "Transformer (2)", "Transformer (3)", "Transformer (13)"))
 
 df_all <- df_all %>% 
           filter(!(model %in% c("Transformer (2)", "Transformer (3)", "Transformer (13)", "Nonrecursive LoT")))
-df_all$model = factor(df_all$model, levels = c("Linear", "Linear + Prev.",  "Ridge",  "GP",  "Comp. GP", "LoT"))
+df_all$model = factor(df_all$model, levels = c("Linear", "Linear + Prev.",  "Polynomial",  "GP",  "Comp. GP", "LoT"))
 
 ```
 
@@ -173,9 +227,6 @@ boot_diffs <- map_dfr(1:n_boot, ~{
   return(res_df)
 })
 
-format_num <- function(x) {
-  return(sprintf("%.2f", round(x, 2)))
-}
 
 ci_summary <- boot_diffs %>%
               group_by(model, agent) %>%
@@ -207,7 +258,7 @@ table_df <- merge(ci_summary, mean_param_df, by=c("model", "agent")) %>%
 monkey_table_df <- table_df %>%
        filter(agent=="Monkeys") %>%
        select(c("model", "sd_motor", "p_prev", "sd_prev", "p_rand", "lower_LL", "upper_LL", "mean_LL")) %>%
-       arrange(factor(model, levels = c("LoT", "Comp. GP", "GP", "Ridge", "Linear + Prev.", "Linear")))
+       arrange(factor(model, levels = c("LoT", "Comp. GP", "GP", "Polynomial", "Linear + Prev.", "Linear")))
 cat(kable(monkey_table_df, format = "latex", booktabs = TRUE, escape = FALSE))
 ```
 
@@ -216,7 +267,7 @@ cat(kable(monkey_table_df, format = "latex", booktabs = TRUE, escape = FALSE))
 adult_table_df <- table_df %>%
        filter(agent=="Adults") %>%
        select(c("model", "sd_motor", "p_prev", "sd_prev", "p_rand", "lower_LL", "upper_LL", "mean_LL")) %>%
-       arrange(factor(model, levels = c("LoT", "Comp. GP", "GP", "Ridge", "Linear + Prev.", "Linear")))
+       arrange(factor(model, levels = c("LoT", "Comp. GP", "GP", "Polynomial", "Linear + Prev.", "Linear")))
 cat(kable(adult_table_df, format = "latex", booktabs = TRUE, escape = FALSE)) 
 ```
 
@@ -225,11 +276,45 @@ kids_table_df <- table_df %>%
        filter(grepl("y/o",agent)) %>%
        mutate(Age = substr(agent, 1, 1)) %>%
        select(c("model", "Age", "sd_motor", "p_prev", "sd_prev", "p_rand", "lower_LL", "upper_LL", "mean_LL")) %>%
-       arrange(factor(model, levels = c("LoT", "Comp. GP", "GP", "Ridge", "Linear + Prev.", "Linear"))) %>%
+       arrange(factor(model, levels = c("LoT", "Comp. GP", "GP", "Polynomial", "Linear + Prev.", "Linear"))) %>%
        arrange(factor(Age)) 
 
 cat(kable(kids_table_df, format = "latex", booktabs = TRUE, escape = FALSE))
 ```
+
+
+```{r}
+tmp <- df_all %>%
+        group_by(agent, model, subj_id, r_id, func.name) %>%
+                summarize(func_LL = sum(LL, na.rm = TRUE),
+                          p_lapse=mean(p_lapse),
+                          sd_motor=mean(sd_motor),
+                          sd_prev=mean(sd_prev),
+                          p_prev=mean(p_prev),
+                          p_rand=mean(p_rand),
+                          .groups="drop") %>%
+                group_by(agent, model, subj_id) %>%
+                summarize(LL = mean(func_LL, na.rm=TRUE),
+                          p_lapse=mean(p_lapse),
+                          sd_motor=mean(sd_motor),
+                          sd_prev=mean(sd_prev),
+                          p_prev=mean(p_prev),
+                          p_rand=mean(p_rand),
+                          .groups="drop") %>%
+                group_by(agent, model) %>%
+                summarize(LL = mean(LL, na.rm=TRUE),
+                          p_lapse=mean(p_lapse),
+                          sd_motor=mean(sd_motor),
+                          sd_prev=mean(sd_prev),
+                          p_prev=mean(p_prev),
+                          p_rand=mean(p_rand),
+                          .groups="drop")
+
+ggplot(tmp) +
+  geom_histogram(aes(x=LL)) +
+  facet_wrap(~agent+model)
+```
+
 
 ```{r}
 top_model_df <- df_all %>%
@@ -337,8 +422,9 @@ make_barplot <- function(df_all, colormap) {
     scale_x_discrete(labels = function(x) {
       paste0(x, "\nn=", df_top$tot[match(x, df_top$agent)])
     }) +
+    scale_y_continuous(breaks = seq(0, 1, by = 0.5)) +
     paper_theme +
-    ylab("Prop. subjects best fit") +
+    ylab("Prop. participants") +
     theme(axis.title.x = element_blank(),
           legend.title=element_blank())
 
@@ -389,7 +475,6 @@ make_extended_prediction_plot <- function(colormap) {
               mutate(pred_y = (pred_y-min_y)/scale_by) %>%
               mutate(true_x = (true_x-min_x)/scale_by) %>%
               mutate(true_y = (true_y-min_y)/scale_by)
-  
   # custom shift and scale
   s <- 0.85
   df_model <- df_model %>%
@@ -413,7 +498,7 @@ make_extended_prediction_plot <- function(colormap) {
   
   df_model <- df_model %>%
               mutate(hyp = ifelse(func.name=="zigzag_1",
-                                  ifelse(model=="LoT", "repeat(move(s=1), 2);\nturn(dθ=-134°)\n",
+                                  ifelse(model=="LoT", "repeat(move(), 2);\nreflect()\n", #"repeat(move(s=1), 2);\nturn(dθ=-134°)\n",
                                          ifelse(model=="GP",
                                                 "kx=Linear(0.47, 1)\nky=Periodic(0.93, 0.48, 1)\n",
                                                 ifelse(model=="Linear", "move(θ=112°, s=1.02)\n\n", NA))), hyp)) %>%
@@ -461,8 +546,8 @@ make_extended_prediction_plot <- function(colormap) {
                 filter(curr_tpt == t) %>%
                 filter(prediction_tpt >= curr_tpt) %>%
                 filter(prediction_tpt <= curr_tpt+n_extended) 
-      
       return(df_model_points)
+      
   }
 
   get_df_true <- function(seq, t, selected_particles) {
@@ -529,7 +614,7 @@ make_extended_prediction_plot <- function(colormap) {
   
   arg_list <- list(list("stairs_2", 5, list(8,1,1)),
                    list("plus", 6, list(2,9,3)),
-                   list("zigzag_1", 5, list(3,3,3))
+                   list("zigzag_1", 5, list(3,3,1))
                    )
   
   df_model_path <- data.frame()
@@ -547,7 +632,6 @@ make_extended_prediction_plot <- function(colormap) {
   seq_levels <- c("zigzag_1", "stairs_2", "plus")
   
   df_true <- df_true %>% crossing(model = factor(model_levels, levels = model_levels)) %>% arrange(tpt)
-  
   df_model_path$model = factor(df_model_path$model, levels=model_levels)
   df_model_points$model = factor(df_model_points$model, levels=model_levels)
   df_true$func.name = factor(df_true$func.name, levels=seq_levels)
@@ -558,8 +642,8 @@ make_extended_prediction_plot <- function(colormap) {
   return(p)
 }
 
-```
 
+```
 
 ```{r}
 # Combine plots
@@ -567,7 +651,7 @@ make_main_fig <- function(df_all, colormap) {
   p1 <- make_extended_prediction_plot(colormap)
   p2 <- make_boxplot(df_all, colormap)
   p3 <- make_barplot(df_all, colormap)
-  
+
   legend <- cowplot::get_legend(p3 +
                               guides(fill = guide_legend(nrow = 3)) +
                               theme(legend.position = "right",
@@ -598,7 +682,11 @@ make_main_fig <- function(df_all, colormap) {
   
   p1_nolabel <- p1 + theme(plot.title = element_blank(), plot.margin = margin(b=20))
   p2_nolabel <- p2 + theme(plot.title = element_blank(), axis.title.y=element_text(margin=margin(r=10))) + guides(fill="none")
-  p3_nolabel <- p3 + ggtitle("C) Best fitting models") + theme(plot.title = element_text(size = 24, family="Georgia",  hjust = -0.22, margin=margin(b=25))) + guides(fill="none")
+  p3_nolabel <- p3 +
+                ggtitle("C) Best fitting models") +
+                theme(axis.title.y=element_text(margin=margin(r=5)),
+                      plot.title = element_text(size = 24, family="Georgia",  hjust = -0.18, margin=margin(b=20, t=10))) +
+                guides(fill="none")
 
   bottom <- plot_grid(
     p1_nolabel, 
@@ -621,11 +709,14 @@ colormap <-  c(
       "GP"     = "#8093D6",
       "Linear" = "#E68EAB",
       "Linear + Prev." = "#FC8D62",
-      "Ridge" = "#62C1C6"
+      "Polynomial" = "#62C1C6"
 )
 p <- make_main_fig(df_all, colormap)
 ggsave(plot=p, paste0(fig_dir, "model_combined.png"), bg="white", width=15, height=7)
 ```
+
+
+
 
 
 # Supplementary plots
@@ -675,7 +766,7 @@ colormap <-  c(
       "GP"     = "#8093D6", 
       "Linear" = "#E68EAB",
       "Linear + Prev." = "#FC8D62",
-      "Ridge" = "#62C1C6"
+      "Polynomial" = "#62C1C6"
 )
 p <- make_supplementary_fig(df_all_nonrecursive, colormap)
 ggsave(plot=p, paste0(fig_dir, "model_combined_nonrecursive.png"), bg="white", width=10, height=7)
@@ -686,7 +777,7 @@ colormap <-  c(
       "GP"     = "#8093D6",
       "Linear" = "#E68EAB",
       "Linear + Prev." = "#FC8D62",
-      "Ridge" = "#62C1C6",
+      "Polynomial" = "#62C1C6",
       "Transformer (2)" = "darkgrey",
       "Transformer (3)" = "lightgray",
       "Transformer (13)" = "white"

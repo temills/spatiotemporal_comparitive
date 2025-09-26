@@ -99,7 +99,7 @@ def compute_ll(df_participant_model):
 
 def run_test():
     for participant_name in ["kids", "adults",  "monkeys"]:
-        for model_name in ["lot", "lot_nonrecursive", "gp", "comp_gp", "ridge", "linear", "linear_or_prev"] + ["transformer_" + str(i) for i in [1,2,3,4,5,6,8,10,13]]:
+        for model_name in ["transformer_" + str(i) for i in [1,2,3,4,5,6,8,10,13]]+ ["lot", "lot_nonrecursive", "gp", "comp_gp", "ridge", "linear", "linear_or_prev"]:
             print(participant_name)
             print(model_name)
             df_participant_model = pd.read_csv("preprocessed_data/model_likelihoods/preprocessing/" + model_name + "_" + participant_name + ".csv", dtype={"func.name": "string"})

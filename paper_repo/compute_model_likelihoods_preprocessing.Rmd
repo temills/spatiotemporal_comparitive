@@ -27,8 +27,7 @@ preprocess_df_human <- function(df) {
   df <- df[order(df$tpt),] %>%
         rename(pred_x = response_x, pred_y = response_y,
                func.name = seq_id, subj_id = subject_id) %>%
-      mutate(r_id = subj_id) %>%
-      group_by(subj_id, trial_idx, tpt)
+      mutate(r_id = subj_id)
   return(df)
 }
 
@@ -157,6 +156,10 @@ df_monkey <- preprocess_df_monkey(read.csv(paste0(data_dir, "participants/monkey
 
 # Save preprocessed test data for scipy parameter fitting
 ```{r, message = False}
+clamp <- function(x, lower, upper) {
+  min(max(x, lower, na.rm=T), upper, na.rm=T)
+}
+
 get_model_data <- function(df_model, s_id, t,  model_type) {
   s_id <- as.character(s_id[1])
   t <- t[1]
@@ -186,47 +189,48 @@ add_new_columns_grouped <- function(df, df_model, func, group_cols, model_type, 
     left_join(df, by = group_cols) 
 }
 
-get_df_participant_model <- function(df_participant, df_model) {
+get_df_participant_model <- function(df_participant, df_model, bounds_df) {
   df_participant_model <- add_new_columns_grouped(df_participant, df_model, get_model_data, c("func.name", "tpt"), "model",
                           c("model_pred_x", "model_pred_y", "model_std_x", "model_std_y",
                              "model_posterior", "model_particle")) %>%
                           unnest(model_pred_x, model_pred_y, model_std_x, model_std_y,
                                  model_posterior, model_particle) %>%
-                          group_by(func.name) %>%
-                          mutate(min_x = mean(min_x, na.rm=T), min_y = mean(min_y, na.rm=T),
-                                 max_x = mean(max_x, na.rm=T), max_y = mean(max_y, na.rm=T)) %>%
+                          filter(tpt>2) %>%
+                          merge(bounds_df, by="func.name") %>%
+                          filter(!is.na(model_pred_x)) %>%
                           rowwise() %>%
-                          mutate(model_pred_x = ifelse(is.na(model_pred_x), NA,
-                                                       max(min(model_pred_x, max_x, na.rm=T), min_x, na.rm=T))) %>%
-                          mutate(model_pred_y = ifelse(is.na(model_pred_y), NA,
-                                                       max(min(model_pred_y, max_y, na.rm=T), min_y, na.rm=T))) %>% 
-                          ungroup() %>%
-                          rowwise() %>%
-                          mutate(range_x = (max_x-min_x),
-                                 range_y = (max_y-min_y),
+                          # clamp predictions within bounds
+                          mutate(model_pred_x = clamp(model_pred_x, min_bound_x, max_bound_x),
+                                 model_pred_y = clamp(model_pred_y, min_bound_y, max_bound_y),
+                                 pred_x = clamp(pred_x, min_bound_x, max_bound_x),
+                                 pred_y = clamp(pred_y, min_bound_y, max_bound_y)) %>%
+                          # scale between 0 and 1
+                          mutate(range_x = (max_bound_x-min_bound_x),
+                                 range_y = (max_bound_y-min_bound_y),
                                  range_xy = max(range_x, range_y),
-                                 pred_x = (pred_x-min_x)/range_xy,
-                                 pred_y = (pred_y-min_y)/range_xy,
-                                 prev_x = (prev_x-min_x)/range_xy,
-                                 prev_y = (prev_y-min_y)/range_xy,
-                                 true_x = (true_x-min_x)/range_xy,
-                                 true_y = (true_y-min_y)/range_xy,
-                                 model_pred_x = (model_pred_x-min_x)/range_xy,
-                                 model_pred_y = (model_pred_y-min_y)/range_xy,
+                                 pred_x = (pred_x-min_bound_x)/range_xy,
+                                 pred_y = (pred_y-min_bound_y)/range_xy,
+                                 prev_x = (prev_x-min_bound_x)/range_xy,
+                                 prev_y = (prev_y-min_bound_y)/range_xy,
+                                 true_x = (true_x-min_bound_x)/range_xy,
+                                 true_y = (true_y-min_bound_y)/range_xy,
+                                 model_pred_x = (model_pred_x-min_bound_x)/range_xy,
+                                 model_pred_y = (model_pred_y-min_bound_y)/range_xy,
                                  model_std_x = (model_std_x)/range_xy,
                                  model_std_y = (model_std_y)/range_xy,
-                                 max_x = (max_x-min_x)/range_xy,
-                                 max_y = (max_y-min_y)/range_xy,
-                                 min_x = (min_x-min_x)/range_xy,
-                                 min_y = (min_y-min_y)/range_xy)
+                                 max_x = (max_bound_x-min_bound_x)/range_xy,
+                                 max_y = (max_bound_y-min_bound_y)/range_xy,
+                                 min_x = (min_bound_x-min_bound_x)/range_xy,
+                                 min_y = (min_bound_y-min_bound_y)/range_xy)
   return (df_participant_model)
 }
 
 write_preprocessed_data <- function() {
-  models = c("transformer_1", "transformer_2", "transformer_3", "transformer_4", "transformer_5", "transformer_6", "transformer_8", "transformer_10",  "transformer_13", "lot", "lot_nonrecursive", "linear_or_prev", "gp", "comp_gp", "ridge", "linear")
-  participants = c('kids', 'adults', "monkeys")
+  models = c("transformer_1", "transformer_4", "transformer_5", "transformer_6", "transformer_8", "transformer_10", "transformer_2", "transformer_3", "transformer_13")#, "lot", "lot_nonrecursive", "linear_or_prev", "gp", "comp_gp", "ridge", "linear") 
+  participants = c('kids')#, 'adults', "monkeys")
   for (i in seq_along(models)) {
     model_name <- models[i]
+    print(model_name)
     model_path <- paste0(data_dir, "models/", model_name, ".csv")
     if (model_name == "linear_or_prev") {
       df_model <- preprocess_df_linear_or_prev(read.csv(model_path))
@@ -243,14 +247,25 @@ write_preprocessed_data <- function() {
       } else if (participants[j] == 'monkeys') {
          df_participant <- preprocess_df_monkey(read.csv(paste0(data_dir, "participants/monkeys.csv")))
       }
-
-      df_participant_model <- get_df_participant_model(df_participant, df_model) %>% filter(!is.na(model_pred_x))
+      df_participant_model <- get_df_participant_model(df_participant, df_model, bounds_df_test)
+      
       print(length(unique(df_participant_model$func.name)))
       out_file <- paste(preprocessed_data_dir, "model_likelihoods/preprocessing/", model_name, "_", participants[j], ".csv", sep="")
       write.csv(df_participant_model, out_file)
     }
   }
 }
+
+# Compute prediction bounds
+bounds_df_test <- bind_rows(df_adult %>% distinct(true_x, true_y, tpt, func.name, min_x, min_y, max_x, max_y) %>% mutate(agent="Adults"),
+                            df_kid %>% distinct(true_x, true_y, tpt, func.name, min_x, min_y, max_x, max_y) %>% mutate(agent="Kids"),
+                            df_monkey %>% distinct(true_x, true_y, tpt, func.name, min_x, min_y, max_x, max_y) %>% mutate(agent="Monkeys")) %>%
+                  group_by(func.name) %>%
+                  summarize(min_bound_x = max(min_x, na.rm=T),
+                            min_bound_y = max(min_y, na.rm=T),
+                            max_bound_x = min(max_x, na.rm=T),
+                            max_bound_y = min(max_y, na.rm=T))
+
 
 write_preprocessed_data()
 
@@ -267,6 +282,13 @@ write_preprocessed_data_monkey_training <- function() {
                            max_x=screen_w,
                            max_y=screen_h)
   
+  bounds_df_train <- df_participant %>%
+                     distinct(true_x, true_y, tpt, func.name, min_x, min_y, max_x, max_y) %>%
+                     group_by(func.name) %>%
+                     summarize(min_bound_x = max(min_x, na.rm=T),
+                               min_bound_y = max(min_y, na.rm=T),
+                               max_bound_x = min(max_x, na.rm=T),
+                               max_bound_y = min(max_y, na.rm=T))
   for (i in c(1,2,3,4,5,6,8,10,13)) {
     df_model <- read.csv(paste0(data_dir, "models/monkey_training/transformer_", i, ".csv")) %>%
                 mutate(score=1,
@@ -280,7 +302,7 @@ write_preprocessed_data_monkey_training <- function() {
                        sd_x = x_std, sd_y = y_std) %>%
                 preprocess_df_model() 
                 
-    df_participant_model <- get_df_participant_model(df_participant, df_model) %>%
+    df_participant_model <- get_df_participant_model(df_participant, df_model, bounds_df_train) %>%
                             mutate(tpt=tpt+1)
     
     print(length(unique(df_participant_model$func.name)))
