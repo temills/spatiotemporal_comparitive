@@ -185,6 +185,7 @@ preprocessed_data_dir <- "preprocessed_data/"
 fig_dir <- "figs/"
 ```
 
+
 # Plot stimuli
 ```{r}
 df_stim <- read.csv(paste0(data_dir, "models/lot.csv")) %>%
@@ -243,7 +244,7 @@ for (f in func_order) {
 }
 
 p <- grid.arrange(grobs=plots, nrow=3)
-
+ggsave(paste0(fig_dir, "stimuli.png"), p, width=8, height=3)
 ```
 
 
