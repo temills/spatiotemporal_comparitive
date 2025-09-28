@@ -226,9 +226,9 @@ get_df_participant_model <- function(df_participant, df_model, bounds_df) {
 }
 
 write_preprocessed_data <- function() {
-  models = c("transformer_1", "transformer_4", "transformer_5", "transformer_6", "transformer_8", "transformer_10", "transformer_2", "transformer_3", "transformer_13")#, "lot", "lot_nonrecursive", "linear_or_prev", "gp", "comp_gp", "ridge", "linear") 
-  participants = c('kids')#, 'adults', "monkeys")
-  for (i in seq_along(models)) {
+  models = c("transformer_1", "transformer_4", "transformer_5", "transformer_6", "transformer_8", "transformer_10", "transformer_2", "transformer_3", "transformer_13", "lot", "lot_nonrecursive", "linear_or_prev", "gp", "comp_gp", "ridge", "linear") 
+  participants = c('kids', 'adults', "monkeys")
+  for (i in seq_along(models)) { 
     model_name <- models[i]
     print(model_name)
     model_path <- paste0(data_dir, "models/", model_name, ".csv")
