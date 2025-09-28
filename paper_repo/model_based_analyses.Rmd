@@ -83,56 +83,6 @@ df_monkey <- read_model_fit_data("monkeys") %>%
 
 ```
 
-# What is going on?
-```{r}
-tmp <- df_kid %>%
-       group_by(agent, func.name, model) %>%
-       summarize(LL=mean(LL))
-
-df_LL <- df_kid %>%
-            group_by(agent, model, subj_id, r_id, func.name) %>%
-            summarize(func_LL = sum(LL, na.rm = TRUE), .groups="drop") %>%
-            group_by(agent, model, subj_id, func.name) %>%
-            summarize(LL = mean(func_LL), .groups="drop") %>%
-            group_by(agent, model, func.name) %>%
-            summarize(LL = mean(LL), .groups="drop") 
-  
-#df_LL$agent <- factor(df_LL$agent, levels=c("Monkeys", "3 y/o", "4 y/o", "5 y/o", "6 y/o", "7 y/o", "Adults"))
-
-ggplot(data=df_LL) +
-    geom_boxplot(aes(x=agent, y=LL, fill=model), outliers=F) +
-    #scale_fill_manual(values = colormap) +
-    ylab("Log likelihood") +
-    paper_theme + 
-    theme(
-      axis.title.x = element_blank(),
-      legend.title=element_blank()
-    )
-```
-```{r}
-ggplot(data=df_kid%>%filter(func.name=="alternating_diff_1")) +
-  geom_point(aes(x=true_x, y=true_y), color="blue") +
-  #geom_point(aes(x=pred_x, y=pred_y), alpha=0.2, color="gold") +
-  geom_point(aes(x=model_pred_x, y=model_pred_y), alpha=0.2, color="red") +
-  facet_wrap(~func.name+model)
-```
-```{r}
-ggplot(df_all %>% filter(agent=="Adults") %>% filter(model=="Linear")) +
-  geom_point(aes(x=true_x, y=true_y), color="blue") +
-  geom_point(aes(x=pred_x, y=pred_y), alpha=0.2, color="gold") +
-  geom_point(aes(x=model_pred_x, y=model_pred_y), alpha=0.2, color="red") +
-  facet_wrap(~func.name)
-```
-
-```{r}
-p2 <- make_boxplot(df_all, colormap)
-print(p2)
-p3 <- make_barplot(df_all, colormap)
-print(p3)
-```
-
-
-
 # Combine data
 ```{r}
 df_all <- bind_rows(df_adult, df_kid, df_monkey) %>%
@@ -281,40 +231,6 @@ kids_table_df <- table_df %>%
 
 cat(kable(kids_table_df, format = "latex", booktabs = TRUE, escape = FALSE))
 ```
-
-
-```{r}
-tmp <- df_all %>%
-        group_by(agent, model, subj_id, r_id, func.name) %>%
-                summarize(func_LL = sum(LL, na.rm = TRUE),
-                          p_lapse=mean(p_lapse),
-                          sd_motor=mean(sd_motor),
-                          sd_prev=mean(sd_prev),
-                          p_prev=mean(p_prev),
-                          p_rand=mean(p_rand),
-                          .groups="drop") %>%
-                group_by(agent, model, subj_id) %>%
-                summarize(LL = mean(func_LL, na.rm=TRUE),
-                          p_lapse=mean(p_lapse),
-                          sd_motor=mean(sd_motor),
-                          sd_prev=mean(sd_prev),
-                          p_prev=mean(p_prev),
-                          p_rand=mean(p_rand),
-                          .groups="drop") %>%
-                group_by(agent, model) %>%
-                summarize(LL = mean(LL, na.rm=TRUE),
-                          p_lapse=mean(p_lapse),
-                          sd_motor=mean(sd_motor),
-                          sd_prev=mean(sd_prev),
-                          p_prev=mean(p_prev),
-                          p_rand=mean(p_rand),
-                          .groups="drop")
-
-ggplot(tmp) +
-  geom_histogram(aes(x=LL)) +
-  facet_wrap(~agent+model)
-```
-
 
 ```{r}
 top_model_df <- df_all %>%
@@ -715,10 +631,6 @@ p <- make_main_fig(df_all, colormap)
 ggsave(plot=p, paste0(fig_dir, "model_combined.png"), bg="white", width=15, height=7)
 ```
 
-
-
-
-
 # Supplementary plots
 ```{r}
 make_supplementary_fig <- function(df_all, colormap) {
@@ -733,7 +645,7 @@ make_supplementary_fig <- function(df_all, colormap) {
                                       size = 14,
                                       margin = margin(r = 15, l=5))))
   title_b <- ggdraw() + 
-    draw_label("A) Model log likelihoods", fontfamily = "Georgia", size = 24, hjust = 0, x = 0)
+    draw_label("A) Model log likelihoods", fontfamily = "Georgia", size = 24, hjust = -.01, x = 0)
   
   # Combine title B and legend
   title_and_legend <- plot_grid(
@@ -747,7 +659,7 @@ make_supplementary_fig <- function(df_all, colormap) {
   top <- title_and_legend
   
   p2_nolabel <- p2 + theme(plot.title = element_blank(), axis.title.y=element_text(margin=margin(r=10))) + guides(fill="none")
-  p3_nolabel <- p3 + ggtitle("B) Best fitting models") + theme(plot.title = element_text(size = 24, family="Georgia",  hjust = -0.125, margin=margin(b=25))) + guides(fill="none")
+  p3_nolabel <- p3 + ggtitle("B) Best fitting models") + theme(plot.title = element_text(size = 24, family="Georgia",  hjust = -0.1, margin=margin(b=25))) + guides(fill="none")
   
   bottom <- plot_grid(p2_nolabel, p3_nolabel, ncol = 1, rel_heights=c(1,1.2))
   
@@ -1131,3 +1043,12 @@ final_plot <- plot_grid(
 final_plot
 ggsave(plot=final_plot, paste0(fig_dir, "example_neurips_predictions.png"), width=10.4, height=5.6, bg="white")
 ```
+
+# Generate videos
+#################
+```{r}
+
+
+
+```
+
