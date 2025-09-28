@@ -83,54 +83,36 @@ preprocess_df_children <- function(df) {
             mutate(n_sessions = max(session)) %>%
             ungroup()
 
-  time_bt_sessions <- df_kid %>%
-                      distinct(subj_id, session, start_time) %>%
-                      group_by(subj_id) %>%
-                      mutate(time_bt_first_and_last_session = max(start_time)-min(start_time)) %>%
-                      arrange(subj_id, session) %>%
-                      mutate(time_since_last_session = start_time - lag(start_time)) %>%
-                      ungroup() %>%
-                      select(-c("start_time"))
-  
-  df_kid <- df_kid %>%
-            merge(time_bt_sessions, by=c("subj_id", "session"))
-         
   session_offsets <- df_kid %>%
-                      group_by(subj_id, session) %>%
-                      summarize(trials_per_session = max(trial_idx), .groups = "drop") %>%
-                      arrange(subj_id, session) %>%
-                      group_by(subj_id) %>%
-                      mutate(trials_in_prev_session = lag(trials_per_session, default = 0)) %>%
-                      mutate(trials_before_session = lag(cumsum(trials_per_session), default = 0)) 
+                     group_by(subj_id, session) %>%
+                     summarize(trials_per_session = max(trial_idx), .groups = "drop") %>%
+                     arrange(subj_id, session) %>%
+                     group_by(subj_id) %>%
+                     mutate(trials_in_prev_session = lag(trials_per_session, default = 0)) %>%
+                     mutate(trials_before_session = lag(cumsum(trials_per_session), default = 0)) 
+  
+  session_durations <- df_kid %>%
+                       group_by(subj_id, session) %>%
+                       mutate(trial_1_time_since_start = ifelse(trial_idx==1, trial_time_since_start, NA),
+                              trial_1_time_since_start = mean(trial_1_time_since_start, na.rm=T)) %>%
+                       group_by(subj_id, session, trial_idx) %>%
+                       distinct(trial_1_time_since_start, trial_duration) %>%
+                       ungroup() %>%
+                       group_by(subj_id, session) %>%
+                       mutate(trial_duration_sum = sum(trial_duration)) %>%
+                       mutate(session_duration = trial_1_time_since_start + trial_duration_sum) %>%
+                       distinct(session_duration) %>%
+                       ungroup()
   
   df_kid <- df_kid %>%
-         merge(session_offsets, by = c("subj_id", "session")) %>%
-         mutate(trial_idx_across_sessions = trial_idx + trials_before_session)
-  
-  # if less than 1 hour between sessions, count it as a single session
-  min_time_between_sessions = 1/24
-  df_kid <- df_kid %>%
-            mutate(session = ifelse((session>1) & (time_since_last_session<min_time_between_sessions),
-                                    session - 1,
-                                    session),
-                trial_idx = ifelse((session>1) & (time_since_last_session<min_time_between_sessions),
-                                   trial_idx + trials_in_prev_session,
-                                   trial_idx)) %>%
-        group_by(subj_id) %>%
-        mutate(n_sessions = max(session)) %>%
-        group_by(subj_id, session) %>%
-        mutate(trials_per_session = max(trial_idx)) %>%
-        ungroup() %>%
-        group_by(subj_id) %>%
-        mutate(n_trials_total = max(trial_idx_across_sessions)) %>%
-        group_by(subj_id, session, tpt) %>%
-        mutate(trial_1_time_since_start = ifelse(trial_idx==1, trial_time_since_start, NA),
-               trial_1_time_since_start = mean(trial_1_time_since_start, na.rm=T),
-               trial_duration_sum = sum(trial_duration),
-               session_duration = trial_1_time_since_start + trial_duration_sum) %>%
-        ungroup() %>%
-        select(-c(trial_1_time_since_start, trial_duration_sum, start_time, time_since_last_session, trials_before_session, trials_in_prev_session))
+            merge(session_offsets, by = c("subj_id", "session")) %>%
+            merge(session_durations, by = c("subj_id", "session")) %>%
+             mutate(trial_idx_across_sessions = trial_idx + trials_before_session) %>%
+             group_by(subj_id) %>%
+             mutate(n_trials_total = max(trial_idx_across_sessions)) %>%
+             ungroup()
 }
+
 
 
 preprocess_df_monkey <- function(df) {
@@ -268,6 +250,7 @@ for(monkey_name in c("Monkey 1", "Monkey 2")) {
 ```
 
 
+
 # Monkey training, accuracy over time plot
 ```{r, fig.width=10, fig.height=6}
 
@@ -312,7 +295,8 @@ df_all <- bind_rows(df_adult, df_monkey_test, df_kid)
 # Plot stimuli
 ```{r}
 df_stim <- read.csv(paste0(data_dir, "models/lot.csv")) %>%
-           distinct(tpt, true_x, true_y, seq_id)
+           distinct(tpt, true_x, true_y, seq_id) %>%
+           mutate(true_y=-true_y)
 
 unique_kid_patterns <- df_kid %>%
   distinct(func.name) %>%

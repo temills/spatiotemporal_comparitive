@@ -14,6 +14,7 @@ library(dplyr)
 library(RColorBrewer)
 library(robustbase)
 library(tidyr)
+library(gridExtra)
 library(ggstar)
 library(patchwork)
 library(readr)
@@ -350,7 +351,7 @@ make_barplot <- function(df_all, colormap) {
 ```
 
 # Model example predictions
-```{r, fig.height=3}
+```{r, fig.height=8,fig.width=8}
 make_extended_prediction_plot <- function(colormap) {
   preprocess_model_extended <- function(df) {
     df <- df %>%
@@ -394,22 +395,28 @@ make_extended_prediction_plot <- function(colormap) {
   # custom shift and scale
   s <- 0.85
   df_model <- df_model %>%
-              mutate(pred_y = ifelse(func.name=="zigzag_1", pred_y-0.1, pred_y),
-                     true_y = ifelse(func.name=="zigzag_1", true_y-0.1, true_y),
+              mutate(pred_y = ifelse(func.name=="zigzag_1", pred_y-0.15, pred_y),
+                     true_y = ifelse(func.name=="zigzag_1", true_y-0.15, true_y),
                      pred_x = ifelse(func.name=="zigzag_1", pred_x-.1, pred_x),
                      true_x = ifelse(func.name=="zigzag_1", true_x-.1, true_x),
                      pred_x = ifelse(func.name=="stairs_2", pred_x+0.1, pred_x),
                      true_x = ifelse(func.name=="stairs_2", true_x+0.1, true_x),
+                     pred_y = ifelse(func.name=="stairs_2", pred_y-0.05, pred_y),
+                     true_y = ifelse(func.name=="stairs_2", true_y-0.05, true_y),
                      pred_y = ifelse(func.name=="plus", pred_y*s, pred_y),
                      true_y = ifelse(func.name=="plus", true_y*s, true_y),
                      pred_x = ifelse(func.name=="plus", pred_x*s, pred_x),
-                     true_x = ifelse(func.name=="plus", true_x*s, true_x))
+                     true_x = ifelse(func.name=="plus", true_x*s, true_x),
+                     pred_y = ifelse(func.name=="plus", pred_y-.03, pred_y),
+                     true_y = ifelse(func.name=="plus", true_y-.03, true_y))
   df_stim <- df_stim %>%
-             mutate(true_y = ifelse(func.name=="zigzag_1", true_y-0.1, true_y),
+             mutate(true_y = ifelse(func.name=="zigzag_1", true_y-0.15, true_y),
                     true_x = ifelse(func.name=="zigzag_1", true_x-0.1, true_x),
                     true_x = ifelse(func.name=="stairs_2", true_x+0.1, true_x),
+                    true_y = ifelse(func.name=="stairs_2", true_y-0.05, true_y),
                     true_y = ifelse(func.name=="plus", true_y*s, true_y),
-                    true_x = ifelse(func.name=="plus", true_x*s, true_x))
+                    true_x = ifelse(func.name=="plus", true_x*s, true_x),
+                    true_y = ifelse(func.name=="plus", true_y-0.03, true_y))
   
   
   df_model <- df_model %>%
@@ -417,17 +424,17 @@ make_extended_prediction_plot <- function(colormap) {
                                   ifelse(model=="LoT", "repeat(move(), 2);\nreflect()\n", #"repeat(move(s=1), 2);\nturn(dθ=-134°)\n",
                                          ifelse(model=="GP",
                                                 "kx=Linear(0.47, 1)\nky=Periodic(0.93, 0.48, 1)\n",
-                                                ifelse(model=="Linear", "move(θ=112°, s=1.02)\n\n", NA))), hyp)) %>%
+                                                ifelse(model=="Linear", "move(θ=248°, s=1.02)\n\n", NA))), hyp)) %>%
               mutate(hyp = ifelse(func.name=="plus",
-                                  ifelse(model=="LoT", "turn(dθ=90°);\nsubprogram(repeat(move(), 2));\nstay()",
+                                  ifelse(model=="LoT", "turn(dθ=270°);\nsubprogram(repeat(move(), 2));\nstay()",
                                          ifelse(model=="GP",
                                                 "kx=Periodic(0.78, 0.84, 1)\nky=Periodic(0.5, 0.15, 1)\n",
                                                 ifelse(model=="Linear", "move(θ=0°, s=0.64)\n\n", NA))), hyp)) %>%
               mutate(hyp = ifelse(func.name=="stairs_2",
-                                  ifelse(model=="LoT", "repeat(move(θ=0°), 2);\nmove(dy=1.55)\n",
+                                  ifelse(model=="LoT", "repeat(move(θ=0°), 2);\nmove(dy=-1.55)\n",
                                          ifelse(model=="GP",
                                                 "kx=Periodic(0.97, 0.96, 1)\nky=RBF(0.37, 1)\n",
-                                                ifelse(model=="Linear", "move(θ=14°, s=0.63)\n\n", NA))), hyp))
+                                                ifelse(model=="Linear", "move(θ=346°, s=0.63)\n\n", NA))), hyp))
              
           
   n_extended = 10
@@ -476,26 +483,26 @@ make_extended_prediction_plot <- function(colormap) {
       
 
   plot_extended_predictions <- function(df_model_path, df_model_points, df_true) {
-      x_min = min(min(df_true$true_x), min(df_model_points$pred_x))
-      y_min = min(min(df_true$true_y), min(df_model_points$pred_y))
+      x_min = min(min(df_true$true_x), min(df_model_points$pred_x)) -.02
+      y_min = min(min(-(df_true$true_y)), min(-(df_model_points$pred_y)))
   
       p <- ggplot() +
           # True pattern
-          geom_path(data=df_true, aes(x=true_x, y=true_y), linetype="dotted", linewidth=0.8) +
-          geom_point(data=df_true %>% filter(tpt < max_tpt), aes(x=true_x, y=true_y, alpha=tpt), size=2.5) +
-          geom_star(data=df_true %>% filter(tpt == max_tpt), aes(x=true_x, y=true_y),size = 2.5,starshape = 1, fill="black") +
+          geom_path(data=df_true, aes(x=true_x, y=-true_y), linetype="dotted", linewidth=0.8) +
+          geom_point(data=df_true %>% filter(tpt < max_tpt), aes(x=true_x, y=-true_y, alpha=tpt), size=2.5) +
+          geom_star(data=df_true %>% filter(tpt == max_tpt), aes(x=true_x, y=-true_y),size = 2.5,starshape = 1, fill="black") +
           scale_alpha_continuous(range = c(0.3, 1)) +
           # Predicted patterns
           geom_path(data=df_model_path%>%filter(prediction_tpt<=curr_tpt),
-                    aes(x=pred_x, y=pred_y, group=model, color=model),
+                    aes(x=pred_x, y=-pred_y, group=model, color=model),
                     linetype="solid", alpha=0.9, linewidth=0.8) +
-          geom_path(data=df_model_path, aes(x=pred_x, y=pred_y, group=model, color=model), 
+          geom_path(data=df_model_path, aes(x=pred_x, y=-pred_y, group=model, color=model), 
                      linetype="solid", alpha=0.6, linewidth=0.8) +
           geom_point(data=df_model_points %>% filter(prediction_tpt<=curr_tpt),
-                     aes(x=pred_x, y=pred_y, group=model, color=model),
+                     aes(x=pred_x, y=-pred_y, group=model, color=model),
                      size=2.5, alpha=0.9) +
           geom_point(data=df_model_points,
-                     aes(x=pred_x, y=pred_y, group=model, color=model),
+                     aes(x=pred_x, y=-pred_y, group=model, color=model),
                      size=2.5, alpha=0.6) +
           geom_text(data=df_model_points,
                       aes(x = x_min, y = Inf, label = hyp),
@@ -523,8 +530,9 @@ make_extended_prediction_plot <- function(colormap) {
           facet_grid(rows = vars(func.name), cols = vars(model)) +
           coord_fixed(ratio=1,
                       xlim=c(x_min, 0.8),
-                      ylim=c(y_min, 0.6))
-  
+                      ylim=c(-0.45, 0.05))
+                      #ylim=c(y_min, 0.6))
+      print(y_min)
       return(p)
   }
   
@@ -557,7 +565,6 @@ make_extended_prediction_plot <- function(colormap) {
   p <- plot_extended_predictions(df_model_path, df_model_points, df_true)
   return(p)
 }
-
 
 ```
 
@@ -836,20 +843,23 @@ df_stimuli <- df_stimuli %>% mutate(func_tpt = paste0(func.name, tpt)) %>% filte
 df_adult <- df_adult %>% mutate(func_tpt = paste0(func.name, tpt))
 df_lot <- df_lot %>% mutate(func_tpt = paste0(func.name, tpt))
 ex_df <- read.csv(paste0(data_dir, "NeurIPS_data/example_programs.csv")) %>%
-         filter(!((func=="concat(move(), change_angle(int(-1)))") & (prediction_tpt>8)))
+         filter(!((func=="concat(move(), change_angle(int(-1)))") & (prediction_tpt>8))) 
 
 ```
 
 ```{r, fig.width=2.5, fig.height=2}
 x_min <- -1
 x_max <- 4.8
-y_min <- -1
-y_max <- 4.4
+y_min <- -4.4#-1
+y_max <- 1#-4.4#4.4
 fig_width = 1.5
 fig_height = 1.1
 
 ex_program_plot <- function(f) {
-  df <- ex_df %>% filter(func==f)
+  df <- ex_df %>%
+        filter(func==f) %>%
+        mutate(true_y=-true_y,
+               pred_y=-pred_y)
   p <- ggplot(data=df) +
        geom_path(data=df %>% filter(prediction_tpt<curr_tpt),
                  aes(x=true_x, y=true_y), size=0.5, linetype="dotted") +
@@ -874,7 +884,8 @@ ex_program_plot <- function(f) {
 
 ex_data_plot <- function() {
   df <- ex_df %>%
-        distinct(prediction_tpt, curr_tpt, true_x, true_y)
+        distinct(prediction_tpt, curr_tpt, true_x, true_y) %>%
+        mutate(true_y=-true_y)
   p <- ggplot(data=df) +
        geom_path(data=df %>% filter(prediction_tpt<curr_tpt),
                  aes(x=true_x, y=true_y), size=0.5, linetype="dotted") +
@@ -892,7 +903,9 @@ ex_data_plot <- function() {
   return(p)  
 }
 ex_prediction_plot <- function() {
-  df <- ex_df
+  df <- ex_df %>%
+        mutate(true_y=-true_y,
+               pred_y=-pred_y)
   p <- ggplot(data=df) +
        geom_path(data=df %>%
                       distinct(prediction_tpt, curr_tpt, true_x, true_y) %>%
@@ -942,15 +955,22 @@ make_sequence_plots <- function(func_name, t_min=NULL, t_max=NULL, n_top=NULL) {
   if (is.null(n_top)) n_top <- length(unique(df_lot$particle))
   
   df_hum <- df_adult %>%
-            filter((func.name == func_name) & (tpt < t_max+1) & (tpt>=t_min)) 
+            filter((func.name == func_name) & (tpt < t_max+1) & (tpt>=t_min)) %>%
+            mutate(true_y=-true_y,
+                   pred_y=-pred_y)
   
   df_stim <- df_stimuli %>%
-            filter((func.name == func_name) & (tpt < t_max+1))
+            filter((func.name == func_name) & (tpt < t_max+1)) %>%
+            mutate(true_y=-true_y)
   
   df_mod <- df_lot %>%
             filter((func.name == func_name) & (tpt < t_max+1) & (tpt>=t_min)) %>%
             group_by(tpt) %>%
-            slice_max(n=n_top, order_by=posterior)
+            slice_max(n=n_top, order_by=posterior) %>%
+            mutate(true_y=-true_y,
+                   pred_y=-pred_y)
+  
+  
             
   x_min <- min(min(min(df_stim$true_x, na.rm=TRUE), min(df_hum$pred_x, na.rm=TRUE)),
                min(df_mod$pred_x, na.rm=TRUE))
@@ -1046,9 +1066,237 @@ ggsave(plot=final_plot, paste0(fig_dir, "example_neurips_predictions.png"), widt
 
 # Generate videos
 #################
-```{r}
+
+# Make videos comparing single participant with single model, overlaid
+```{r, echo=F, message=F}
+# Preprocessing
+logsumexp <- function(x) {
+  max_x <- max(x)
+  max_x + log(sum(exp(x - max_x)))
+}
+
+preprocess_df_model <- function(df_model) {
+  df_model <- df_model %>%
+              group_by(tpt, seq_id) %>%
+              mutate(norm = logsumexp(score)) %>%
+              ungroup() %>%
+              mutate(posterior = exp(score - norm)) %>%
+              rename(func.name = seq_id) %>%
+              mutate(std_x = sd_x, std_y = sd_y)
+  return(df_model)
+}
+preprocess_df_linear_or_prev <- function(df_model) {
+  # Split particle probability mass between periodic and linear predictions
+  df_model <- df_model %>%
+              rename(func.name = seq_id)
+  
+  prev_pt_df <- df_model %>%
+                group_by(func.name, tpt) %>%
+                summarize(true_x = mean(true_x),
+                          true_y = mean(true_y),
+                          .groups="drop") %>%
+                arrange(tpt) %>%
+                mutate(prev_x = lag(true_x), prev_y = lag(true_y)) %>%
+                select(-c("true_x", "true_y"))
+
+  df_grouped <- df_model %>%
+                mutate(posterior = exp(score)) %>%
+                distinct(func.name, tpt, particle, posterior) %>%
+                group_by(func.name, tpt) %>%
+                mutate(posterior = posterior / sum(posterior)) %>%
+                ungroup()
+  
+  df_model <- df_model %>%
+              left_join(df_grouped %>% select(func.name, tpt, particle, posterior),
+                        by = c("func.name", "tpt", "particle"))
+
+  df_model <- df_model %>%
+              group_by(func.name, tpt) %>%
+              mutate(expanded_particle = paste0(particle, "_", row_number())) %>%
+              mutate(particle = as.integer(factor(expanded_particle))) %>%
+              mutate(pred_x = mean_x, pred_y = mean_y) %>%
+              group_by(func.name, tpt, particle) %>%
+              mutate(sd_x = ifelse(is_periodic, sd_periodic_x, sd_vec_x),
+                     sd_y = ifelse(is_periodic, sd_periodic_y, sd_vec_y)) %>%
+              ungroup() %>%
+              rowwise() %>%
+              mutate(posterior = posterior * component_weight) %>%
+              mutate(std_x = sd_x) %>%
+              mutate(std_y = sd_y) %>%
+              merge(prev_pt_df, by=c("func.name", "tpt"))
+        
+  return(df_model)
+}
+preprocess_df_transformer <- function(df_transformer) {
+  # For each function, compute the mapping from transformer coords to reference coords
+  df_ref <- read.csv(paste0(data_dir, "participants/adults.csv")) %>%
+            rename(pred_x = response_x, pred_y = response_y, func.name = seq_id) %>%
+            group_by(func.name, tpt) %>%
+            summarize(ref_true_x = mean(true_x),
+                      ref_true_y = mean(true_y),
+                      .groups="drop")
+
+  df_transformer <- df_transformer %>%
+                    preprocess_df_model() %>%
+                    merge(df_ref, by=c("func.name", "tpt")) %>%
+                    group_by(func.name) %>%
+                    mutate(
+                      t1x = min(true_x), t2x = max(true_x),
+                      r1x = min(ref_true_x), r2x = max(ref_true_x),
+                      mx = ifelse(t2x==t1x, 1, (r2x-r1x)/(t2x-t1x)),
+                      bx = r1x - mx*t1x,
+                      t1y = min(true_y), t2y = max(true_y),
+                      r1y = min(ref_true_y), r2y = max(ref_true_y),
+                      my = ifelse(t2y==t1y, mx, (r2y-r1y)/(t2y-t1y)),
+                      by = r1y - my*t1y
+                    ) %>%
+                    rowwise() %>%
+                    mutate(true_x = true_x * mx + bx,
+                           pred_x = pred_x * mx + bx,
+                           std_x = std_x * mx,
+                           true_y = true_y * my + by,
+                           pred_y = pred_y * my + by,
+                           std_y = std_y * my)
+  return(df_transformer)
+}
+
+df_kid_vids <- read.csv(paste0(data_dir, "participants/kids.csv")) %>%
+               rename(pred_x = response_x, pred_y = response_y, func.name = seq_id)
+df_adult_vids <- read.csv(paste0(data_dir, "participants/adults.csv")) %>%
+               rename(pred_x = response_x, pred_y = response_y, func.name = seq_id)
+df_monkey_vids <- read.csv(paste0(data_dir, "participants/monkeys.csv")) %>%
+                  rename(true_x=x_next, true_y=y_next, prev_x=x_curr, prev_y=y_curr, pred_x=x_pred,
+                         subject_id = monkey_name, pred_y = y_pred, func.name = func_id, tpt=n)
+
+out_folder <- "../videos/frames/"
 
 
+model_list <- c("LoT", "Nonrecursive LoT", "GP", "Comp. GP", "Polynomial", "Linear", "Linear + Prev.", "Transformer (2)", "Transformer (3)", "Transformer (13)")
+participant_list <- c("Monkeys", "Monkey 1", "Monkey 2", "3 yos", "4 yos", "5 yos", "6 yos", "7 yos", "Adults") 
+
+participant_dfs <- list("3 yos" = df_kid_vids%>%filter(age==3),
+                        "4 yos"=df_kid_vids%>%filter(age==4),
+                        "5 yos"=df_kid_vids%>%filter(age==5),
+                        "6 yos"=df_kid_vids%>%filter(age==6),
+                        "7 yos"=df_kid_vids%>%filter(age==7),
+                        "Adults"=df_adult_vids,
+                        "Monkeys"=df_monkey_vids,
+                        "Monkey 1"=df_monkey_vids%>%filter(subject_id=="Monkey 1"),
+                        "Monkey 2"=df_monkey_vids%>%filter(subject_id=="Monkey 2"))
+
+model_dfs <- list("LoT" = preprocess_df_model(read.csv(paste0(data_dir, "models/lot.csv"))),
+                  "Nonrecursive LoT" = preprocess_df_model(read.csv(paste0(data_dir, "models/lot_nonrecursive.csv"))),
+                  "GP" = preprocess_df_model(read.csv(paste0(data_dir, "models/gp.csv"))),
+                  "Comp. GP" =  preprocess_df_model(read.csv(paste0(data_dir, "models/comp_gp.csv"))),
+                  "Poynomial" = preprocess_df_model(read.csv(paste0(data_dir, "models/ridge.csv"))),
+                  "Linear" = preprocess_df_model(read.csv(paste0(data_dir, "models/linear.csv"))),
+                  "Linear + Prev." = preprocess_df_linear_or_prev(read.csv(paste0(data_dir, "models/linear_or_prev.csv"))),
+                  "Transformer (2)" = preprocess_df_transformer(read.csv(paste0(data_dir, "models/transformer_2.csv"))),
+                  "Transformer (3)" = preprocess_df_transformer(read.csv(paste0(data_dir, "models/transformer_3.csv"))),
+                  "Transformer (13)" = preprocess_df_transformer(read.csv(paste0(data_dir, "models/transformer_13.csv"))))
 
 ```
+
+```{r}
+
+make_func_vid <- function(funcname, df_participant, df_model) {
+  df_seq <- subset(df_participant, (df_participant$func.name == funcname))
+  dir.create(paste0(out_folder, "/", funcname))
+  x_min <- min(min(df_seq$true_x, na.rm=TRUE), min(df_seq$pred_x, na.rm=TRUE))
+  x_max <- max(max(df_seq$true_x, na.rm=TRUE), max(df_seq$pred_x, na.rm=TRUE))
+  y_min <- min(min(df_seq$true_y, na.rm=TRUE), min(df_seq$pred_y, na.rm=TRUE))
+  y_max <- max(max(df_seq$true_y, na.rm=TRUE), max(df_seq$pred_y, na.rm=TRUE))
+  
+  range_x <- (x_max-x_min)
+  range_y <- (y_max-y_min)
+
+  shift_x<-range_x*1.5
+
+  frame_num <- 0
+  
+  for (i in (min(df_participant$tpt)+1):max(df_participant$tpt)) {
+    df_tpt <- subset(df_seq, (df_seq$tpt == i))
+    df_hist <- df_seq[order(df_seq$tpt),] %>% filter(tpt<i)
+    
+    p1 <- ggplot() +
+          # prev points and path
+          geom_path(data=df_hist, aes(x=true_x, y=true_y), linewidth=0.25, linetype="dotted") +
+          geom_point(data=df_hist%>%filter(tpt==max(tpt)), aes(x=true_x, y=true_y, color="agent1"), size=1) +
+          geom_point(data=df_hist%>%filter(tpt==max(tpt)), aes(x=true_x, y=true_y, color="agent2"), size=1) +
+          geom_point(data=df_hist, aes(x=true_x, y=true_y), size=3) +
+          # shifted
+          geom_path(data=df_hist, aes(x=true_x+shift_x, y=true_y), linewidth=0.25, linetype="dotted") +
+          geom_point(data=df_hist%>%filter(tpt==max(tpt)), aes(x=true_x+shift_x, y=true_y, color="agent1"), size=1) +
+          geom_point(data=df_hist%>%filter(tpt==max(tpt)), aes(x=true_x+shift_x, y=true_y, color="agent2"), size=1) +
+          geom_point(data=df_hist, aes(x=true_x+shift_x, y=true_y), size=3) +
+          # formatting
+          scale_color_manual(labels = c("agent1"=agent1, "agent2"=agent2),
+                            values=c("agent1"="maroon", "agent2"="#516797"),
+                            breaks = c("agent1", "agent2")) +
+          coord_equal(xlim=c(x_min-range_x*.2, x_min+(range_x*2.7)),
+                      ylim=c(y_min-(range_y*.2), y_min+(range_y*1.2))) +
+          theme_void() +
+          theme(panel.background = element_rect(fill = "white"),
+                #legend.background = element_rect(fill = "white", color=NA),
+                legend.text=element_text(size=18, margin = margin(r = 20, l=10)),
+                legend.title=element_blank(),
+                legend.spacing.y = unit(2, "lines"),
+                legend.position = "top") +
+          guides(alpha="none",
+                 size="none",
+                 fill="none",
+                 color = guide_legend(override.aes = list(size = 5)))
+    
+    p2 <- p1 +
+            # next true point
+            geom_point(data=df_tpt, aes(x=true_x, y=true_y), color="gold", shape=8, size=4, stroke=2.0) +
+            geom_point(data=df_tpt, aes(x=true_x+shift_x, y=true_y), color="gold", shape=8, size=4, stroke=2.0)
+          
+    df_model_tpt <- df_model %>%
+                    filter(tpt==i) %>%
+                    filter(func.name==funcname) %>%
+                    group_by(pred_x, pred_y) %>%
+                    summarize(posterior=sum(posterior))
+    
+    if (i<3) {
+      p_list <- list(p1, p2)
+    } else {
+      p3 <- p2 +
+              # model predictions
+              geom_point(data=df_model_tpt,
+                         aes(x=pred_x+shift_x, y=pred_y, alpha=log(posterior), color="agent2"),
+                         size=2, stroke=1) +
+              # participant predictions
+              geom_point(data=df_tpt, aes(x=pred_x, y=pred_y, color="agent1"), size=2, stroke=1, alpha=0.7)
+      p_list <- list(p1, p2, p3, p3, p3)
+    } 
+    for (p in p_list) {
+      f_name <- paste0(out_folder, funcname, "/", frame_num, ".png")
+      frame_num <- frame_num + 1 
+      ggsave(f_name, plot=p, width=10,height=5, dpi=500, bg="white")
+    }
+    
+  }
+}
+
+
+for (i in (1:length(model_list))) {
+  agent2 <- model_list[i]
+  df_model <- model_dfs[[agent2]]
+  for (j in (1:length(participant_list))) {
+    agent1 <- participant_list[j]
+    df_participant <- participant_dfs[[agent1]]
+    out_folder <- paste0("../videos/frames/", gsub(" ", "_", agent1), "_", gsub(" ", "_", agent2), "/")
+
+    unlink(out_folder, recursive=TRUE)
+    dir.create(out_folder)
+    df_participant <- df_participant[order(df_participant$tpt),]
+    for (id in sort(unique(df_participant$func.name))) {
+      print(id)
+      make_func_vid(id, df_participant, df_model)
+    }
+  }
+}
+```
+
 
