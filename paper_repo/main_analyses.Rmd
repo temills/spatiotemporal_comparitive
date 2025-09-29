@@ -76,7 +76,6 @@ preprocess_df_children <- function(df) {
         ungroup() %>%
         mutate(scaled_err = scale(abs_rel_err)[,1])
   
-  # Update session numbers so that activity < 1 hr apart is recorded as a single session
   df_kid <- df_kid %>%
             group_by(subj_id) %>%
             mutate(session = session-min(session)+1) %>%
