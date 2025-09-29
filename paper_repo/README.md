@@ -30,7 +30,7 @@ This repository contains the data, models, and analyses used to study how human 
 
 ## References
 
+Mills, T., Tenenbaum, J., & Cheyette, S. (2023). Human spatiotemporal pattern learning as probabilistic program synthesis. Advances in Neural Information Processing Systems, 36.
+
 Saad F.A., Patton B.J., Hoffmann M.D., Saurous R.A., Mansinghka V.K. (2023). Sequential monte carlo1023
 learning for time series structure discovery. In International Conference on Machine Learning. PMLR.
-
-Mills, T., Tenenbaum, J., & Cheyette, S. (2023). Human spatiotemporal pattern learning as probabilistic program synthesis. Advances in Neural Information Processing Systems, 36.
