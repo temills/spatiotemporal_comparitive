@@ -1172,6 +1172,7 @@ df_tpt_0 <- df_adult_vids %>%
 df_monkey_vids <- read.csv(paste0(data_dir, "participants/monkeys.csv")) %>%
                   rename(true_x=x_next, true_y=y_next, prev_x=x_curr, prev_y=y_curr, pred_x=x_pred,
                          subject_id = monkey_name, pred_y = y_pred, func.name = func_id, tpt=n) %>%
+                  bind_rows(df_tpt_0)
                 
 
 model_list <- c("LoT", "Nonrecursive LoT", "GP", "Comp. GP", "Polynomial", "Linear", "Linear + Prev.", "Transformer (2)", "Transformer (3)", "Transformer (13)")
