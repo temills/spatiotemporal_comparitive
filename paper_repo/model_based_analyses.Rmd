@@ -101,7 +101,7 @@ df_all <- bind_rows(df_adult, df_kid, df_monkey) %>%
 df_all_nonrecursive <- df_all %>% 
                       filter(!(model %in% c("Transformer (2)", "Transformer (3)", "Transformer (13)")))
 df_all_nonrecursive$model = factor(df_all_nonrecursive$model,
-                                   levels = c("Linear", "Linear + Prev.",  "Polynomial",  "GP",  "Comp. GP", "LoT", "Nonrecursive LoT")) #Transformer (2)", "Transformer (3)", "Transformer (13)")) 
+                                   levels = c("Linear", "Linear + Prev.",  "Polynomial",  "GP",  "Comp. GP", "LoT", "Nonrecursive LoT"))
 
 df_all_transformer <- df_all %>%
                       filter(model != "Nonrecursive LoT") %>% 
@@ -150,17 +150,18 @@ compute_ll_diffs <- function(df) {
             mutate(mean_LL_top = ifelse(is_top_model, mean_LL, NA)) %>%
             group_by(agent) %>%
             mutate(mean_LL_top = mean(mean_LL_top, na.rm=T)) %>%
-            mutate(diff_from_top = mean_LL - mean_LL_top)
+            mutate(diff_from_top = mean_LL - mean_LL_top) %>%
+            ungroup()
   return (res_df)
 }
 
 resample_by_id <- function(data) {
   ids <- unique(data$data_id)
   boot_ids <- sample(ids, size = length(ids), replace = TRUE)
-  return(data %>% semi_join(tibble(data_id = boot_ids), by = "data_id"))
+  # for each id in boot_ids, add rows with that id to the df
+  return(tibble(data_id = boot_ids, boot = seq_along(boot_ids)) %>%  
+         left_join(data, by = "data_id"))
 }
-
-
 
 set.seed(123)
 n_boot <- 1000
@@ -243,6 +244,14 @@ top_model_df <- df_all %>%
                           p_prev=mean(p_prev),
                           p_rand=mean(p_rand),
                           .groups="drop") %>%
+                group_by(agent, model, subj_id, func.name) %>%
+                summarize(func_LL = mean(func_LL, na.rm = TRUE),
+                          p_lapse=mean(p_lapse),
+                          sd_motor=mean(sd_motor),
+                          sd_prev=mean(sd_prev),
+                          p_prev=mean(p_prev),
+                          p_rand=mean(p_rand),
+                          .groups="drop") %>%
                 group_by(agent, model, subj_id) %>%
                 summarize(LL = mean(func_LL, na.rm=TRUE),
                           p_lapse=mean(p_lapse),
@@ -317,6 +326,8 @@ make_barplot <- function(df_all, colormap) {
   df_top <- df_all %>%
     group_by(agent, model, subj_id, r_id, func.name) %>%
     summarize(func_LL = sum(LL, na.rm = TRUE), .groups="drop") %>%
+    group_by(agent, model, subj_id, func.name) %>%
+    summarize(func_LL = mean(func_LL, na.rm=TRUE), .groups="drop") %>%
     group_by(agent, model, subj_id) %>%
     summarize(LL = mean(func_LL, na.rm=TRUE), .groups="drop") %>%
     group_by(agent, subj_id) %>%
@@ -850,8 +861,8 @@ ex_df <- read.csv(paste0(data_dir, "NeurIPS_data/example_programs.csv")) %>%
 ```{r, fig.width=2.5, fig.height=2}
 x_min <- -1
 x_max <- 4.8
-y_min <- -4.4#-1
-y_max <- 1#-4.4#4.4
+y_min <- -4.4
+y_max <- 1
 fig_width = 1.5
 fig_height = 1.1
 
@@ -1064,6 +1075,7 @@ final_plot
 ggsave(plot=final_plot, paste0(fig_dir, "example_neurips_predictions.png"), width=10.4, height=5.6, bg="white")
 ```
 
+
 # Generate videos
 #################
 
@@ -1174,8 +1186,8 @@ df_monkey_vids <- read.csv(paste0(data_dir, "participants/monkeys.csv")) %>%
                          subject_id = monkey_name, pred_y = y_pred, func.name = func_id, tpt=n) %>%
                   bind_rows(df_tpt_0)
                 
-
-model_list <- c("LoT", "Nonrecursive LoT", "GP", "Comp. GP", "Polynomial", "Linear", "Linear + Prev.", "Transformer (2)", "Transformer (3)", "Transformer (13)")
+#"LoT", "Nonrecursive LoT", "GP", "Comp. GP", 
+model_list <- c("Polynomial", "Linear", "Linear + Prev.", "Transformer (2)", "Transformer (3)", "Transformer (13)")
 participant_list <- c("Monkeys", "Monkey 1", "Monkey 2", "3 yos", "4 yos", "5 yos", "6 yos", "7 yos", "Adults") 
 
 participant_dfs <- list("3 yos" = df_kid_vids%>%filter(age==3),
@@ -1192,7 +1204,7 @@ model_dfs <- list("LoT" = preprocess_df_model(read.csv(paste0(data_dir, "models/
                   "Nonrecursive LoT" = preprocess_df_model(read.csv(paste0(data_dir, "models/lot_nonrecursive.csv"))),
                   "GP" = preprocess_df_model(read.csv(paste0(data_dir, "models/gp.csv"))),
                   "Comp. GP" =  preprocess_df_model(read.csv(paste0(data_dir, "models/comp_gp.csv"))),
-                  "Poynomial" = preprocess_df_model(read.csv(paste0(data_dir, "models/ridge.csv"))),
+                  "Polynomial" = preprocess_df_model(read.csv(paste0(data_dir, "models/ridge.csv"))),
                   "Linear" = preprocess_df_model(read.csv(paste0(data_dir, "models/linear.csv"))),
                   "Linear + Prev." = preprocess_df_linear_or_prev(read.csv(paste0(data_dir, "models/linear_or_prev.csv"))),
                   "Transformer (2)" = preprocess_df_transformer(read.csv(paste0(data_dir, "models/transformer_2.csv"))),
@@ -1202,12 +1214,12 @@ model_dfs <- list("LoT" = preprocess_df_model(read.csv(paste0(data_dir, "models/
 ```
 
 ```{r}
+frame_path <- "../../videos/frames/"
 make_func_vid <- function(funcname, df_participant, df_model) {
   # filter once
   df_seq <- df_participant[df_participant$func.name == funcname, ]
   df_seq <- df_seq[order(df_seq$tpt), ]
 
-  # pre-aggregate model posterior once
   df_model_agg <- df_model %>%
     filter(func.name == funcname) %>%
     group_by(tpt, pred_x, pred_y) %>%
@@ -1226,7 +1238,6 @@ make_func_vid <- function(funcname, df_participant, df_model) {
   out_dir <- file.path(out_folder, funcname)
   dir.create(out_dir, showWarnings=FALSE, recursive=TRUE)
 
-  # open png device (auto-numbering frames)
   png(
     filename = file.path(out_dir, "%04d.png"),
     width = 2000, height = 1000, res = 300, bg="white"
@@ -1304,17 +1315,17 @@ make_func_vid <- function(funcname, df_participant, df_model) {
 
 for (i in (1:length(model_list))) {
   agent2 <- model_list[i]
+  print(agent2)
   df_model <- model_dfs[[agent2]] %>% mutate(pred_y=-pred_y, true_y=-true_y)
   for (j in (1:length(participant_list))) {
     agent1 <- participant_list[j]
+    print(agent1)
     df_participant <- participant_dfs[[agent1]] %>% mutate(pred_y=-pred_y, true_y=-true_y)
-    out_folder <- paste0("../../videos/frames/", gsub(" ", "_", agent1), "_", gsub(" ", "_", agent2), "/")
-
+    out_folder <- paste0(frame_path, gsub(" ", "_", agent1), "_", gsub(" ", "_", agent2), "/")
     unlink(out_folder, recursive=TRUE)
     dir.create(out_folder)
     df_participant <- df_participant[order(df_participant$tpt),]
     for (id in sort(unique(df_participant$func.name))) {
-      print(id)
       make_func_vid(id, df_participant, df_model)
     }
   }
