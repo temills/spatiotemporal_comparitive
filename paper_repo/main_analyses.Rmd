@@ -309,7 +309,7 @@ kid_accuracy_order <- df_kid %>%
   pull(func.name)
 
 # Build facet order with kid-only patterns appended at the end
-unique_kid_patterns <- unique_kid_patterns[!is.na(unique_kid_patterns)]
+unique_kid_patterns <- rev(sort(unique_kid_patterns[!is.na(unique_kid_patterns)]))
 shared_order <- kid_accuracy_order[!(kid_accuracy_order %in% unique_kid_patterns)]
 facet_order <- unique(c(shared_order, unique_kid_patterns))
 
