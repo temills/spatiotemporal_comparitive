@@ -179,7 +179,104 @@ add_perfect_subject <- function(df) {
   # Combine the original dataframe and the "perfect" subject df
   df <- bind_rows(df, perfect_subject)
 }
+
+paper_theme <- theme_light() + theme(
+    axis.text.x=element_text(colour="#292929", size = 14), 
+    axis.title.x = element_text(size=18, family="Georgia"),
+    axis.title.y = element_text(size = 18, vjust = 1,  family="Georgia"),
+    axis.text.y  = element_text(size = 14, colour="#292929", family="Georgia"),
+    strip.text=element_text(size=16,color="black", family="Georgia"),
+    strip.background = element_rect(colour = "grey50", fill = "white"),
+    panel.background = element_rect(fill = "white", colour = "grey50"),
+    axis.ticks.x=element_blank(),axis.ticks.y=element_blank(),
+    axis.line.x = element_line(colour = "black"), 
+    axis.line.y = element_line(colour = "black"),
+    legend.title=element_text(size=18, family="Georgia"),
+    legend.text=element_text(size=15, family="Georgia"),
+    panel.grid.major = element_blank(), panel.grid.minor = element_blank())
 ```
+
+
+
+# Neurips patterns
+```{r}
+data_dir <- "../paper_repo/data/"
+preprocess_df_human_neurips <- function(df) {
+  df$id <- seq_len(nrow(df))
+  df$n <- df$tpt
+  df <- df[order(df$tpt),] %>%
+      rename(trial_idx=trial)
+  return(df)
+}
+
+preprocess_df_model_neurips <- function(df_model) {
+  df_model <- df_model %>%
+        group_by(tpt, seq_id) %>%
+        mutate(norm = logsumexp(score)) %>%
+        ungroup() %>%
+        mutate(posterior = exp(score - norm)) %>%
+        rename(func.name = seq_id) %>%
+        mutate(func.name = ifelse(func.name=="line", "line1", 
+                                  ifelse(func.name=="line2", "line", func.name)))
+  return(df_model)
+}
+
+df_adult <- preprocess_df_human_neurips(read.csv(paste0(data_dir, "NeurIPS_data/adults.csv"))) %>% arrange(tpt)
+df_lot <- preprocess_df_model_neurips(read.csv(paste0(data_dir, "NeurIPS_data/lot.csv")))
+
+df_stimuli <- df_lot %>%
+              group_by(func.name, tpt) %>%
+              summarize(true_x=mean(true_x), true_y=mean(true_y)) %>%
+              group_by(func.name) %>%
+              arrange(tpt)
+
+
+df_stimuli <- df_stimuli %>% mutate(func_tpt = paste0(func.name, tpt)) %>% filter(func.name %in% unique(df_adult$func.name))
+df_adult <- df_adult %>% mutate(func_tpt = paste0(func.name, tpt))
+df_lot <- df_lot %>% mutate(func_tpt = paste0(func.name, tpt))
+```
+
+```{r}
+df_stimuli_all <- df_stimuli %>%
+              group_by(func.name) %>%
+              arrange(tpt)
+df_adult_all <- df_adult %>%
+              group_by(func.name) %>%
+              arrange(tpt)
+plot_tpt <- function(t) {
+    df_adult <- df_adult_all %>%
+                mutate(alpha_val = ifelse(tpt>t, 0, 0.75))
+    df_stimuli <- df_stimuli_all %>%
+                  mutate(alpha_val = ifelse(tpt>t, 0, 0.75))
+    p1 <- ggplot() +
+      geom_point(data=df_stimuli, aes(x=true_x, y=-true_y, alpha=alpha_val), size=1.2) +
+      geom_path(data=df_stimuli%>%filter(tpt<=t), aes(x=true_x, y=-true_y, alpha=alpha_val), color="black", size=0.2) +
+      geom_point(data=df_adult, aes(x=pred_x, y=-pred_y, color=tpt, alpha=alpha_val), size=0.6) +
+      scale_color_gradientn(colors=c("darkblue", "darkred", "orange", "gold"), name="Timepoint") +
+      paper_theme +
+      theme(strip.text=element_blank(),
+            axis.text.x=element_blank(),
+            axis.text.y = element_blank(),
+            axis.title.x=element_blank(),
+            axis.title.y=element_blank(),
+            axis.line.x = element_blank(),
+            axis.line.y = element_blank(),
+            panel.spacing.x = unit(0.1, "lines"),
+            panel.spacing.y = unit(0.1, "lines")
+            ) +
+      facet_wrap(~func.name, scales="free", nrow=5) +
+      #guides(color = guide_colorbar(direction="horizontal", title.position="top"))
+      guides(color="none", alpha="none") +
+      scale_alpha(range=c(0, 0.75))
+}
+
+for (t in (0:20)) {
+  ggsave(paste0("../slide_figs/", "stimuli_", t, ".png"), plot_tpt(t), width=8, height=3.5)
+}
+
+```
+
+
 
 # Load participant data
 ```{r}

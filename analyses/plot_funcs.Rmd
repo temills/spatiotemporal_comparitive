@@ -184,6 +184,137 @@ df_stimuli <- df_stimuli %>% mutate(func.name = seq_id)
 ```
 
 
+
+
+```{r}
+df_monkey_test <- df_monkey_test %>%
+  mutate(func.type = ifelse(func.type == "example_line", "line", func.type)) %>%
+  filter(n < 15)
+common_patterns <- Reduce(intersect, list(
+  unique(df_adult$func.type),
+  unique(df_kid$func.type),
+  unique(df_monkey_test$func.type)
+))
+df_adult_filtered <- df_adult %>% filter(func.type %in% common_patterns)
+df_kid_filtered <- df_kid# %>% filter(func.type %in% common_patterns)
+df_monkey_test_filtered <- df_monkey_test %>% filter(func.type %in% common_patterns)
+unique_kid_patterns <- df_kid %>%
+  distinct(func.type) %>%
+  anti_join(df_adult %>% distinct(func.type), by = "func.type") %>%
+  pull(func.type)
+pattern_df <- df_kid_filtered %>%
+  group_by(func.type, n) %>%
+  summarise(true_x = mean(true_x),
+            true_y = mean(-true_y)) %>%
+  group_by(func.type) %>%
+  mutate(
+    xrng = max(true_x) - min(true_x),
+    yrng = max(true_y) - min(true_y),
+    range_xy = max(xrng, yrng)
+  ) %>%
+  mutate(
+    true_x_norm = ifelse(xrng > 0, (true_x - min(true_x))/xrng, 0.5),
+    true_y_norm = ifelse(yrng > 0, (true_y - min(true_y))/(0.3*xrng + 0.7*yrng), 0.5),
+    true_y_norm = true_y_norm - mean(true_y_norm)
+  )
+kid_accuracy_order <- df_kid_filtered %>%
+  group_by(func.type) %>%
+  summarise(mean_accuracy = -mean(correct, na.rm = TRUE)) %>%
+  arrange(mean_accuracy) %>%
+  pull(func.type)
+# Build facet order with kid-only patterns appended at the end
+unique_kid_patterns <- unique_kid_patterns[!is.na(unique_kid_patterns)]
+shared_order <- kid_accuracy_order[!(kid_accuracy_order %in% unique_kid_patterns)]
+facet_order <- unique(c(shared_order, unique_kid_patterns))
+df_adult_filtered <- df_adult_filtered %>%
+  mutate(func.type = factor(func.type, levels = facet_order))
+df_kid_filtered <- df_kid_filtered %>%
+  mutate(func.type = factor(func.type, levels = facet_order))
+df_kid_57_filtered <- df_kid_filtered %>%
+    filter(age >= 5)
+df_kid_34_filtered <- df_kid_filtered %>%
+    filter(age < 5)
+df_kid_3_filtered <- df_kid_filtered %>%
+    filter(age < 4)
+df_kid_45_filtered <- df_kid_filtered %>%
+    filter((age >= 4) & (age < 6))
+df_kid_67_filtered <- df_kid_filtered %>%
+    filter(age >= 6)
+df_kid_47_filtered <- df_kid_filtered %>%
+    filter(age >= 4)
+df_monkey_test_filtered <- df_monkey_test_filtered %>%
+  mutate(func.type = factor(func.type, levels = facet_order))
+pattern_df <- pattern_df %>%
+  mutate(func.type = factor(func.type, levels = facet_order))
+
+
+plot_curve <- function(alpha_monkey, alpha_young, alpha_old, alpha_adult) {
+  df_adult_filtered <-df_adult_filtered %>% mutate(alpha_val = 0)
+  p <- ggplot() +
+    geom_path(data=pattern_df,
+              aes(x=true_x_norm * 3.25-0.45, y=true_y_norm * 0.3 + 0.8, alpha=n),
+              size=0.5) +
+    geom_point(data=pattern_df,
+               aes(x=true_x_norm * 3.25-0.45, y=true_y_norm * 0.3 + 0.8, alpha=n),
+               size=0.8) +
+    stat_summary(data=df_adult_filtered, aes(x=n, y=correct, color="Adults"),
+               fun.data="mean_se", geom="errorbar", alpha=alpha_adult, size=0.75, width=0.05) +
+    stat_summary(data=df_adult_filtered, aes(x=n, y=correct, color="Adults"),
+               fun="mean", geom="line", alpha=alpha_adult*0.6, size=0.6) +
+    stat_summary(data=df_adult_filtered, aes(x=n, y=correct, color="Adults"),
+               fun="mean", alpha=alpha_adult, geom="point") +
+    stat_summary(data=df_adult_filtered, aes(x=n, y=correct),
+               fun="mean", geom="point", alpha=alpha_adult, color="white", size=0.4) +
+    stat_summary(data=df_kid_3_filtered, aes(x=n, y=correct, color="Children (3 yo)"),
+                fun.data="mean_se", geom="errorbar", alpha=alpha_young, size=0.75, width=0.05) +
+    stat_summary(data=df_kid_3_filtered, aes(x=n, y=correct, color="Children (3 yo)"),
+                fun="mean", geom="line",alpha=alpha_young*0.6, size=0.6) +
+    stat_summary(data=df_kid_3_filtered, aes(x=n, y=correct, color="Children (3 yo)"),
+                fun="mean", alpha=alpha_young, geom="point") +
+    stat_summary(data=df_kid_3_filtered, aes(x=n, y=correct),
+                fun="mean", geom="point", alpha=alpha_young, color="white", size=0.4) +
+    stat_summary(data=df_kid_47_filtered, aes(x=n, y=correct, color="Children (4-7 yo)"),
+                fun.data="mean_se", geom="errorbar", alpha=alpha_old, size=0.75, width=0.05) +
+    stat_summary(data=df_kid_47_filtered, aes(x=n, y=correct, color="Children (4-7 yo)"),
+                fun="mean", geom="line", alpha=alpha_old*0.6, size=0.6) +
+    stat_summary(data=df_kid_47_filtered, aes(x=n, y=correct, color="Children (4-7 yo)"),
+                fun="mean", alpha=alpha_old, geom="point") +
+    stat_summary(data=df_kid_47_filtered, aes(x=n, y=correct),
+                fun="mean", geom="point", alpha=alpha_old, color="white", size=0.4) +
+    stat_summary(data=df_monkey_test_filtered, aes(x=n, y=correct, color="Monkeys"),
+                fun.data="mean_se", geom="errorbar", alpha=alpha_monkey, size=0.75, width=0.05) +
+    stat_summary(data=df_monkey_test_filtered, aes(x=n, y=correct, color="Monkeys"),
+                fun="mean", geom="line", alpha=alpha_monkey*0.6, size=0.6) +
+    stat_summary(data=df_monkey_test_filtered, aes(x=n, y=correct, color="Monkeys"),
+                fun="mean", alpha=alpha_monkey, geom="point") +
+    stat_summary(data=df_monkey_test_filtered, aes(x=n, y=correct),
+                fun="mean", geom="point", color="white", size=0.4) +
+    scale_color_manual(values = c("Adults" = "#59AB9D", "Children (3 yo)"="#B384AC", "Children (3-4yo)"="#B876AE","Children (4-5yo)"= "#911F6D","Children (6-7yo)" = "#75073C",
+                                    "Children (5-7yo)" = "#75073C", "Children (4-7 yo)" = "#75073C",  "Monkeys" = "#AD9E26"),
+                      breaks = c("Monkeys", "Children (3 yo)", "Children (4-7 yo)", "Adults")) +
+    guides(alpha = "none", color = guide_legend(reverse = FALSE)) +
+    paper_theme +
+    scale_y_continuous(breaks=c(0,0.5,1)) +
+    #scale_alpha(range=c(0,1)) +
+    scale_alpha(range=c(0.35,1)) +
+    coord_cartesian(xlim=c(-0.5, 14.25)) +
+    theme(legend.position = "top") + theme(strip.background=element_blank(), strip.text=element_blank(), legend.title=element_blank()) +
+    facet_wrap(~func.type, nrow=3) +
+    labs(x = "Sequence timepoint", y = "Accuracy")
+    return(p)
+}
+
+ggsave(paste0("../slide_figs/", "curves_", 1, ".png"), plot_curve(0,0,0,0), width=12.5, height=4.5)
+ggsave(paste0("../slide_figs/", "curves_", 2, ".png"), plot_curve(1,0,0,0), width=12.5, height=4.5)
+ggsave(paste0("../slide_figs/", "curves_", 3, ".png"), plot_curve(1,1,0,0), width=12.5, height=4.5)
+ggsave(paste0("../slide_figs/", "curves_", 4, ".png"), plot_curve(1,1,1,0), width=12.5, height=4.5)
+ggsave(paste0("../slide_figs/", "curves_", 5, ".png"), plot_curve(1,1,1,1), width=12.5, height=4.5)
+```
+
+
+
+
+
 ```{r}
 
 summary_adult <- df_adult %>%
