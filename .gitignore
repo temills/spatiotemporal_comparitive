@@ -1,5 +1,6 @@
 .DS_Store
 **/.DS_Store
+__pycache__/
 .Rhistory
 .Rapp.history 
 analyses/learning_model_comparisons/model_fits/
