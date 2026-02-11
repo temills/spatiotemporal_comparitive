@@ -7,6 +7,7 @@ analyses/learning_model_comparisons/model_fits/
 analyses/learning_model_comparisons/crossval_data/
 analyses/learning_model_comparisons/hierarchical_analysis/
 analyses/learning_model_comparisons/preprocessed_data/*.csv
+analyses/make_participant_videos/
 analyses/p_true_analyses/stan_fits/
 analyses/p_true_analyses/*.csv
 analyses/NeurIPS_analyses/tmp_imgs/
