@@ -1,0 +1,611 @@
+---
+title: "power analysis"
+output: html_document
+---
+
+```{r, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.width=4, fig.height=3,fig.align = "center",cache=TRUE)
+library(ggplot2)
+library(reshape)
+library(grid)
+library(purrr)
+library(extrafont)
+library(dplyr)
+library(RColorBrewer)
+library(robustbase)
+library(tidyr)
+library(gridExtra)
+library(ggstar)
+library(patchwork)
+library(readr)
+library(knitr)
+library(ggbeeswarm)
+library(cowplot)
+library(boot)
+library(sysfonts)
+font_add("Georgia", "Georgia.ttf")
+
+
+paper_theme <- theme_light() + theme(
+    axis.text.x=element_text(colour="#292929", size = 14), 
+    axis.title.x = element_text(size=18, family="Georgia"),
+    axis.title.y = element_text(size = 18, vjust = 1,  family="Georgia"),
+    axis.text.y  = element_text(size = 14, colour="#292929", family="Georgia"),
+    strip.text=element_text(size=16,color="black", family="Georgia"),
+    strip.background = element_rect(colour = "grey50", fill = "white"),
+    panel.background = element_rect(fill = "white", colour = "grey50"),
+    axis.ticks.x=element_blank(),axis.ticks.y=element_blank(),
+    axis.line.x = element_line(colour = "black"), 
+    axis.line.y = element_line(colour = "black"),
+    legend.title=element_text(size=18, family="Georgia"),
+    legend.text=element_text(size=15, family="Georgia"),
+    panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+format_num <- function(x) {
+  return(sprintf("%.2f", round(x, 2)))
+}
+
+logsumexp <- function(x) {
+  max_x <- max(x)
+  max_x + log(sum(exp(x - max_x)))
+}
+
+data_dir <- "data/"
+```
+
+# Preprocessing ... scale between min/max 
+```{r}
+# Load df with stimuli and screen bounds
+bounds_df <- read.csv(paste0(data_dir,'kids.csv')) %>%
+             rename(func.name=seq_id) %>%
+             distinct(func.name, min_x, max_x, min_y, max_y) %>%
+             rename(max_bound_x = max_x, max_bound_y = max_y,
+                    min_bound_x = min_x, min_bound_y = min_y) %>%
+             na.omit()
+
+# some extra shifting and scaling logic
+fn <- unique(bounds_df$func.name)
+scale_map <- setNames(rep(1, length(fn)), fn)
+scale_map[c("decreasing_y", "square_spiral", "square_2")] <- c(0.95, 0.95, 0.75)
+shift_y_map <- setNames(rep(0, length(fn)), fn)
+shift_y_map[c("square_2")] <- c(0.1)
+shift_x_map <- setNames(rep(0, length(fn)), fn)
+shift_x_map[c("square_2")] <- c(0.1)
+
+forced_choice_tpts <- c("123" = 14,
+                  "3_pts" = 12,
+                  alternating_diff_1 = 14,
+                  alternating_diff_2 = 11,
+                  decreasing_y = 14,
+                  f_curly_2 = 14,
+                  hexagon = 14,
+                  hourglass_1 = 14,
+                  increasing_lines = 10,
+                  plus = 12,
+                  radial_1 = 13,
+                  radial_increasing = 9,
+                  sine = 12,
+                  spiral_outward = 14,
+                  square_2 = 13,                  
+                  square_spiral = 9,
+                  stairs = 14,
+                  stairs_2 = 12,
+                  triangle_1 = 14,
+                  zigzag_1 = 13,
+                  zigzag_2 = 13,
+                  zigzag_3 = 13,
+                  zigzag_widening = 14)
+
+
+scale_within_bounds <- function(df) {
+  df <- df %>%
+        merge(bounds_df, by="func.name") %>%
+        rowwise() %>%
+        mutate(range_x = (max_bound_x-min_bound_x),
+               range_y = (max_bound_y-min_bound_y),
+               range_xy = max(range_x, range_y),
+               pred_x = (pred_x-min_bound_x)/range_xy,
+               pred_y = (pred_y-min_bound_y)/range_xy,
+               prev_x = (prev_x-min_bound_x)/range_xy,
+               prev_y = (prev_y-min_bound_y)/range_xy,
+               true_x = (true_x-min_bound_x)/range_xy,
+               true_y = (true_y-min_bound_y)/range_xy,
+               lin_extrap_x = (lin_extrap_x-min_bound_x)/range_xy,
+               lin_extrap_y = (lin_extrap_y-min_bound_y)/range_xy,
+               std_x = (std_x)/range_xy,
+               std_y = (std_y)/range_xy,
+               max_x = (max_bound_x-min_bound_x)/range_xy,
+               max_y = (max_bound_y-min_bound_y)/range_xy,
+               min_x = (min_bound_x-min_bound_x)/range_xy,
+               min_y = (min_bound_y-min_bound_y)/range_xy) %>%
+        # Additional scaling/shifting to keep linear extrapolations in bounds
+        mutate(lin_extrap_y = scale_map[func.name] * (lin_extrap_y + shift_y_map[func.name]),
+               true_y = scale_map[func.name] * (true_y + shift_y_map[func.name]),
+               pred_y = scale_map[func.name] * (pred_y + shift_y_map[func.name]),
+               lin_extrap_x = scale_map[func.name] * (lin_extrap_x + shift_x_map[func.name]),
+               true_x = scale_map[func.name] * (true_x + shift_x_map[func.name]),
+               pred_x = scale_map[func.name] * (pred_x + shift_x_map[func.name])) %>%
+        ungroup()
+  return(df)
+}
+
+preprocess_df_model <- function(df_model) {
+  df_model <- df_model %>%
+              filter(tpt<15) %>%
+              # Remove line
+              filter(seq_id != "line") %>%
+              group_by(tpt, seq_id) %>%
+              mutate(norm = logsumexp(score)) %>%
+              ungroup() %>%
+              mutate(posterior = exp(score - norm)) %>%
+              rename(func.name = seq_id, std_x = sd_x, std_y = sd_y) %>%
+            rowwise() %>%
+            group_by(func.name, particle) %>%
+            arrange(tpt) %>%
+            mutate(prev_x = lag(true_x),
+                   prev_x_2 = lag(true_x, 2),
+                   prev_y = lag(true_y),
+                   prev_y_2 = lag(true_y, 2),
+                   lin_extrap_x = prev_x + (prev_x-prev_x_2),
+                   lin_extrap_y = prev_y + (prev_y-prev_y_2)) %>%
+            ungroup() %>%
+              scale_within_bounds() %>%
+              arrange(tpt) 
+  
+  return(df_model)
+}
+
+```
+
+# Load stimuli and predictions
+```{r}
+df_lot <- preprocess_df_model(read.csv(paste0(data_dir, "lot.csv"))) %>% mutate(model="LoT")
+df_lin <- preprocess_df_model(read.csv(paste0(data_dir, "linear_1.csv")))  %>% mutate(model="Linear")
+df_gpsl <- preprocess_df_model(read.csv(paste0(data_dir, "comp_gp.csv"))) %>% mutate(model="Comp. GP")
+df_gp <- preprocess_df_model(read.csv(paste0(data_dir, "gp.csv"))) %>% mutate(model="GP")
+df_ridge <- preprocess_df_model(read.csv(paste0(data_dir, "ridge.csv"))) %>% mutate(model="Parametric")
+df_transformer2 <- preprocess_df_model(read.csv(paste0(data_dir, "transformer_2.csv"))) %>% mutate(model="Transformer (2)")
+df_transformer3 <- preprocess_df_model(read.csv(paste0(data_dir, "transformer_3.csv"))) %>% mutate(model="Transformer (3)")
+df_transformer13 <- preprocess_df_model(read.csv(paste0(data_dir, "transformer_13.csv"))) %>% mutate(model="Transformer (13)")
+```
+
+
+# Sanity check -- visualize predictions
+```{r}
+
+# Check all is in bounds
+tmp <- df_lin %>% 
+       filter((lin_extrap_x <= min_x) |
+              (lin_extrap_x >= max_x) |
+              (lin_extrap_y <= min_y) |
+              (lin_extrap_y >= max_y)) %>%
+       distinct(func.name, tpt, lin_extrap_x, lin_extrap_y)
+
+       
+
+ggplot(df_lot) +
+      geom_point(aes(x=true_x, y=true_y, alpha=tpt)) +
+      geom_path(aes(x=true_x, y=true_y, alpha=tpt)) +
+      #geom_point(aes(x=pred_x, y=pred_y), alpha=0.5, color="purple") +
+      geom_point(aes(x=lin_extrap_x, y=lin_extrap_y), alpha=0.5, color="hotpink") +
+      geom_vline(aes(xintercept=min_x)) +
+      geom_vline(aes(xintercept=max_x)) +
+      geom_hline(aes(yintercept=min_y)) +
+      geom_hline(aes(yintercept=max_y)) +
+      theme(axis.text.x=element_blank(),
+            axis.text.y=element_blank(),
+            axis.ticks.x=element_blank(),
+            axis.ticks.y=element_blank(),
+            axis.title.x=element_blank(),
+            axis.title.y=element_blank(),
+            panel.grid=element_blank(),
+            panel.background=element_rect(fill="white")) +
+  facet_wrap(~func.name)
+
+```
+```{r}
+ggplot(df_lot) +
+      geom_point(aes(x=true_x, y=true_y, alpha=tpt)) +
+      geom_path(aes(x=true_x, y=true_y, alpha=tpt)) +
+      geom_point(aes(x=lin_extrap_x, y=lin_extrap_y, color=tpt)) +
+      scale_color_gradient(low="hotpink",high="blue") +
+  facet_wrap(~func.name)
+
+df_lin <- df_lin %>%
+          group_by(func.name) %>%
+          mutate(forced_choice_tpt = forced_choice_tpts[func.name])
+
+ggplot(df_lin%>%group_by(func.name)%>%filter(tpt<forced_choice_tpt)) +
+      geom_point(aes(x=true_x, y=true_y, alpha=tpt)) +
+      geom_path(aes(x=true_x, y=true_y, alpha=tpt)) +
+      geom_point(data=df_lin%>%filter(tpt==forced_choice_tpt),
+                 aes(x=pred_x, y=pred_y), color="lightblue", alpha=0.3) +
+      geom_point(data=df_lin%>%filter(tpt==forced_choice_tpt),
+                 aes(x=lin_extrap_x, y=lin_extrap_y), color="hotpink") +
+      geom_point(data=df_lin%>%filter(tpt==forced_choice_tpt),
+                 aes(x=true_x, y=true_y),color="darkgreen") +
+      theme_minimal() +
+  facet_wrap(~func.name)
+
+df_lot <- df_lot %>%
+          group_by(func.name) %>%
+          mutate(forced_choice_tpt = forced_choice_tpts[func.name])
+
+ggplot(df_lin%>%group_by(func.name)%>%filter(tpt<forced_choice_tpt)) +
+      geom_point(aes(x=true_x, y=true_y, alpha=tpt)) +
+      geom_path(aes(x=true_x, y=true_y, alpha=tpt)) +
+      geom_point(data=df_lot%>%filter(tpt==forced_choice_tpt),
+                 aes(x=pred_x, y=pred_y), color="lightblue", alpha=0.3) +
+      geom_point(data=df_lin%>%filter(tpt==forced_choice_tpt),
+                 aes(x=lin_extrap_x, y=lin_extrap_y), color="hotpink") +
+      geom_point(data=df_lin%>%filter(tpt==forced_choice_tpt),
+                 aes(x=true_x, y=true_y),color="darkgreen") +
+      theme_minimal() +
+  facet_wrap(~func.name)
+
+```
+
+# Look at previous kids' predictions at these timepoints
+```{r, fig.width=10}
+df_prev_kid <- read.csv(paste0(data_dir, "kids.csv")) %>%
+               rename(func.name = seq_id, pred_x=response_x, pred_y=response_y) %>%
+               mutate(std_x = NA, std_y = NA) %>%
+               rowwise() %>%
+               group_by(func.name, subject_id) %>%
+               arrange(tpt) %>%
+               mutate(prev_x = lag(true_x),
+                      prev_x_2 = lag(true_x, 2),
+                      prev_y = lag(true_y),
+                      prev_y_2 = lag(true_y, 2),
+                      lin_extrap_x = prev_x + (prev_x-prev_x_2),
+                      lin_extrap_y = prev_y + (prev_y-prev_y_2)) %>%
+               ungroup() %>%
+               scale_within_bounds() %>%
+               arrange(tpt) %>%
+               group_by(func.name) %>%
+               mutate(forced_choice_tpt = forced_choice_tpts[func.name])
+
+# Plot predictions
+plot_kids <- function(sel_age) {
+  ggplot(df_prev_kid) +
+        geom_point(aes(x=true_x, y=true_y, alpha=tpt)) +
+        geom_path(aes(x=true_x, y=true_y, alpha=tpt)) +
+        geom_point(data=df_prev_kid%>%filter(tpt==forced_choice_tpt)%>%filter(age==sel_age), aes(x=pred_x, y=pred_y), alpha=0.2, color="purple") +
+        geom_point(data=df_prev_kid%>%filter(tpt==forced_choice_tpt), aes(x=lin_extrap_x, y=lin_extrap_y), shape=4, color="blue") +
+        geom_point(data=df_prev_kid%>%filter(tpt==forced_choice_tpt), aes(x=true_x, y=true_y), shape=4, color="gold") +
+        geom_vline(aes(xintercept=min_x)) +
+        geom_vline(aes(xintercept=max_x)) +
+        geom_hline(aes(yintercept=min_y)) +
+        geom_hline(aes(yintercept=max_y)) +
+        theme(axis.text.x=element_blank(),
+              axis.text.y=element_blank(),
+              axis.ticks.x=element_blank(),
+              axis.ticks.y=element_blank(),
+              axis.title.x=element_blank(),
+              axis.title.y=element_blank(),
+              panel.grid=element_blank(),
+              panel.background=element_rect(fill="white")) +
+        facet_wrap(~func.name, ncol=6) +
+        ggtitle(paste0(sel_age, " yos"))
+}
+for (sel_age in (3:7)) {
+  print(plot_kids(sel_age)) 
+}
+```
+# P(linear) vs LoT
+```{r}
+read_model_fit_data <- function(participant) {
+  #path <- "model_fits/"
+  models = c("lot", "gp", "comp_gp", "ridge", "linear", "linear_1", "linear_or_prev", "lot_nonrecursive", "transformer_2", "transformer_3", "transformer_13") 
+  df <- data.frame()
+  for (i in seq_along(models)) {
+    model_name <- models[i]
+    file <- paste0("../../paper_repo/preprocessed_data/", "model_likelihoods/", model_name, "_", participant, ".csv")
+    df <- bind_rows(df, read.csv(file) %>% mutate(model=model_name)) %>% filter(!(is.na(LL)))
+  }
+  return(df)
+}
+
+df_prev_kid_lik <- read_model_fit_data("kids")  %>%
+               group_by(subj_id) %>%
+               mutate(n_func = length(unique(func.name)),
+                      agent=paste0(as.character(age), " y/o"),
+                      r_id=as.character(r_id)) %>%
+               group_by(func.name) %>%
+               mutate(forced_choice_tpt = forced_choice_tpts[func.name])
+              
+```
+
+```{r}
+prev_kid_p_lin <- df_prev_kid_lik %>%
+                 filter(model %in% c("linear_1", "lot")) %>%
+                 distinct(model, LL, tpt, func.name, subj_id, forced_choice_tpt, age) %>%
+                 pivot_wider(names_from=model, values_from=LL) %>%
+                 group_by(subj_id, tpt) %>%
+                 mutate(p_lin = exp(linear_1)/(exp(linear_1)+exp(lot)))
+
+```
+```{r}
+ggplot(prev_kid_p_lin %>%
+       group_by(subj_id, age) %>%
+       summarize(p_lin = mean(p_lin))) +
+geom_histogram(aes(x=p_lin)) +
+  xlim(c(0,1)) +
+  facet_wrap(~age)
+
+
+prev_kid_p_lin_summ <- prev_kid_p_lin %>%
+                       mutate(p_lin_forced_choice = ifelse(tpt==forced_choice_tpt, p_lin, NA)) %>%
+                       group_by(subj_id, age) %>%
+                       summarize(p_lin = mean(p_lin), 
+                                 p_lin_forced_choice = mean(p_lin_forced_choice, na.rm=T), 
+                                 .groups="drop") %>%
+                       group_by(age) %>%
+                       summarize(p_lin = mean(p_lin),
+                                 p_lin_forced_choice = mean(p_lin_forced_choice))
+
+
+
+prev_kid_p_lin_summ2 <- prev_kid_p_lin %>%
+                        group_by(func.name) %>%
+                        filter(tpt==forced_choice_tpt) %>%
+                        group_by(age, func.name) %>%
+                        summarize(p_lin = mean(p_lin), 
+                                 .groups="drop") %>%
+                        group_by(func.name) %>%
+                        mutate(p_lin_7 = ifelse(age==7, p_lin, NA),
+                               p_lin_7 = mean(p_lin_7, na.rm=T))
+```
+
+```{r, fig.width=10}
+# Plot bars by func by age
+ggplot(prev_kid_p_lin_summ2) +
+  geom_bar(aes(x=reorder(func.name, p_lin_7), y=p_lin, group=age, fill=as.factor(age)), position="dodge", stat="identity") +
+  geom_hline(yintercept=.5, linetype="dashed") +
+  theme_light() +
+  guides(fill="none") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5, size=8),
+        legend.title=element_blank(),
+        axis.title.x=element_blank()) +
+  ylab("P(linear)/(P(linear)+P(LoT))") +
+  facet_wrap(~age, ncol=5) 
+
+ggsave("kids_p_lin.png", width=12,height=3)
+```
+
+
+# Compute P(lin_extrap) and P(true) under each model at each tpt
+```{r}
+compute_prediction_probs <- function(df) {
+  eps <- 1e-10
+  df <- df %>%
+        filter(tpt>2) %>%
+        filter(func.name != "line") %>%
+        group_by(func.name, tpt) %>%
+        mutate(lik_lin_x = dnorm(lin_extrap_x, mean=pred_x, sd=std_x),
+               lik_lin_x = eps + ((1-eps) * sum(posterior*lik_lin_x, na.rm=T)),
+               lik_lin_y = dnorm(lin_extrap_y, mean=pred_y, sd=std_y),
+               lik_lin_y = eps + ((1-eps) * sum(posterior*lik_lin_y, na.rm=T)),
+               lik_true_x = dnorm(true_x, mean=pred_x, sd=std_x),
+               lik_true_x = eps + ((1-eps) * sum(posterior*lik_true_x, na.rm=T)),
+               lik_true_y = dnorm(true_y, mean=pred_y, sd=std_y),
+               lik_true_y = eps + ((1-eps) * sum(posterior*lik_true_y, na.rm=T)),
+               lik_true = exp(log(lik_true_x) + log(lik_true_y)),
+               lik_lin = exp(log(lik_lin_x) + log(lik_lin_y))) %>%
+        ungroup() %>%
+        distinct(func.name, tpt, lik_lin, lik_true) %>%
+        # Compute normalized prob 
+        mutate(norm = lik_lin + lik_true,
+               p_lin = exp(log(lik_lin) - log(norm)),
+               p_true = exp(log(lik_true) - log(norm)))
+}
+
+
+df_lin_probs <- compute_prediction_probs(df_lin) %>%
+                group_by(func.name) %>%
+                mutate(forced_choice_tpt = forced_choice_tpts[func.name]) %>%
+                filter(tpt==forced_choice_tpt)
+
+df_lot_probs <- compute_prediction_probs(df_lot) %>%
+                group_by(func.name) %>%
+                mutate(forced_choice_tpt = forced_choice_tpts[func.name]) %>%
+                filter(tpt==forced_choice_tpt)
+
+df_model_probs <- merge(
+                        df_lot_probs %>%
+                        distinct(func.name, tpt, p_true) %>%
+                        rename(lot_p_true = p_true),
+                        
+                        df_lin_probs %>%
+                       distinct(func.name, tpt, p_true) %>%
+                       rename(lin_p_true = p_true),
+                       by=c("func.name", "tpt"))
+
+print(max(df_lot_probs$p_lin))
+print(max(df_lin_probs$p_true))
+```
+
+# Compute prob of each choice under each model
+```{r}
+df_model_choice_probs <- bind_rows(df_lot, df_lin, df_ridge, df_gp, df_transformer2) %>%
+                        group_by(model) %>%
+                        group_modify(~ compute_prediction_probs(.x)) %>%
+                        group_by(func.name, model) %>%
+                        mutate(forced_choice_tpt = forced_choice_tpts[func.name]) %>%
+                        filter(tpt==forced_choice_tpt)
+
+```
+
+# Analysis
+```{r}
+# Binomial test
+run_binomial_test <- function(subj_df) {
+  res_df <- subj_df %>%
+             summarize(n_true = sum(chose_true),
+                       n_choices = n()) %>%
+             ungroup() %>%
+             rowwise() %>%
+             mutate(p_val = binom.test(n_true, n_choices, p = 0.5, alternative = "two.sided")$p.value,
+                    sig = p_val < .05,
+                    conf_lower = (binom.test(n_true, n_choices, p = 0.5, alternative = "two.sided")$conf.int)[1],
+                    conf_upper = (binom.test(n_true, n_choices, p = 0.5, alternative = "two.sided")$conf.int)[2])
+  return(res_df)
+}
+
+
+# Likelihood under each model --- probably we will fit p_rand, should do that now?
+run_likelihood_test <- function(subj_df, p_rand) {
+  res_df <- subj_df %>%
+            merge(df_model_choice_probs %>% select(model, func.name, tpt, p_true), by=c("func.name", "tpt")) %>%
+            mutate(p_choice = ((1-p_rand) * ((chose_true*p_true) +
+                                            ((1-chose_true)*(1-p_true)))) +
+                              (p_rand*0.5))
+}
+
+```
+
+# Simulate data and run through analyses
+```{r}
+p_rand <- 1/3
+n_subjs <- 100
+
+sim_data <- df_model_choice_probs %>%
+            group_by(model) %>%
+            crossing(subj = seq_len(n_subjs)) %>%
+            mutate(chose_true = rbinom(n(), 1, (1-p_rand)*p_true + p_rand*0.5)) %>%
+            select(subj, func.name, tpt, chose_true, model) %>%
+            rename(sim_model=model)
+
+
+sim_data_binom <- sim_data %>%
+                  group_by(subj, sim_model) %>%
+                  group_modify(~ run_binomial_test(.x))
+
+sim_data_lik <- sim_data %>%
+                 group_by(subj, sim_model) %>%
+                  group_modify(~ run_likelihood_test(.x, p_rand))
+```
+
+
+```{r}
+ggplot(sim_data_binom) +
+  geom_histogram(aes(x=p_val)) +
+  geom_vline(xintercept=0.05) +
+  facet_wrap(~sim_model)
+
+ggplot(sim_data_binom) +
+  geom_bar(aes(x=sig, fill=sig)) +
+  facet_wrap(~sim_model)
+```
+
+
+
+
+
+# Simulate data
+# ```{r}
+# n_subj <- 1000
+# p_rand <- 1
+# 
+# sim_lot <- df_lot_probs %>%
+#            crossing(subj = seq_len(n_subj)) %>%
+#            mutate(chose_true = rbinom(n(), 1, (1-p_rand)*1 + p_rand*0.5)) %>%
+#            select(subj, func.name, tpt, chose_true) %>%
+#            mutate(sim_model = "LoT")
+# 
+# sim_lin <- df_lin_probs %>%
+#            crossing(subj = seq_len(n_subj)) %>%
+#            mutate(chose_true = rbinom(n(), 1, (1-p_rand)*0 + p_rand*0.5)) %>%
+#            select(subj, func.name, tpt, chose_true) %>%
+#            mutate(sim_model = "Linear")
+# 
+# sim_data <- bind_rows(sim_lin, sim_lot)
+# ```
+
+# Analysis
+# ```{r}
+# # Just run standard binomial test
+# # Do 3 year-olds have a dif prop. p_lin than 4-5 year-olds
+# sim_data_summ <- sim_data %>%
+#                 group_by(subj, sim_model) %>%
+#                 summarize(n_true = sum(chose_true),
+#                           n_choices = n()) %>%
+#                 ungroup() %>%
+#                 rowwise() %>%
+#                 mutate(p_val = binom.test(n_true, n_choices, p = 0.5, alternative = "two.sided")$p.value,
+#                        sig = p_val < .05,
+#                        conf_lower = (binom.test(n_true, n_choices, p = 0.5, alternative = "two.sided")$conf.int)[1],
+#                        conf_upper = (binom.test(n_true, n_choices, p = 0.5, alternative = "two.sided")$conf.int)[2])
+#               
+#               
+# ```
+
+# ```{r}
+# ggplot(sim_data_summ) +
+#   geom_histogram(aes(x=p_val)) +
+#   geom_vline(xintercept=0.05) +
+#   facet_wrap(~sim_model)
+# 
+# ggplot(sim_data_summ) +
+#   geom_bar(aes(x=sig, fill=sig)) +
+#   facet_wrap(~sim_model)
+# 
+# ```
+
+
+# Extract stimuli
+# ```{r}
+# n <- 15
+# 
+# line_df <- data.frame(
+#   func.name = rep(c("line_1", "line_2", "line_3", "line_4"), each=n),
+#   tpt       = rep(seq_len(n)-1, 4),
+#   true_x    = c(seq(from=0.1, to=0.7, length.out=n),
+#                 seq(from=0.8, to=0.2, length.out=n),
+#                 seq(from=0.05, to=0.85, length.out=n),
+#                 seq(from=0.9, to=0.15, length.out=n)),
+#   true_y    = c(seq(from=0.2, to=0.5, length.out=n),
+#                 seq(from=0.1, to=0.6, length.out=n),
+#                 seq(from=0.4, to=0.55, length.out=n),
+#                 seq(from=0.7, to=0.1, length.out=n)),
+#   min_x     = rep(0, n*4),
+#   min_y     = rep(0, n*4),
+#   max_x     = rep(1, n*4),
+#   max_y     = rep(0.75, n*4),
+#   forced_choice_tpt = rep(14, n*4)
+# )
+#   
+# stimuli <- df_lot %>%
+#           distinct(func.name, true_x, true_y, lin_extrap_x, lin_extrap_y,
+#                    tpt, min_x, min_y, max_x, max_y, forced_choice_tpt) %>%
+#           # Add lines
+#           bind_rows(line_df)
+# 
+# ggplot(stimuli) +
+#       geom_point(aes(x=true_x, y=true_y, alpha=tpt)) +
+#       geom_path(aes(x=true_x, y=true_y, alpha=tpt)) +
+#       geom_vline(aes(xintercept=min_x)) +
+#       geom_vline(aes(xintercept=max_x)) +
+#       geom_hline(aes(yintercept=min_y)) +
+#       geom_hline(aes(yintercept=max_y)) +
+#       theme(axis.text.x=element_blank(),
+#             axis.text.y=element_blank(),
+#             axis.ticks.x=element_blank(),
+#             axis.ticks.y=element_blank(),
+#             axis.title.x=element_blank(),
+#             axis.title.y=element_blank(),
+#             panel.grid=element_blank(),
+#             panel.background=element_rect(fill="white")) +
+#   facet_wrap(~func.name)
+# 
+# write.csv(stimuli, paste0(data_dir, "stimuli.csv"), row.names=F)
+# ```
+# 
+
+
+
+
+
+
+
+
