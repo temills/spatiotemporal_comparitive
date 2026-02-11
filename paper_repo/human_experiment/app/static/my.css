@@ -1,0 +1,39 @@
+
+.canvas-container {
+    position: relative;
+}
+
+#rotatingCanvas,
+#staticCanvas {
+    position: absolute;
+    left: 0px;
+}
+
+#rotatingCanvas {
+    z-index: 1; /* Place staticCanvas on top of rotatingCanvas */
+}
+
+#stars-container {
+    display: flex;
+    justify-content: center;
+    gap: 25px;
+    padding: 10px;
+  }
+  
+  .star {
+    position: relative; /* Enable positioning for the pseudo-element */
+    width: 100px;
+    height: 100px;
+    background-color: rgba(235, 233, 233, 0.959);
+    clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%);
+    z-index: 1;
+    transition: transform 0.3s ease, background-color 0.3s ease;
+  }
+  
+  .star.active {
+    /*background-color: gold;*/
+    transform: scale(1.25);
+    box-shadow: 0 0 10px rgba(255, 223, 0, 0.8);
+  }
+  
+

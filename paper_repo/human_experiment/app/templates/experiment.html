@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html> 
+    <head>
+        <title>Dot Task</title>
+	<script src="static/jspsych/jspsych.js"></script>
+   	 <script src="static/jspsych/plugin-html-keyboard-response.js"></script>
+    	<script src="static/jspsych/plugin-html-button-response.js"></script>
+        <script src="static/jspsych/plugin-audio-button-response.js"></script>
+    	<script src="static/jspsych/plugin-html-button-response2.js"></script>
+        <script src="static/jspsych/plugin-video-button-response.js"></script>
+    	<script src="static/jspsych/plugin-html-slider-response.js"></script>
+   	    <script src="static/jspsych/plugin-audio-safari-init.js"></script>
+    	<script src="static/jspsych/plugin-fullscreen.js"></script>
+    	<script src="static/jspsych/plugin-instructions.js"></script>
+    	<script src="static/jspsych/plugin-dot-task.js"></script>
+        <script src="static/jspsych/plugin-great-job.js"></script>
+    	<script src="static/jspsych/plugin-dot-task-example1.js"></script>
+    	<script src="static/jspsych/plugin-demographics.js"></script>
+    	<script src="static/jspsych/plugin-orientation-check.js"></script>
+    	<script src="static/jspsych/plugin-signature.js"></script> 
+    	<script src="static/jspsych/plugin-preload.js"></script>
+    	<script src="static/jspsych/plugin-survey.js"></script>
+    	<script src="static/jspsych/plugin-survey-text.js"></script>
+    	<script src="static/jspsych/plugin-survey-multi-choice.js"></script>
+    	<script src="static/stimuli.js"></script>
+        <link rel="shortcut icon" href="#">
+    	<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    	<link href="static/jspsych/jspsych.css" rel="stylesheet" type="text/css" />
+    	<link href="static/my.css" rel="stylesheet" type="text/css" />
+	<script src="http://ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js"></script>
+    <body>
+        <div id="stimuli_dct"></div>
+    </body>
+    <script>
+
+
+    var jsPsych = initJsPsych();
+
+    var end_test = false
+    var test_idx = 0
+    var keep_going = true
+    var n_to_guess = 12
+    var subj_data = {}
+    var default_width = stimuli_dct["params"]["width"]
+    var default_height = stimuli_dct["params"]["height"]
+ 
+    var func_dct = stimuli_dct["funcs"]
+
+    var images = ['static/imgs/consent.png', 'static/imgs/pnksprk.png', 'static/imgs/purp.png', 'static/imgs/star.png', 'static/imgs/star2.png', 'static/imgs/frog_on_pad.png']
+    var audio = ['static/sounds/fail_sound.mp3', 'static/sounds/success_sound.mp3', 'static/sounds/guess_sound.mp3', 'static/sounds/disappear_sound.mp3', 'static/sounds/thunder_sound.mp3', 'static/sounds/greatjob1.mp3', 'static/sounds/greatjob2.mp3']
+    var videos = ['static/videos/Movie5_Tablet_welcome.mp4', 'static/videos/Movie6_star_moves.mp4', 'static/videos/Movie7_parent_instructions.mp4', 'static/videos/Movie8_Ready.mp4', 'static/videos/Movie9_Tricky.mp4', 'static/videos/greatjob1.mp4', 'static/videos/greatjob2.mp4', 'static/videos/WelcomeBack.mp4']
+
+    var start_time = Date.now();
+    var trial_start_time = ""
+
+    //running on server
+    
+    function get_session_stimuli(subj) {
+        var res = ""
+        $.ajax({
+            type: 'post',
+            async: false,
+            url: "get_stim",
+            data: JSON.stringify(subj),
+            contentType: "application/json; charset=utf-8",
+            traditional: true,
+            success: function(result) {  
+                res = result
+            }
+        })
+        return res
+    }
+
+
+    function shuffle(array) {
+        for (let i = array.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            const temp = array[i];
+            array[i] = array[j];
+            array[j] = temp;
+        }
+        return array
+    }
+
+
+    function createUID() {
+        //UID = "TEST-2"
+        UID = "TEST-" + Date.now() + "_K" + Math.floor((Math.random() * 100000000) + 1);
+        return UID
+    }
+    function getChildID() {
+        urlvars = jsPsych.data.urlVariables()
+        child = urlvars.childID
+        return child
+    }
+   
+    var n_to_animate = 2
+
+    var preload = {
+        type: jsPsychPreload,
+        auto_preload: true,
+        images: images,
+        audio: audio,
+        videos: videos
+    }
+
+    var instructions1 = {
+        type: jsPsychVideoButtonResponse,
+        stimulus: ['static/videos/Movie5_Tablet_welcome.mp4'],
+        width:800,
+        controls:true,
+        response_allowed_while_playing: false,
+        choices: ['Got it!']
+    }
+    var instructions2 = {
+        type: jsPsychVideoButtonResponse,
+        stimulus: ['static/videos/Movie6_star_moves.mp4'],
+        width:800,
+        controls:true,
+        response_allowed_while_playing: false,
+        choices: ['Got it!']
+    }
+    var instructions3 = {
+        type: jsPsychVideoButtonResponse,
+        stimulus: ['static/videos/Movie7_parent_instructions.mp4'],
+        width:800,
+        controls:true,
+        response_allowed_while_playing: false,
+        choices: ['Got it!']
+    }
+
+    var ready = {
+        type: jsPsychVideoButtonResponse,
+        stimulus: ['static/videos/Movie9_Tricky.mp4'],
+        width:800,
+        controls:true,
+        response_allowed_while_playing: false,
+        choices: ['Begin!']
+    }
+
+    //real thang
+    var trial = {
+        type: jsPsychDotTask,
+        on_start: function() {
+            trial_start_time = Date.now();
+        },
+        stimulus: "",
+        n_stars: function() {
+            return n_functions - 1
+        },
+        star_idx: function() {
+            return func_idx
+        },
+        progress_prompt: function() {
+            return('You finished pattern ' + (func_idx) + ' out of ' + (n_functions-1) +'!')
+        },
+        progress_audio: function() {
+            if ((func_idx+1) < n_functions) {
+                return ['static/sounds/greatjob2.mp3']
+            } else {
+                return ['static/sounds/greatjob1.mp3']
+            }
+        },
+        dot_positions: function() {
+            return [func_dct[func_name]["true_coords"][0].slice(0, n_to_animate+n_to_guess+1), func_dct[func_name]["true_coords"][1].slice(0, n_to_animate+n_to_guess+1)]
+        },
+        default_width:default_width,
+        default_height:default_height,
+        n_to_animate: function() {
+            return n_to_animate
+        },
+        default_scale: function() {
+            return func_dct[func_name]["scale"]
+        },
+        default_shift: function() {
+            return [func_dct[func_name]["shift_x"], func_dct[func_name]["shift_y"]]
+        },
+        on_finish: function(data) {
+            response_data = {}
+            response_data.response_x = data.response_x
+            response_data.response_y = data.response_y
+            response_data.rts = data.rt
+            response_data.success = data.response_success
+            response_data.session = session
+            response_data.scales = data.scale_at_response
+            response_data.true_x = func_dct[func_name]["true_coords"][0]
+            response_data.true_y = func_dct[func_name]["true_coords"][1]
+            response_data.func = func_name
+            response_data.func_idx = func_idx
+            response_data.subject_id = data.childID
+            response_data.row_id = data.childID.concat("_", func_idx).concat("_", session)
+            response_data.exp_phase = 'trial'
+            response_data.expt_start_time = start_time
+            response_data.trial_start_time = trial_start_time
+            response_data.trial_end_time = Date.now();
+            response_data.passed_ic = passed_ic
+            save_data(response_data)
+        }
+    };
+
+    var optional_trial = {
+        type: jsPsychDotTask,
+        on_start: function() {
+            trial_start_time = Date.now();
+        },
+        stimulus: "",
+        n_stars: function() {
+            return n_functions - 1
+        },
+        star_idx: function() {
+            return func_idx
+        },
+        progress_prompt: function() {
+            return('You finished another pattern!')
+        },
+        progress_audio: function() {
+            return ['static/sounds/greatjob1.mp3']
+        },
+        dot_positions: function() {
+            return [func_dct[func_name]["true_coords"][0].slice(0, n_to_animate+n_to_guess+1), func_dct[func_name]["true_coords"][1].slice(0, n_to_animate+n_to_guess+1)]
+        },
+        default_width:default_width,
+        default_height:default_height,
+        n_to_animate: function() {
+            return n_to_animate
+        },
+        default_scale: function() {
+            return func_dct[func_name]["scale"]
+        },
+        default_shift: function() {
+            return [func_dct[func_name]["shift_x"], func_dct[func_name]["shift_y"]]
+        },
+        on_finish: function(data) {
+            response_data = {}
+            response_data.response_x = data.response_x
+            response_data.response_y = data.response_y
+            response_data.rts = data.rt
+            response_data.session = session
+            response_data.success = data.response_success
+            response_data.scales = data.scale_at_response
+            response_data.true_x = func_dct[func_name]["true_coords"][0]
+            response_data.true_y = func_dct[func_name]["true_coords"][1]
+            response_data.func = func_name
+            response_data.func_idx = func_idx
+            response_data.subject_id = data.childID
+            response_data.row_id = data.childID.concat("_", func_idx).concat("_", session)
+            response_data.exp_phase = 'trial'
+            response_data.expt_start_time = start_time
+            response_data.trial_start_time = trial_start_time
+            response_data.trial_end_time = Date.now();
+            response_data.passed_ic = passed_ic
+            save_data(response_data)
+        }
+    };
+
+    var allow_end = {
+        type: jsPsychHtmlButtonResponse,
+        stimulus: function() {
+            str = '<div id="my_img"><img src="static/imgs/star.png" style="width:250px;"></div>'
+            str += "<h3>Do you want to try another pattern?</h3>"
+            return str
+        },
+        button_html: '<button style="font-size: 24px; padding: 15px 30px;">%choice%</button>',
+        choices: ['<b>Try another!</b>', '<b>Stop for today</b>'],
+        on_finish: function(data) {
+            end_expt = (data.response==1)
+        }
+    }
+
+    var end_expt = false;
+
+    var orientation_trial = {
+        type: jsPsychOrientationCheck
+    }
+    var conditional_orientation_check = {
+        timeline: [orientation_trial],
+        conditional_function: function() {
+            return window.matchMedia("(orientation: portrait)").matches;
+        }
+    };
+
+    var run_trials = {
+        timeline: [conditional_orientation_check, trial],
+        //runs after completion of timeline
+        loop_function: function(){
+            func_idx = func_idx + 1
+            if (func_idx < n_functions) {
+                func_name = func_names[func_idx]
+                return true
+            }
+        }
+    }
+
+    var retry = false
+    var passed_ic;
+    if (session==1) {
+        passed_ic = false
+    } else {
+        passed_ic = ""
+    }
+
+    //real thang
+    var inclusion_trial = {
+        type: jsPsychDotTask,
+        stimulus: "",
+        on_start: function() {
+            trial_start_time = Date.now();
+        },
+        n_stars: function() {
+            return n_functions - 1
+        },
+        star_idx: -1,
+        progress_prompt: function() {
+            return ""
+        },
+        progress_audio: function() {
+            return 'static/sounds/greatjob1.mp3'
+        },
+        is_practice: true,
+        allow_retry: function() {
+            return (retry_count < 1)
+        },
+        dot_positions: function() {
+            return [func_dct[func_name]["true_coords"][0].slice(0, n_to_animate+n_to_guess+1), func_dct[func_name]["true_coords"][1].slice(0, n_to_animate+n_to_guess+1)]
+        },
+        default_width:default_width,
+        default_height:default_height,
+        n_to_animate: function() {
+            return n_to_animate
+        },
+        default_scale: function() {
+            return func_dct[func_name]["scale"]
+        },
+        default_shift: function() {
+            return [func_dct[func_name]["shift_x"], func_dct[func_name]["shift_y"]]
+        },
+        on_finish: function(data) {
+            response_data = {}
+            response_data.response_x = data.response_x
+            response_data.response_y = data.response_y
+            response_data.rts = data.rt
+            response_data.success = data.response_success
+            response_data.scales = data.scale_at_response
+            response_data.true_x = func_dct[func_name]["true_coords"][0]
+            response_data.true_y = func_dct[func_name]["true_coords"][1]
+            response_data.func = func_name
+            response_data.func_idx = func_idx
+            response_data.subject_id = data.childID
+            response_data.session = session
+
+            //passed_ic if succeess > 3
+            passed_ic = ((response_data.success.filter(value => value === true).length) >= 3)
+            response_data.passed_ic = passed_ic
+
+            if (retry) {
+                response_data.row_id =  data.childID.concat("_retry_" + retry_count + "_" + func_idx).concat("_", session)
+            } else {
+                response_data.row_id =  data.childID.concat("_", func_idx).concat("_", session)
+            }
+            response_data.exp_phase = 'trial'
+            response_data.expt_start_time = start_time
+            response_data.trial_start_time = trial_start_time
+            response_data.trial_end_time = Date.now();
+            save_data(response_data)
+            if (passed_ic || (retry_count>=1)) {
+                retry = false
+            } else {
+                retry = true
+            }
+        }
+    };
+
+    var retry_count = 0
+    
+    var allow_retry = {
+        type: jsPsychGreatJob,
+        stimulus: ['static/videos/greatjob1.mp4'],
+        audio_stimulus: ['static/sounds/greatjob1.mp3'],
+        width:700,
+        controls:true,
+        response_allowed_while_playing:false,
+        total_stars: function() {
+            return n_functions - 1
+        },
+        star_idx:-1,
+        prompt: function() {
+            if (passed_ic || (retry_count>=1)) {
+                retry = false
+                return "<h3>Good job!<br>Now, you'll get to try some different patterns!</h3>"
+            } else {
+                retry = true
+                return "<h3>Good job!<br>Let's practice one more time!</h3>"
+            }
+        },
+        choices: ["<b>Let's go!</b>"]
+    };
+    
+
+    var inclusion_loop = {
+        timeline: [inclusion_trial],
+        loop_function: function(){
+            if ((retry_count < 1) & (retry)) {
+                retry_count += 1
+                return true
+            } else {
+                func_idx += 1
+                func_name = func_names[func_idx]
+                return false
+            }
+        }
+    }
+
+    var maybe_run_optional_trial = {
+        timeline: [conditional_orientation_check, optional_trial],
+        conditional_function: function() {
+            return !(end_expt)
+        }
+    }
+
+    var run_optional_trials = {
+        timeline: [allow_end, maybe_run_optional_trial],
+        loop_function: function(){
+            if (end_expt) {
+                return false
+            } else {
+                func_idx = func_idx + 1
+                if (func_idx < func_names.length) {
+                    func_name = func_names[func_idx]
+                    return true
+                } else {
+                    return false
+                }
+            }
+        }
+    }
+
+    var maybe_run_optional_trials = {
+        timeline: [run_optional_trials],
+        conditional_function: function() {
+            if (func_idx < func_names.length) {
+                func_name = func_names[func_idx]
+                return true
+            } else {
+                return false
+            }
+        }
+    }
+
+    var debrief = {
+        type: jsPsychHtmlKeyboardResponse,
+        stimulus: function() {
+            var n_remaining = func_names.length - func_idx
+            var str = '<div id="my_img"><img src="static/imgs/star.png" style="width:250px;"></div>'
+            str += '<h4>Thank you for playing!'
+
+            if (session==1) {
+                if (passed_ic) {
+                    if (n_remaining>0) {
+                        str += "<br>This part of the study is done. Your child is eligible to complete two more sessions, where they'll try new patterns!"
+                        str += "<br>For the second session you will receive $5 for completion, and once you complete all the patterns by the third session you will receive an additional $10."
+                        str += "<br>You can complete these sessions whenever you want within 1 week from today.<br>You will receive an email with more details soon!"
+                    }
+                }
+            } else {
+                if (n_remaining == 0) {
+                    str += '<br>You finished all the patterns!<br>'
+                } else {
+                    str += '<br>You have ' + n_remaining + ' patterns left to try another time!<br><br>'
+                }
+            }
+
+            str += '<br>You are done with the tablet and can click “next” on Children Helping Science on your computer now.</h4>'
+            return str
+        }
+    };
+ 
+    //save data to database -- currently disabled
+    function save_data(data) {
+        return;
+        /*
+        var url = ""; 
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", url, true);
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.send(JSON.stringify({
+            data
+        }));
+        */
+    }
+
+
+    var audio_init = {
+        type: jsPsychAudioSafariInit
+    };
+    var go_fullscreen = {
+        type: jsPsychFullscreen,
+        fullscreen_mode: true
+    };
+
+    var optional_instructions = {
+        timeline: [instructions1, instructions2, instructions3],
+        conditional_function: function() {
+            var res = jsPsych.data.get().last(1).values()[0]['response']
+            return (res==0)
+        }
+    }
+    var refresh_instructions = {
+        type: jsPsychVideoButtonResponse,
+        stimulus: ['static/videos/WelcomeBack.mp4'],
+        width:800,
+        controls:true,
+        response_allowed_while_playing: false,
+        button_html: '<button style="font-size: 24px; padding: 15px 30px;">%choice%</button>',
+        choices: ['<b>Rewatch instructions</b>', '<b>Begin!</b>']
+    }
+
+    var func_names;
+    var session;
+    var childID;
+    var func_idx;
+    var func_name;
+    var n_functions;
+
+    function setup_expt() {
+        childID = getChildID();
+        if (childID) {}
+        else {
+            childID = createUID()
+        }
+        jsPsych.data.addProperties({
+            childID: childID
+        });
+
+        var res = get_session_stimuli(childID);
+        var remaining_func_names = res[0]
+        session = res[1]
+        if (session == 1) {
+            func_idx = 0
+        } else {
+            func_idx = 1
+        }
+        func_names = ['example_line'].concat(shuffle(remaining_func_names))
+        if (func_idx < func_names.length) {
+            func_name = func_names[func_idx]
+        }
+        n_functions = Math.min(func_names.length, 9)
+
+        if (remaining_func_names.length==0) {
+            timeline = [debrief]
+        } else {
+            if (session==1) {
+                timeline = [audio_init, preload, instructions1, instructions2, instructions3, inclusion_loop, ready, run_trials, maybe_run_optional_trials, debrief]
+            } else {
+                timeline = [audio_init, preload, refresh_instructions, optional_instructions, run_trials, maybe_run_optional_trials, debrief]
+            }
+        }
+        jsPsych.run(timeline);
+    }
+    
+    setup_expt();
+
+    </script>
+</html>
