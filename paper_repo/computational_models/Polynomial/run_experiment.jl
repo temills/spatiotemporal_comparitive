@@ -28,16 +28,18 @@ function scale_pts(xs, ys,ts)
     return xs, ys, ts
 end
 
-n_iter = 100000
-n_particles = 20
 degree = 1
-
-seq_dict = JSON.parsefile("../stimuli.json")["funcs"]
-seq_idx = parse(Int64, ARGS[1])
-seq_name = collect(eachindex(seq_dict))[seq_idx]
-seq_info = seq_dict[seq_name] 
-
 outdir = "output/"
+mkpath(outdir)
+n_iter = parse(Int64, ARGS[3])
+n_particles = parse(Int64, ARGS[4])
+
+stim_path = ARGS[1]
+seq_dict = JSON.parsefile(stim_path)["funcs"]
+seq_names = collect(eachindex(seq_dict))
+seq_idx = parse(Int64, ARGS[2])
+seq_name = seq_names[seq_idx]
+seq_info = seq_dict[seq_name]
 
 xs = Vector{Float64}(seq_info["true_coords"][1])
 ys = Vector{Float64}(seq_info["true_coords"][2])

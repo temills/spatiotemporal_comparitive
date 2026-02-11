@@ -2,20 +2,24 @@ import pandas as pd
 import os
 import json
 import numpy as np
+import sys 
 
-with open('../stimuli.json') as f:
-    stim = json.load(f)
+input_dir = 'output/'
+output_dir = sys.argv[1]
+stim_path = sys.argv[2]
 
-outdir = 'output/'
+with open(stim_path) as f:
+    stimuli = json.load(f)
 
-def rescale_and_merge_csvs(path):
+
+def rescale_and_merge_csvs():
     dfs = []
-    for file_name in os.listdir(path):
-        file_path = os.path.join(path, file_name)
+    for file_name in os.listdir(input_dir):
+        file_path = os.path.join(input_dir, file_name)
         df = pd.read_csv(file_path)
         seq = file_name.split(".csv")[0]
-        xs = stim["funcs"][seq]["true_coords"][0]
-        ys = stim["funcs"][seq]["true_coords"][1]
+        xs = stimuli["funcs"][seq]["true_coords"][0]
+        ys = stimuli["funcs"][seq]["true_coords"][1]
         scale_x = max(xs) - min(xs)
         if scale_x==0:
             df["true_x"] = (df["true_x"] + min(xs))
@@ -39,7 +43,7 @@ def rescale_and_merge_csvs(path):
         dfs.append(df)
         
     merged_df = pd.concat(dfs, ignore_index=True)
-    merged_df.to_csv(outdir + 'ridge.csv', index=False)
+    merged_df.to_csv(output_dir + '/polynomial.csv', index=False)
 
-
-rescale_and_merge_csvs(outdir)
+if __name__=="__main__":
+    rescale_and_merge_csvs()

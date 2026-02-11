@@ -10,9 +10,11 @@ using JSON
     * P(noise|func, data) ∝ P(data | noise, func) * P(noise)
 """
 
-data_path = "output/"
+input_dir = "output/"
 N_BACK = 2
-seq_dict = JSON.parsefile("../stimuli.json")["funcs"]
+stim_path = ARGS[1]
+
+seq_dict = JSON.parsefile(stim_path)["funcs"]
 
 function scale_pts(xs, ys)
     distances = [sqrt((xs[i+1] - xs[i])^2 + (ys[i+1] - ys[i])^2) for i in 1:length(xs)-1]
@@ -24,7 +26,7 @@ end
 
 function gamma_posterior_update(pred_val::Vector{Float64}, true_val::Vector{Float64}, shape_0::Float64, scale_0::Float64)
     """
-    Gamma distribution is conjugate prior to gamma distribution, from which we sample precision
+    Sample precision from Gamma conjugate prior
     The prior and posterior distributions of precision are Gamma distributions
     Closed form posterior update: https://www.cs.ubc.ca/~murphyk/Papers/bayesGauss.pdf
     """
@@ -38,10 +40,10 @@ function gamma_posterior_update(pred_val::Vector{Float64}, true_val::Vector{Floa
 end
 
 function compute_sd()
-    files = readdir(data_path)
+    files = readdir(input_dir)
     for filename in files
         if endswith(filename, ".csv") && !(endswith(filename, "_scores.csv"))
-            df = DataFrame(CSV.File(data_path * filename))
+            df = DataFrame(CSV.File(input_dir * filename))
             seq_name = filename[1:end-4]
                     
             seq_info = seq_dict[seq_name]
@@ -105,7 +107,7 @@ function compute_sd()
             df.sampled_sd_y = sampled_sd_ys
             df.sd_x = sd_xs
             df.sd_y = sd_ys
-            CSV.write(data_path * filename, df)
+            CSV.write(input_dir * filename, df)
         end
     end
 end

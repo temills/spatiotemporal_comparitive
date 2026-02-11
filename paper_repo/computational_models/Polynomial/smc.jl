@@ -82,7 +82,7 @@ function run_smc(
     "sd_x"=> [], "sd_y"=> [], "seq_id"=>[], "score"=>[], "prev_x"=>[], "prev_y"=>[])
 
     for t in 1:(length(xs)-1)
-
+        println("Running SMC tpt $t")
         Threads.@threads for i=1:n_particles
             local trace = state.traces[i]
             trace = run_mcmc(trace, terms,  xs_curr, ys_curr, ts_curr, n_mcmc, vis=vis)
@@ -93,10 +93,6 @@ function run_smc(
 
             xs_model, ys_model = evaluate_function(terms, trace[:weights_x], trace[:weights_y], xs_curr, ys_curr, ts_curr)
 
-            println(t, " ")
-            println(xs)
-            println(xs_model)
-            println("")
             append!(prediction_dict["particle"], i)
             push!(prediction_dict["weight"], state.log_weights[i])
             push!(prediction_dict["degree"], degree)

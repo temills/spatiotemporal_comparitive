@@ -12,13 +12,17 @@ function scale_pts(xs, ys)
     return xs, ys
 end
 
-n_iter = 100000
-n_particles = 20
-out_dir = "output/"
 
-seq_dict = JSON.parsefile("stimuli_all.json")["funcs"]
+out_dir = "output/"
+mkpath(out_dir)
+mkpath(out_dir*"saved_states/")
+n_iter = parse(Int64, ARGS[3])
+n_particles = parse(Int64, ARGS[4])
+
+stim_path = ARGS[1]
+seq_dict = JSON.parsefile(stim_path)["funcs"]
 seq_names = collect(eachindex(seq_dict))
-seq_idx = parse(Int64, ARGS[1])
+seq_idx = parse(Int64, ARGS[2])
 seq_name = seq_names[seq_idx]
 seq_info = seq_dict[seq_name]
 

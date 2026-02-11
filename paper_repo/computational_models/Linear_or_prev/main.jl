@@ -117,7 +117,7 @@ function run_smc(xs::Vector{Float64}, ys::Vector{Float64}, n_particles::Integer,
         predictions = Vector(undef, n_particles)
         for i=1:n_particles
             local trace = state.traces[i]
-            trace, preds = @time mcmc_rejuvenation(trace, n_mcmc, vis_args, visualize, i, t, xs, ys, seq_id)
+            trace, preds = mcmc_rejuvenation(trace, n_mcmc, vis_args, visualize, i, t, xs, ys, seq_id)
             predictions[i] = preds
             state.traces[i] = trace
         end
@@ -135,11 +135,13 @@ function mcmc_rejuvenation(trace::Trace, n_mcmc::Int64, vis_args::Tuple{Int64, V
     prediction_dict = Dict("tpt"=> [], "particle"=> [], "true_x"=> [], "true_y"=> [], "pred_x"=> [], "pred_y"=>[], "seq_id"=>[], "sd_periodic_x"=>[], "sd_periodic_y"=>[], "sd_vec_x"=>[], "sd_vec_y"=>[], "p_periodic"=>[], "means_x"=>[], "means_y"=>[], "weights"=>[], "score"=>[], "sample_sd_x"=>[], "sample_sd_y"=>[], "sample"=>[], "args"=>[], "choices"=>[])
     scores = []
     for iter=1:n_mcmc
-        trace, = mh(trace, Gen.select(:periodic_σ)) 
-        trace, = mh(trace, Gen.select(:vec_σ))
+        trace, = mh(trace, Gen.select(:periodic_σ_x)) 
+        trace, = mh(trace, Gen.select(:periodic_σ_y)) 
+        trace, = mh(trace, Gen.select(:vec_σ_x))
+        trace, = mh(trace, Gen.select(:vec_σ_y))
         trace, = mh(trace, Gen.select(:p_periodic)) 
 
-        if (iter>1000)&&(iter%n_mcmc==0)
+        if iter==n_mcmc
             means_x, means_y, weights, sds_x, sds_y, sample_x, sample_y, sample_sd_x, sample_sd_y = get_prediction(xs[1:t+1], ys[1:t+1], trace[:p_periodic], trace[:periodic_σ_x], trace[:periodic_σ_y], trace[:vec_σ_x], trace[:vec_σ_y])
             push!(prediction_dict["particle"], particle)
             push!(prediction_dict["sample"], iter)

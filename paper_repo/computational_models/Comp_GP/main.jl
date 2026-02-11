@@ -316,8 +316,7 @@ function experiment_smc(
         push!(prediction_dict["sd_x"], missing)
         push!(prediction_dict["sd_y"], missing)
     end
-    #for tpt 1, we want second true x/y, and first true x/y as prev x
-    #this will be our first input point, for a prediction at tpt 2
+
     for i=1:n_particles
         append!(prediction_dict["particle"], i)
         push!(prediction_dict["weight"], missing)
@@ -373,13 +372,13 @@ function experiment_smc(
                 choices = Gen.get_choices(tr)
                 submap_x = Gen.get_submap(choices, :tree_x)
                 for (a, v) in Gen.get_values_shallow(submap_x)
-                    if ~(a[2] in [:type, :dim])
+                    if !(a[2] in [:type, :dim])
                         tr, accepted = metropolis_hastings(tr, hyper_proposal, (:tree_x=>a,))
                     end
                 end
                 submap_y = Gen.get_submap(choices, :tree_y)
                 for (a, v) in Gen.get_values_shallow(submap_y)
-                    if ~(a[2] in [:type, :dim])
+                    if !(a[2] in [:type, :dim])
                         tr, accepted = metropolis_hastings(tr, hyper_proposal, (:tree_y=>a,))
                     end
                 end

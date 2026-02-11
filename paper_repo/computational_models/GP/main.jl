@@ -250,13 +250,13 @@ function experiment_smc(
                 choices = Gen.get_choices(tr)
                 submap_x = Gen.get_submap(choices, :tree_x)
                 for (a, v) in Gen.get_values_shallow(submap_x)
-                    if ~(a[2] in [:type, :dim])
+                    if !(a[2] in [:type, :dim])
                         tr, accepted = metropolis_hastings(tr, hyper_proposal, (:tree_x=>a,))
                     end
                 end
                 submap_y = Gen.get_submap(choices, :tree_y)
                 for (a, v) in Gen.get_values_shallow(submap_y)
-                    if ~(a[2] in [:type, :dim])
+                    if !(a[2] in [:type, :dim])
                         tr, accepted = metropolis_hastings(tr, hyper_proposal, (:tree_y=>a,))
                     end
                 end

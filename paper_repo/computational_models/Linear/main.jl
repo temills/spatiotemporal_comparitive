@@ -20,11 +20,9 @@ end
 @gen function init_speed_proposal(trace)
     init_speed ~ speed_proposal_dist(trace[:init_speed])
 end
-
+@dist number_prior_dist() = normal(0, 3)
 
 @gen function pcfg_prior(type_dist::String, parent_tp::String, parent_c::Int64, env::Vector{String})
-    # draw from specified prior distribution
-    # take bvs in env into account when computing type dist -- all bvs w correct type
     probs = copy(dist_dict[type_dist])
     if length(env)>0
         bv_probs = map(v -> Float64(v==type_dist), env)
@@ -169,7 +167,6 @@ function mcmc_rejuvenation(trace::Trace, n_mcmc::Int64, vis_args::Tuple{Int64, V
     scores = []
     acceptances = [Vector{Float64}(), Vector{Float64}(), Vector{Float64}(), Vector{Float64}(), Vector{Float64}()]
     for iter=1:n_mcmc
-        #then make proposals on each tree
         trace, = mh(trace, Gen.select(:shape_x, :scale_x))
         trace, = mh(trace, Gen.select(:shape_y, :scale_y))
         trace, = mh(trace, init_angle_proposal, ())
@@ -189,7 +186,6 @@ function visualize_curr(vis_args, trace)
     func = get_retval(trace)
 
     n_to_predict = n_back+1
-    #xs_model, ys_model = evaluate_function(func, length(xs[t:t+1]+1), xs[t:t+1], ys[t:t+1])
     xs_model, ys_model = evaluate_function(func, n_to_predict, xs[t-(n_back-1):t+1], ys[t-(n_back-1):t+1], trace[:init_angle], trace[:init_speed])
     fig = ""
     fig = visualize_init(xs,ys)
@@ -200,8 +196,6 @@ function visualize_curr(vis_args, trace)
     println(trace[:init_angle])
     println(trace[:init_speed])
     println("------------")
-    #println(get_score(trace))
-    #println("ok")
 end
  
 
@@ -209,13 +203,12 @@ function record_predictions(prediction_dict, score_dict, traces, t, xs, ys, seq_
     for (i, trace) in enumerate(traces)
         func = get_retval(trace)
         if t<n_back
-            n_to_predict = t+1 #2
+            n_to_predict = t+1
             xs_model, ys_model = evaluate_function(func, n_to_predict, xs[1:t+1], ys[1:t+1], trace[:init_angle], trace[:init_speed])
         else
-            n_to_predict = n_back+1 #3
+            n_to_predict = n_back+1
             xs_model, ys_model = evaluate_function(func, n_to_predict, xs[t-(n_back-1):t+1], ys[t-(n_back-1):t+1], trace[:init_angle], trace[:init_speed])
         end 
-        #xs_model, ys_model = evaluate_function(func, t+1, xs[1:t+1], ys[1:t+1])   
         push!(prediction_dict["particle"], i)
         push!(prediction_dict["tpt"], t+1)
         push!(prediction_dict["seq_id"], seq_id)

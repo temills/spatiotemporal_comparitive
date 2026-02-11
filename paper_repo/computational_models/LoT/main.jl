@@ -10,25 +10,14 @@ using LinearAlgebra
 using Serialization
 
 
-################################
-# Main script for running inference over LoT programs
-################################
+"""
+Main script for running inference over LoT programs
+"""
 
 
 """ Define priors """
-@dist number_prior_dist() = normal(0, 3)
-@dist function int_prior_dist()
-    d = Vector{Float64}()
-    for i in 1:20
-        append!(d, 1-(i*.04))
-    end
-    d = normalize(d)
-    categorical(d)
-end
-# PCFG
 @gen function pcfg_prior(type_dist::String, parent_tp::String, parent_c::Int64, env::Vector{String})
-    # draw from specified prior distribution
-    # take bvs in env into account when computing type dist -- all bvs w correct type
+    # PCFG with bound variables
     probs = copy(dist_dict[type_dist])
     if length(env)>0
         bv_probs = map(v -> Float64(v==type_dist), env)
@@ -79,6 +68,15 @@ end
 
     return node
 end
+@dist number_prior_dist() = normal(0, 3)
+@dist function int_prior_dist()
+    d = Vector{Float64}()
+    for i in 1:20
+        append!(d, 1-(i*.04))
+    end
+    d = normalize(d)
+    categorical(d)
+end
 
 @gen function sample_student_t(μ, α, β, n)
     ν = 2 * α
@@ -87,9 +85,7 @@ end
 end
 
 @gen (static) function model(n::Integer, xs::Vector{Float64}, ys::Vector{Float64}, move_from_true::Bool, shape_params::Tuple{Float64, Float64}, scale_params::Tuple{Float64, Float64})
-    """
-    Generative model, returns a function
-    """
+    # Generative model, returns a function
     func::Node = @trace(pcfg_prior("op", "root", 1, Vector{String}()), :tree)
     init_angle ~ uniform(-4, 4)
     init_speed ~ exponential(0.5)
@@ -168,7 +164,7 @@ function reload_state(state_path)
 end
 
 function run_smc(xs::Vector{Float64}, ys::Vector{Float64}, n_particles::Integer, n_mcmc::Integer;
-                seq_id="sequence", out_dir="output/", move_from_true=true, visualize=false, load_state=true, record_preds=true)
+                seq_id="sequence", out_dir="output/", move_from_true=true, visualize=false, load_state=false, record_preds=true)
     """
     Run SMC with MCMC rejuvenation
     """
@@ -233,7 +229,6 @@ function run_smc(xs::Vector{Float64}, ys::Vector{Float64}, n_particles::Integer,
         
         # Apply MCMC rejuvenation to each particle
         predictions = Vector(undef, n_particles)
-
         @Threads.threads for i=1:n_particles 
             println("Particle $i")
             local trace = state.traces[i]
@@ -269,8 +264,8 @@ function mcmc_rejuvenation(trace::Trace, n_mcmc::Int64, vis_args::Tuple{Int64, V
         trace, = mh(trace, add_or_remove_c2, (propose_params,),  add_or_remove_involution_c2)
         trace, = mh(trace, swap_node, (propose_params,), swap_node_involution)
         
+        # Proposals on params
         addr_list = get_param_addr_list(trace[:tree], [:tree], Vector{Tuple{Vector{Symbol}, Union{Float64, Int64}}}())
-        #proposals on params
         for _=1:5
             trace, = mh(trace, init_angle_proposal, ())
             trace, = mh(trace, init_speed_proposal, ())
@@ -283,8 +278,8 @@ function mcmc_rejuvenation(trace::Trace, n_mcmc::Int64, vis_args::Tuple{Int64, V
             trace, = mh(trace, Gen.select(:shape_y))
             trace, = mh(trace, Gen.select(:scale_y))
         end
-
-        if (iter>50000)&&(iter%1000==0)
+        # Record predictions
+        if (iter==n_mcmc)
             func = get_retval(trace)
             xs_model, ys_model = evaluate_function(func, t+1, xs[1:t+1], ys[1:t+1], trace[:init_speed], trace[:init_angle], move_from_true)   
             push!(prediction_dict["particle"], particle)

@@ -2,17 +2,21 @@ import pandas as pd
 import os
 import json
 import numpy as np
+import sys 
 
-with open('../stimuli.json') as f:
+input_dir = 'output/'
+output_dir = sys.argv[1]
+stim_path = sys.argv[2]
+
+with open(stim_path) as f:
     stimuli = json.load(f)
 
-outdir = "output/"
 
-def rescale_and_merge_csvs(path):
+def rescale_and_merge_csvs():
     dfs = []
-    for file_name in os.listdir(path):
+    for file_name in os.listdir(input_dir):
         if file_name.endswith('.csv') and not(file_name.endswith('scores.csv')):
-            file_path = os.path.join(path, file_name)
+            file_path = os.path.join(input_dir, file_name)
             df = pd.read_csv(file_path)
             seq = file_name.split(".csv")[0]
 
@@ -21,8 +25,8 @@ def rescale_and_merge_csvs(path):
             distances = [((xs[i+1] - xs[i])**2 + (ys[i+1] - ys[i])**2)**0.5 for i in range(len(xs)-1)]
             mean_dist = np.mean(distances)
             
-            df = df[~((df["tpt"] > 1) & (df["sample"] != 100000))]
-            df = df.drop("sample", axis=1)
+            df = df[~((df["tpt"] > 1) & (df["sample"] != max(df["sample"])))]
+            df = df.drop(columns=["sample", "args", "choices"], errors="ignore")
             df["true_x"] = (df["true_x"] * mean_dist)
             df["pred_x"] = (df["pred_x"] * mean_dist)
             df["true_y"] = (df["true_y"] * mean_dist)
@@ -34,7 +38,7 @@ def rescale_and_merge_csvs(path):
             dfs.append(df)
             
     merged_df = pd.concat(dfs, ignore_index=True)
-    merged_df.to_csv(path + 'lot.csv', index=False)
+    merged_df.to_csv(output_dir + '/lot.csv', index=False)
 
 if __name__=="__main__":   
-    rescale_and_merge_csvs(outdir)
+    rescale_and_merge_csvs()

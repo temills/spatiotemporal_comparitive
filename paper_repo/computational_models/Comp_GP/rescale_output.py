@@ -1,16 +1,21 @@
 import pandas as pd
 import os
 import json
+import sys
 
-with open('../stimuli.json') as f:
+
+input_dir = 'output/'
+output_dir = sys.argv[1]
+stim_path = sys.argv[2]
+
+with open(stim_path) as f:
     stimuli = json.load(f)
-output_dir = 'output/'
 
-def scale_and_merge_csvs(path):
+def scale_and_merge_csvs():
     dfs = []
-    for file_name in os.listdir(path):
+    for file_name in os.listdir(input_dir):
         if file_name.endswith('.csv'):
-            file_path = os.path.join(path, file_name)
+            file_path = os.path.join(input_dir, file_name)
             df = pd.read_csv(file_path)
             
             seq = file_name.split(".csv")[0]
@@ -51,8 +56,8 @@ def scale_and_merge_csvs(path):
             dfs.append(df)
     
     merged_df = pd.concat(dfs, ignore_index=True)
-    merged_df.to_csv(path + 'gpsl.csv', index=False)
+    merged_df.to_csv(output_dir + '/comp_gp.csv', index=False)
 
 
 if __name__=="__main__":
-    scale_and_merge_csvs(output_dir)
+    scale_and_merge_csvs()

@@ -105,7 +105,6 @@ node_list = Vector{String}() # Holds primitive names, guaranteed types, and chil
 grammar = Dict()
 add_primitive("real", ["expr"], [])
 add_primitive("move", ["op"], [])
-add_primitive("move_ts", ["op"], ["expr", "expr"])
 
 
 grammar["root"] = Dict("child_types"=>["op"])

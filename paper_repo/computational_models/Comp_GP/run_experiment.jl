@@ -30,15 +30,17 @@ function scale_input(points)
 end
 
 
-outdir = "output/"
-n_iter = 100000
-n_particles = 20
+out_dir = "output/"
+mkpath(out_dir)
+n_iter = parse(Int64, ARGS[3])
+n_particles = parse(Int64, ARGS[4])
 
-seq_dict = JSON.parsefile("../stimuli.json")["funcs"]
-
-seq_idx = parse(Int64, ARGS[1])
-seq_name = collect(eachindex(seq_dict))[seq_idx]
-seq_info = seq_dict[seq_name] 
+stim_path = ARGS[1]
+seq_dict = JSON.parsefile(stim_path)["funcs"]
+seq_names = collect(eachindex(seq_dict))
+seq_idx = parse(Int64, ARGS[2])
+seq_name = seq_names[seq_idx]
+seq_info = seq_dict[seq_name]
 
 xs = Vector{Float64}(seq_info["true_coords"][1])
 ys = Vector{Float64}(seq_info["true_coords"][2])
@@ -58,7 +60,7 @@ out_x = scale_output(out_x)
 out_y = scale_output(out_y)
 
 # Run SMC
-trace_dict = experiment_smc(input, out_x, out_y, seq_name, n_particles, n_iter, outdir * seq_name * ".csv"; changepoints=false)
+trace_dict = experiment_smc(input, out_x, out_y, seq_name, n_particles, n_iter, out_dir * seq_name * ".csv"; changepoints=false)
 df = DataFrame(trace_dict)
-CSV.write(outdir * seq_name * ".csv", df)
+CSV.write(out_dir * seq_name * ".csv", df)
 

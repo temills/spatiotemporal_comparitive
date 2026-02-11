@@ -19,23 +19,6 @@ function sample_categorical(probs::Vector{Float64})
     end
 end
 
-function standardize(xs::Vector{Float64}, ys::Vector{Float64})
-    # Compute centroid
-    centroid_x = mean(xs)
-    centroid_y = mean(ys)
-    # Compute mean squared dist from centroid
-    mse = mean([(xs[i] - centroid_x)^2 + (ys[i] - centroid_y)^2 for i=1:length(xs)])
-    # Scaling factor = sqrt of mean squared dist bt each pt and centroid
-    scale = mse^0.5
-    if scale==0
-        scale=1.0
-    end
-    # Subtract pt from centroid, then divide by sd
-    std_xs = [(x - centroid_x)/scale for x in xs]
-    std_ys = [(y - centroid_y)/scale for y in ys]
-    return std_xs, std_ys, centroid_x, centroid_y, scale
-end
-
 function dict_to_dist(prob_dict::Dict, all_nodes::Vector{String})
     # Turn a dict of number, probability pairs into a normalized categorical distribution
     dist = Vector{Float64}()
@@ -50,37 +33,6 @@ function dict_to_dist(prob_dict::Dict, all_nodes::Vector{String})
     end
     dist = normalize(dist)
     return dist
-end
-
-function render_trace(trace; show_data=true)
-    # Pull out xs from the trace
-    xs, = get_args(trace)
-    xmin = minimum(xs)
-    xmax = maximum(xs)
-    # Pull out the return value, useful for plotting
-    func = get_retval(trace)
-    fig = plot()
-    if show_data
-        xs = [trace[(:x, i)] for i=1:length(xs)]
-        xs_model = evaluate_function(func, xs[1], 1., length(xs))
-        println(func)
-        println(xs)
-        println(xs_model)
-        scatter!(1:length(xs), xs_model, c="black", label=nothing)
-    end
-    return fig
-end;
-
-function grid(renderer::Function, traces)
-    Plots.plot(map(renderer, traces)...)
-end;
-
-function round_all(xs::Vector{Float64}; n=2)
-    map(x -> round(x; digits=n), xs)
-end
-
-function perm_visualize(pred_xs::Vector{Float64}, pred_ys::Vector{Float64}, fig, c="red")
-    gui(scatter!(fig, pred_xs, pred_ys, c=c, label=nothing))
 end
 
 function visualize_init(xs,ys)
@@ -168,41 +120,6 @@ function get_node_end(str)
             return i
         end
     end
-end
-
-function rotate_and_scale(pred_xs::Vector{Float64}, pred_ys::Vector{Float64}, true_xs::Vector{Float64}, true_ys::Vector{Float64})
-    t = minimum([length(true_xs)-1, length(pred_xs)])
-    if t<1
-        return pred_xs, pred_ys
-    end
-    true_first = [true_xs[1], true_ys[1]]
-    pred_first = [true_xs[1], true_ys[1]]
-    true_last = [true_xs[t+1], true_ys[t+1]]
-    pred_last = [pred_xs[t], pred_ys[t]]
-
-    # Calculate scaling factor
-    scale_factor = norm(true_last - true_first) / norm(pred_last - pred_first)
-    
-    # Calculate angle of rotation
-    angle_true = atan(true_last[2] - true_first[2], true_last[1] - true_first[1])
-    angle_pred = atan(pred_last[2] - pred_first[2], pred_last[1] - pred_first[1])
-    rotation_angle = angle_true - angle_pred
-    
-    # Apply translation, scaling, and rotation to coordinates in list "a"
-    transformed_xs = Vector{Float64}()
-    transformed_ys = Vector{Float64}()
-    for i=1:length(pred_xs)
-        x_scaled = pred_xs[i] * scale_factor
-        y_scaled = pred_ys[i] * scale_factor
-        
-        x_rotated = x_scaled * cos(rotation_angle) - y_scaled * sin(rotation_angle)
-        y_rotated = x_scaled * sin(rotation_angle) + y_scaled * cos(rotation_angle)
-        
-        push!(transformed_xs, x_rotated)
-        push!(transformed_ys, y_rotated)
-    end
-    
-    return transformed_xs, transformed_ys
 end
 
 function trace_to_choice_tup(trace::Trace)
