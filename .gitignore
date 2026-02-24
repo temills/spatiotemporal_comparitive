@@ -3,6 +3,7 @@
 __pycache__/
 .Rhistory
 .Rapp.history 
+*.rds
 analyses/learning_model_comparisons/model_fits/
 analyses/learning_model_comparisons/crossval_data/
 analyses/learning_model_comparisons/hierarchical_analysis/
