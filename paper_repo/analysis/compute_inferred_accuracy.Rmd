@@ -221,3 +221,135 @@ write.csv(df_mean_kids, paste0(posterior_mean_dir, "mean_kids.csv"))
 write.csv(df_mean_adult, paste0(posterior_mean_dir, "mean_adults.csv"))
 write.csv(df_mean_monkey, paste0(posterior_mean_dir, "mean_monkeys.csv"))
 ```
+
+
+# Monkey training
+```{r}
+add_rank_time_column <- function(dataframe) {
+  dataframe$date <- as.Date(dataframe$Current_time, format = "%a %b %d %H:%M:%S %Y")
+  unique_dates <- dataframe %>%
+                  distinct(date) %>%
+                  arrange(date) %>%
+                  mutate(rank_time = row_number())
+  h <- hash()
+  for (i in 1:nrow(unique_dates)) {
+    date <- unique_dates$date[i]
+    rank_time <- unique_dates$rank_time[i]
+    h[date] = rank_time
+  }
+  dataframe <- dataframe %>%
+              rowwise() %>%
+              mutate(ranked_day = h[[as.character(date)]])
+  return(dataframe)
+}
+
+df <- read.csv(paste0(data_dir, "participants/monkeys_train.csv"))
+screen_w <- df$screen_w[1]
+screen_h <- df$screen_h[1]
+
+n_games <- max(df$game_n)
+
+df$id <- seq.int(1,nrow(df))
+df$func.name <- df$func_id
+df$attempt_number <- ifelse(is.na(df$attempt_number), 0, df$attempt_number)
+
+df <- add_rank_time_column(df)
+
+ranked_days <- df %>%
+              group_by(monkey_name) %>%
+              distinct(ranked_day) %>%
+              arrange(ranked_day) %>%
+              mutate(rank_day = row_number()) %>%
+              ungroup()
+
+unique_sequences_df <- df %>%
+                      group_by(func.name, n) %>%
+                      top_n(n = 1, wt = id) %>%
+                      select(func.name, n, x_curr, y_curr) %>%
+                      group_by(func.name) %>%
+                      arrange(n) %>%
+                      mutate(# Calculate deltas
+                            delta_x = x_curr - lag(x_curr),
+                            delta_x_2 = lag(x_curr) - lag(x_curr, 2),
+                            delta_y = y_curr - lag(y_curr),
+                            delta_y_2 = lag(y_curr) - lag(y_curr, 2),
+                            # Handle NA values
+                            delta_x = ifelse(is.na(delta_x), 0, delta_x),
+                            delta_y = ifelse(is.na(delta_y), 0, delta_y),
+                            delta_x_2 = ifelse(is.na(delta_x_2), delta_x, delta_x_2),
+                            delta_y_2 = ifelse(is.na(delta_y_2), delta_y, delta_y_2),
+                            x_lin = x_curr + delta_x,
+                            y_lin = y_curr + delta_y) %>%
+                      select(func.name, n, x_lin, y_lin) %>%  # Only keep necessary columns
+                      ungroup()
+
+df <- df %>%
+      left_join(unique_sequences_df, by = c("func.name", "n"))
+
+df <- df %>%
+  left_join(ranked_days, by = c("monkey_name", "ranked_day")) %>%
+  rowwise() %>%
+  mutate(func.type = gsub("\\.\\d+$", "", func.name)) %>%
+  mutate(t_id = paste(r_id, func.name, game_n)) %>%
+  group_by(monkey_name) %>%
+  mutate(rank_day = rank_day - min(rank_day)+1) %>%
+  mutate(game_n_total = game_n + (rank_day-1)*n_games) %>%
+  filter((guess_number <= 10) | is.na(guess_number)) %>%
+  group_by(func.type) %>%
+  mutate(min_rank_day = min(rank_day)) %>%
+  ungroup() %>%
+  arrange(min_rank_day) %>%
+  mutate(func.type = factor(func.type, levels = unique(func.type))) %>%
+  arrange(monkey_name, rank_day, game_n, n, attempt_number) %>%
+  group_by(monkey_name, r_id,  game_n, attempt_number) %>%
+  mutate(guess_dist_from_curr=((x_pred-x_curr)**2. + (y_pred-y_curr)**2.)**0.5) %>%
+  group_by(monkey_name, func.name, r_id, game_n) %>%
+  mutate(new_day=(game_n==0)*game_n_total) %>%
+  mutate(true_dist=((x_next-x_curr)**2. + (y_next-y_curr)**2.)**0.5) %>%
+  mutate(x_err=x_pred-x_next) %>%
+  mutate(y_err=y_pred-y_next) %>%
+  mutate(abs_err = ((x_err**2)+(y_err)*2.)**0.5) %>%  
+  mutate(abs_rel_err = abs_err/(true_dist)) %>%
+  ungroup() %>%
+  arrange(rank_day, game_n, n) %>%
+  group_by(monkey_name, func.type) %>%
+  mutate(func_examples = cumsum(!duplicated(t_id))) %>%
+  ungroup() %>%
+  filter(attempt_number == 1) %>%
+  mutate(func_examples_std = (func_examples - mean(func_examples))/sd(func_examples)) 
+
+Sys.setenv(STAN_NUM_THREADS=4)
+
+for (subj in unique(df$monkey_name)) {
+  
+  stan_df <- df %>%
+            filter(!is.na(x_pred) & (!is.na(y_pred))) %>%
+            mutate(x_curr = x_curr/screen_w, x_pred = x_pred/screen_w, x_next = x_next/screen_w,
+                   y_curr = y_curr/screen_h, y_pred =y_pred/screen_h, y_next = y_next/screen_h,
+                   x_lin = x_lin/screen_w, y_lin = y_lin/screen_h) %>%
+            mutate(x_lin = x_lin * (x_lin > 0) * (x_lin <= 1) + 1* (x_lin > 1)) %>%
+            mutate(y_lin = y_lin * (y_lin > 0) * (y_lin <= 1) + 1* (y_lin > 1)) %>%
+            mutate(screen_ratio=screen_h/screen_w) %>%
+            filter(monkey_name == subj) 
+
+  stan_df$func_type_numeric <- as.numeric(as.factor(stan_df$func.type))
+  
+  stan_data <- list(N = length(stan_df$x_pred),
+                    screen_ratio = stan_df$screen_ratio[1],
+                    x_pred = stan_df$x_pred,
+                    y_pred = stan_df$y_pred,
+                    x_next = stan_df$x_next,
+                    y_next = stan_df$y_next,
+                    x_curr = stan_df$x_curr,
+                    y_curr = stan_df$y_curr,
+                    x_lin = stan_df$x_lin,
+                    y_lin = stan_df$y_lin,
+                    n_func_types = length(unique(stan_df$func.type)),
+                    func_type = stan_df$func_type_numeric,
+                    n_seen = stan_df$func_examples_std)
+  
+  fit <- stan(file=paste0(stan_model_dir, "inferred_accuracy_training.stan"), data=stan_data, iter=2000, chains=4, cores=4, warmup=100)
+  
+  saveRDS(fit, paste0(preprocessed_data_dir, "stan_fits/monkey_training/", subj, ".rds"))
+}
+```
