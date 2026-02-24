@@ -16,15 +16,16 @@ library(RColorBrewer)
 library(robustbase)
 library(brms)
 library(tidyr)
+library(colorspace)
 library(hash)
 library(rstan)
 library(png)
 library(gtable)
 library(ggimage)
+library(patchwork)
 library(hash)
 library(purrr)
 library(stringr)
-library(ggforce)
 
 paper_theme <- theme_light() + theme(
   axis.text.x=element_text(colour="#292929", size = 14), 
@@ -165,7 +166,6 @@ preprocessed_data_dir <- "preprocessed_data/"
 fig_dir <- "../figs/"
 ```
 
-
 # Monkey training sequences
 ## Preprocessing
 ```{r}
@@ -189,11 +189,12 @@ unique_sequences_df <- df_monkey_train %>%
   ungroup()
 
 df_monkey_train <- df_monkey_train %>%
-  left_join(unique_sequences_df, by = c("func.name", "tpt")) %>%
+  #left_join(unique_sequences_df, by = c("func.name", "tpt")) %>%
     left_join(ranked_days, by = c("subj_id", "ranked_day")) %>%
     rowwise() %>%
     mutate(func.type = gsub("\\.\\d+$", "", func.name)) %>%
-      mutate(correct_120 = ifelse(dist_from_true < 120, 1, 0)) %>%
+      mutate(correct_80 = ifelse(dist_from_true < 80, 1, 0),
+             correct_120 = ifelse(dist_from_true < 120, 1, 0)) %>%
 
       rowwise() %>%
       mutate(func.type = gsub("\\.\\d+$", "", func.name),
@@ -220,18 +221,37 @@ pattern_accuracy <- df_monkey_train %>%
   group_by(subj_id, func.type) %>%
   summarise(
     n_trials = n(),
-    mean_accuracy_120 = mean(correct_120, na.rm = TRUE),
+    mean_accuracy_80 = mean(correct_80, na.rm = TRUE),
     mean_distance_error = mean(dist_from_true, na.rm = TRUE),
-    final_accuracy = mean(correct_120[func_examples >= quantile(func_examples, 0.8)], na.rm = TRUE),
-    .groups = 'drop'
-  ) %>%
-  arrange(subj_id, desc(mean_accuracy_120))
+    q1_accuracy = mean(correct_80[func_examples < quantile(func_examples, 0.25)], na.rm = TRUE),
+    q4_accuracy = mean(correct_80[func_examples >= quantile(func_examples, 0.75)], na.rm = TRUE),
+    final_accuracy = mean(correct_80[func_examples >= quantile(func_examples, 0.8)], na.rm = TRUE),
+    .groups = 'drop')  %>%
+    mutate(accuracy_dif = q4_accuracy - q1_accuracy) %>%
+    group_by(subj_id) %>%
+    mutate(mean_accuracy_dif = mean(accuracy_dif)) %>%
+    arrange(subj_id, desc(mean_accuracy_80))
+
+overall_accuracy <- df_monkey_train %>%
+                    filter(attempt_number == 1) %>%
+                    group_by(subj_id) %>%
+                    summarize(mean_accuracy_80 = mean(correct_80, na.rm = TRUE))
+
+corr_df <- df_monkey_train %>%
+           filter(attempt_number == 1) %>%
+           group_by(subj_id, func.type, func.name) %>%
+           summarize(mean_accuracy_80 = mean(correct_80, na.rm=T)) %>%
+           group_by(subj_id, func.type) %>%
+           summarize(mean_accuracy_80 = mean(mean_accuracy_80)) %>%
+           select(c(subj_id, func.type, mean_accuracy_80)) %>%
+           pivot_wider(names_from=subj_id, values_from=mean_accuracy_80)
+print(cor.test(corr_df[["Monkey 1"]], corr_df[["Monkey 2"]]))
 
 cat("ACCURACY BY PATTERN TYPE\n")
 cat("========================\n")
 for(monkey_name in c("Monkey 1", "Monkey 2")) {
-  cat(sprintf("\n%s (sorted by 120px accuracy):\n", monkey_name))
-  cat("Pattern Type               | Trials | 120px Acc | Final Acc | Mean Error\n")
+  cat(sprintf("\n%s (sorted by 80px accuracy):\n", monkey_name))
+  cat("Pattern Type               | Trials | 80px Acc | Final Acc | Mean Error\n")
   cat("---------------------------|--------|-----------|-----------|----------\n")
   
   monkey_data <- pattern_accuracy %>% filter(subj_id == monkey_name)
@@ -241,7 +261,7 @@ for(monkey_name in c("Monkey 1", "Monkey 2")) {
     cat(sprintf("%-26s | %6d | %7.1f%% | %8.1f%% | %7.1f px\n",
                 pattern,
                 monkey_data$n_trials[i],
-                monkey_data$mean_accuracy_120[i] * 100,
+                monkey_data$mean_accuracy_80[i] * 100,
                 monkey_data$final_accuracy[i] * 100,
                 monkey_data$mean_distance_error[i]))
   }
@@ -249,7 +269,79 @@ for(monkey_name in c("Monkey 1", "Monkey 2")) {
 
 ```
 
+## Relationship between monkeys
+```{r}
+scale_fn <- 0.08
+aspect_ratio <- 5/4
+palette_20 <- qualitative_hcl(20, palette = "Dynamic")
 
+canonical_seqs <- c("alternating_diffs.21", "changing_sine.5", "circle.1", "curly.0", "left_to_right.0", "right_to_left.0", "line.1", "line2.0", "polygon.3", "polygon_spiral.14", "polynomial.37", "radial.49", 
+                    "repeat_pts.0", "repeat_line.4", "sine.0", "spiky_circle.49", "spiral_in.2", "spiral_out.6", "zigzag.10", "zigzag_increasing.27")
+
+summary_monkey_train0 <- df_monkey_train %>%
+                        filter(attempt_number==1 | is.na(attempt_number)) %>%
+                        group_by(func.name, func.type, subj_id) %>%
+                        summarize(correct_monkey = mean(correct_80, na.rm=TRUE)) %>%
+                        pivot_wider(
+                          id_cols = c(func.name, func.type),
+                          names_from = subj_id,
+                          values_from = correct_monkey,
+                          names_prefix = "correct_monkey_") %>%
+                          ungroup() %>%
+                          group_by(func.type) %>%
+                          summarize(mean_correct_Monkey_1 = mean(.data[["correct_monkey_Monkey 1"]], na.rm=TRUE),
+                                    mean_correct_Monkey_2 = mean(.data[["correct_monkey_Monkey 2"]], na.rm=TRUE)) 
+
+summary_monkey_train <- read.csv(paste0(data_dir, "participants/monkeys_train.csv")) %>%
+                        preprocess_df_monkey() %>%
+                        filter(is.na(attempt_number) | attempt_number==1) %>%
+                        rowwise() %>%
+                        filter(func.name %in% canonical_seqs) %>%
+                        distinct(func.name, func.type, tpt, true_x, true_y) %>%
+                        group_by(func.name) %>%
+                        mutate(true_y = -true_y) %>%
+                        mutate(xrng = max(true_x) - min(true_x),
+                               yrng = max(true_y) - min(true_y)) %>%
+                        mutate(true_x = ifelse(xrng > 0, (true_x - min(true_x))/xrng, 0.5),
+                               true_y = ifelse(yrng > 0, (true_y - min(true_y))/yrng, 0.5)) %>%
+                        ungroup() %>%
+                        left_join(summary_monkey_train0, by = c("func.type")) %>%
+                        filter(!is.na(mean_correct_Monkey_1) & !is.na(mean_correct_Monkey_1)) %>%
+                        arrange(func.type, tpt) 
+
+
+
+r_monkey_train <- cor(summary_monkey_train0$mean_correct_Monkey_1,
+                      summary_monkey_train0$mean_correct_Monkey_2, use="complete.obs")
+
+
+ggplot(data = summary_monkey_train) +
+            geom_abline() +
+            geom_path(aes(x = mean_correct_Monkey_1 + true_x * scale_fn,
+                          y = mean_correct_Monkey_2 + true_y * scale_fn * aspect_ratio,
+                          group = func.name,
+                          color = func.name),
+                      alpha = 1, size = 0.4) +
+            geom_point(aes(x = mean_correct_Monkey_1 + true_x * scale_fn,
+                           y = mean_correct_Monkey_2 + true_y * scale_fn * aspect_ratio,
+                           group = func.name,
+                           color = func.name),
+                       alpha = 0.8, size = 0.7) +
+            geom_point(aes(x = mean_correct_Monkey_1 + true_x * scale_fn,
+                           y = mean_correct_Monkey_2 + true_y * scale_fn * aspect_ratio,
+                           group = func.name),
+                       color = "black", alpha = 0.05, size = 0.1) +
+            annotate("text", x = 0.1, y = 0.9,
+                     label = paste("italic(r) == ", sprintf("%.2f", r_monkey_train)),
+                     size = 6, family = "Georgia", parse = TRUE) +
+            labs(x = "Monkey 1 Accuracy (Train)", y = "Monkey 2 Accuracy (Train)") +
+            coord_cartesian(xlim = c(-0.02, 1.02), ylim = c(-0.02, 1.02)) +
+            scale_color_manual(values = palette_20) +
+            guides(color = "none") +
+            paper_theme
+
+ggsave(paste0(fig_dir, "monkey_corr_train.png"), width=5, height=4, dpi=1000)
+```
 
 ## Accuracy over time 
 ```{r, fig.width=10, fig.height=6}
@@ -261,8 +353,51 @@ xscale <- xmax - xmin
 
 pretty_label <- function(x) sapply(gsub("_", " ", x), capitalize_words)
 
-ggplot(data=df_monkey_train %>% filter(attempt_number == 1), aes(x=scaled_func_examples, y=correct_120, group=subj_id, color=subj_id)) +
+df_seqs <- read.csv(paste0(data_dir, "participants/monkeys_train.csv")) %>%
+      rename(func.name = func_id) %>%
+        group_by(func.name, n) %>%
+         top_n(n=1, wt=r_id) %>%
+          mutate(x_curr = x_curr/screen_w, x_pred = x_pred/screen_w, x_next = x_next/screen_w,
+             y_curr = y_curr/screen_h, y_pred =y_pred/screen_h, y_next = y_next/screen_h)
 
+canonical_seqs <- c("left_to_right.0", "right_to_left.0", "line.0", "line2.0", "polynomial.37",  "sine.0","spiral_in.2", "spiral_out.6", "curly.0",  "circle.1", "changing_sine.5", "zigzag.10",  "alternating_diffs.21", "spiky_circle.49", "repeat_line.4", "repeat_pts.0", "radial.49","polygon.3", "zigzag_increasing.27",   "polygon_spiral.14")
+
+df_canonical_seqs <- df_seqs %>% rowwise() %>% filter(func.name %in% canonical_seqs) %>%
+           ungroup() %>%
+           group_by(func.name) %>%
+           mutate(
+              xrng = max(x_curr, na.rm=TRUE) - min(x_curr, na.rm=TRUE),
+              yrng = max(y_curr, na.rm=TRUE) - min(y_curr, na.rm=TRUE),
+			   true_x = ifelse(xrng > 0, (x_curr - min(x_curr))/xrng, 0.5),
+              true_y = ifelse(yrng > 0, (y_curr - min(y_curr))/yrng, 0.5)
+			)
+
+
+
+bs <- 15
+df_monkey_train$scaled_func_examples <- floor(df_monkey_train$func_examples/bs)*bs
+xmin <- min(df_monkey_train$scaled_func_examples)
+xmax <- max(df_monkey_train$scaled_func_examples)
+xscale <- xmax - xmin
+
+
+ordered_types <- df_canonical_seqs %>%
+  filter(func.name %in% canonical_seqs) %>%
+  distinct(func.name, func.type) %>%
+  arrange(factor(func.name, levels = canonical_seqs)) %>%
+  pull(func.type)
+df_monkey_train$func.type <- factor(
+  df_monkey_train$func.type,
+  levels = ordered_types
+)
+
+df_canonical_seqs$func.type = factor(df_canonical_seqs$func.type, levels=ordered_types)
+
+
+ggplot(data=df_monkey_train %>% filter(attempt_number == 1),
+       aes(x=scaled_func_examples, y=correct_120, group=subj_id, color=subj_id)) +
+        geom_path(data=df_canonical_seqs, aes(x=0+true_x*xscale*0.22, y= 0.8 + true_y * 0.3, group=1), size=0.8, color="black", alpha=0.5) +
+        geom_point(data=df_canonical_seqs, aes(x=0+true_x*xscale*0.22, y= 0.8 + true_y * 0.3, alpha=n, group=1), color="black", size=0.9) +
         stat_summary(fun="mean", geom="line", size=0.5, alpha=0.9) +
         stat_summary(fun="mean", geom="point", size=1) +
         stat_summary(fun="mean", geom="point", color="white", size=0.25) +
@@ -272,15 +407,704 @@ ggplot(data=df_monkey_train %>% filter(attempt_number == 1), aes(x=scaled_func_e
         scale_y_continuous(breaks=c(0,0.5,1)) +
         guides(alpha="none", color="none") +
         coord_cartesian(xlim=c(xmin, xmax+10), ylim=c(0,1.08)) +
-        facet_wrap(~func.type, nrow=4, labeller = labeller(func.type = pretty_label)) +
+        facet_wrap(~func.type, nrow=4) + 
         paper_theme +
         labs(x="Pattern example number", y="Accuracy" ) +
-        
         paper_theme+ theme(legend.title = element_blank(),
                      strip.background = element_blank(),
-                     strip.text = element_text(size=12)) 
+                     strip.text = element_blank()) 
 
 ```
+
+## P(true)
+```{r}
+df_modeled_train <- read.csv(paste0(data_dir, "participants/monkeys_train.csv"))
+screen_w <- df_modeled_train$screen_w[1]
+screen_h <- df_modeled_train$screen_h[1]
+
+n_games <- max(df_modeled_train$game_n)
+
+df_modeled_train$id <- seq.int(1, nrow(df_modeled_train))
+df_modeled_train$func.name <- df_modeled_train$func_id
+df_modeled_train$attempt_number <- ifelse(is.na(df_modeled_train$attempt_number), 0, df_modeled_train$attempt_number)
+
+df_modeled_train <- add_rank_time_column(df_modeled_train)
+
+ranked_days <- df_modeled_train %>%
+  group_by(monkey_name) %>%
+  distinct(ranked_day) %>%
+  arrange(ranked_day) %>%
+  mutate(rank_day = row_number()) %>%
+  ungroup()
+
+
+unique_sequences_df <- df_modeled_train %>%
+  group_by(func.name, n) %>%
+  top_n(n = 1, wt = id) %>%
+  select(func.name, n, x_curr, y_curr) %>%
+  group_by(func.name) %>%
+  arrange(n) %>%
+  mutate(delta_x = x_curr - lag(x_curr),
+        delta_x_2 = lag(x_curr) - lag(x_curr, 2),
+        delta_y = y_curr - lag(y_curr),
+        delta_y_2 = lag(y_curr) - lag(y_curr, 2),
+        delta_x = ifelse(is.na(delta_x), 0, delta_x),
+        delta_y = ifelse(is.na(delta_y), 0, delta_y),
+        delta_x_2 = ifelse(is.na(delta_x_2), delta_x, delta_x_2),
+        delta_y_2 = ifelse(is.na(delta_y_2), delta_y, delta_y_2),
+        x_lin = x_curr + delta_x,
+        y_lin = y_curr + delta_y) %>%
+  select(func.name, n, x_lin, y_lin) %>%  # Only keep necessary columns
+  ungroup()
+df_modeled_train <- df_modeled_train %>%
+      left_join(unique_sequences_df, by = c("func.name", "n")) %>%
+      left_join(ranked_days, by = c("monkey_name", "ranked_day")) %>%
+      rowwise() %>%
+      mutate(func.type = gsub("\\.\\d+$", "", func.name)) %>%
+      #mutate(func.type = gsub("line2", "line", func.type)) %>%
+      mutate(t_id = paste(r_id, func.name, game_n)) %>%
+      group_by(monkey_name) %>%
+      mutate(rank_day = rank_day - min(rank_day)+1) %>%
+      mutate(game_n_total = game_n + (rank_day-1)*n_games) %>%
+      filter((guess_number <= 10) | is.na(guess_number)) %>%
+      group_by(func.type) %>%
+      mutate(min_rank_day = min(rank_day)) %>%
+      ungroup() %>%
+      arrange(min_rank_day) %>%
+      mutate(func.type = factor(func.type, levels = unique(func.type))) %>%
+      arrange(monkey_name, rank_day, game_n, n, attempt_number) %>%
+      mutate(guess_dist_from_curr=((x_pred-x_curr)**2. + (y_pred-y_curr)**2.)**0.5) %>%
+      mutate(correct_80 = 1*(dist_from_true < 80)) %>%
+      mutate(correct_120 = 1*(dist_from_true < 120)) %>%
+      group_by(monkey_name, r_id,  game_n, n) %>%
+      mutate(ever_corr=max(correct)) %>%
+      mutate(ever_corr_80=max(correct_80)) %>%
+      mutate(ever_corr_120=max(correct_120)) %>%
+      group_by(monkey_name, func.name, r_id, game_n) %>%
+      mutate(new_day=(game_n==0)*game_n_total) %>%
+      mutate(true_dist=((x_next-x_curr)**2. + (y_next-y_curr)**2.)**0.5) %>%
+      mutate(x_err=x_pred-x_next) %>%
+      mutate(y_err=y_pred-y_next) %>%
+      mutate(abs_err = ((x_err**2)+(y_err)*2.)**0.5) %>%  
+      mutate(abs_rel_err = abs_err/(true_dist+0.01)) %>%
+      ungroup() %>%
+      arrange(rank_day, game_n, n) %>%
+      group_by(monkey_name, func.type) %>%
+      mutate(func_examples = cumsum(!duplicated(t_id))) %>%
+      ungroup() %>%
+      mutate(func_examples_std = (func_examples - mean(func_examples))/sd(func_examples))
+
+      
+df_modeled_train$func_type_numeric <- as.numeric(as.factor(df_modeled_train$func.type))
+
+df_seqs <- df_modeled_train %>%
+           group_by(func.name, n) %>%
+           top_n(n=1, wt=id) %>%
+           mutate(x_curr = x_curr/screen_w, x_pred = x_pred/screen_w, x_next = x_next/screen_w,
+                  y_curr = y_curr/screen_h, y_pred =y_pred/screen_h, y_next = y_next/screen_h,
+                  x_lin = x_lin/screen_w, y_lin = y_lin/screen_h) %>%
+           mutate(x_lin = x_lin * (x_lin > 0) * (x_lin <= 1) + 1* (x_lin > 1)) %>%
+           mutate(y_lin = y_lin * (y_lin > 0) * (y_lin <= 1) + 1* (y_lin > 1)) 
+
+
+df_canonical_seqs <- df_seqs %>% rowwise() %>% filter(func.name %in% canonical_seqs) %>%
+                      ungroup() %>%
+                      group_by(func.name) %>%
+                      mutate(
+                            xrng = max(x_curr, na.rm=TRUE) - min(x_curr, na.rm=TRUE),
+                           yrng = max(y_curr, na.rm=TRUE) - min(y_curr, na.rm=TRUE)) %>%
+                    mutate(true_x = ifelse(xrng > 0, (x_curr - min(x_curr))/xrng, 0.5),
+                           true_y = ifelse(yrng > 0, (y_curr - min(y_curr))/yrng, 0.5)) 
+                                        
+
+stan_df.1 <- df_modeled_train %>%
+           filter(!is.na(x_pred) & (!is.na(y_pred))) %>%
+           mutate(x_curr = x_curr/screen_w, x_pred = x_pred/screen_w, x_next = x_next/screen_w,
+                  y_curr = y_curr/screen_h, y_pred =y_pred/screen_h, y_next = y_next/screen_h,
+                  x_lin = x_lin/screen_w, y_lin = y_lin/screen_h) %>%
+  
+           mutate(x_lin = x_lin * (x_lin > 0) * (x_lin <= 1) + 1* (x_lin > 1)) %>%
+           mutate(y_lin = y_lin * (y_lin > 0) * (y_lin <= 1) + 1* (y_lin > 1)) %>%
+           mutate(is_lin = ifelse(n < 1, NA, 1*(abs(x_lin - x_next) + abs(y_lin - y_next) < 0.001))) %>%
+           filter(monkey_name == "Monkey 1")  %>%
+           group_by(func.type) %>%
+           mutate(p_func_linear = mean(is_lin, na.rm=TRUE)) %>%
+           mutate(linear_func = min(is_lin, na.rm=TRUE)) %>%
+           mutate(screen_ratio=screen_h/screen_w) 
+
+stan_data.1 <- list(
+  N = length(stan_df.1$x_pred),
+  x_pred = stan_df.1$x_pred,
+  y_pred = stan_df.1$y_pred,
+  x_next = stan_df.1$x_next,
+  y_next = stan_df.1$y_next,
+  x_curr = stan_df.1$x_curr,
+  y_curr = stan_df.1$y_curr,
+  x_lin = stan_df.1$x_lin,
+  y_lin = stan_df.1$y_lin,
+  n_func_types = length(unique(stan_df.1$func.type)),
+  func_type = stan_df.1$func_type_numeric,
+  n_seen = stan_df.1$func_examples_std
+)
+
+stan_df.2 <- df_modeled_train %>%
+           filter(!is.na(x_pred) & (!is.na(y_pred))) %>%
+           mutate(x_curr = x_curr/screen_w, x_pred = x_pred/screen_w, x_next = x_next/screen_w,
+                  y_curr = y_curr/screen_h, y_pred =y_pred/screen_h, y_next = y_next/screen_h,
+                  x_lin = x_lin/screen_w, y_lin = y_lin/screen_h) %>%
+  
+           mutate(x_lin = x_lin * (x_lin > 0) * (x_lin <= 1) + 1* (x_lin > 1)) %>%
+            mutate(y_lin = y_lin * (y_lin > 0) * (y_lin <= 1) + 1* (y_lin > 1)) %>%
+          mutate(is_lin = ifelse(n < 1, NA, 1*(abs(x_lin - x_next) + abs(y_lin - y_next) < 0.001))) %>%
+           filter(monkey_name == "Monkey 2")  %>%
+            group_by(func.type) %>%
+            mutate(p_func_linear = mean(is_lin, na.rm=TRUE)) %>%
+            mutate(linear_func = min(is_lin, na.rm=TRUE)) %>%
+          mutate(screen_ratio=screen_h/screen_w) 
+
+stan_data.2 <- list(
+  N = length(stan_df.2$x_pred),
+  x_pred = stan_df.2$x_pred,
+  y_pred = stan_df.2$y_pred,
+  x_next = stan_df.2$x_next,
+  y_next = stan_df.2$y_next,
+  x_curr = stan_df.2$x_curr,
+  y_curr = stan_df.2$y_curr,
+  x_lin = stan_df.2$x_lin,
+  y_lin = stan_df.2$y_lin,
+  n_func_types = length(unique(stan_df.2$func.type)),
+  func_type = stan_df.2$func_type_numeric,
+  n_seen = stan_df.2$func_examples_std
+)
+
+
+f_get_func_effect <- function(pm, func_type_numeric, which_effect) {
+  if (which_effect == "icpt") {
+    return(pm[[paste0("beta_func_type.", func_type_numeric[1])]])
+  } else if (which_effect == "slope") {
+    return(pm[[paste0("beta_func_type_seen.", func_type_numeric[1])]])
+  } else if (which_effect == "asymptote") {
+    return(pm[[paste0("max_p.", func_type_numeric[1])]])
+  }
+  else {
+    stop("Unknown effect...")
+  }
+}
+inv_logit <- function(x) { exp(x)/(1+exp(x))}
+
+fit.1 <- readRDS(paste0(preprocessed_data_dir, "/inferred_accuracy/stan_fits/Monkey_1_train.rds"))
+
+posterior_samples_lst.1 <- rstan::extract(fit.1)
+posterior_samples.1 <- as.data.frame(posterior_samples_lst.1)
+
+posterior_sample_means.1 <- summarize(posterior_samples.1)
+posterior_means.1 <- posterior_samples.1 %>%
+    summarize(across(everything(), mean))
+
+
+stan_df.1$use_true_icpt <- posterior_means.1$use_true_icpt
+stan_df.1$beta_seen <- posterior_means.1$beta_seen
+stan_df.1$p_prev <- posterior_means.1$p_rand_strategy.1
+stan_df.1$p_rand <- posterior_means.1$p_rand_strategy.2
+stan_df.1$sd_motor <- posterior_means.1$sd_motor
+
+stan_df.1 <- stan_df.1 %>%
+  group_by(func.type) %>%
+  mutate(
+    beta_func_type = f_get_func_effect(posterior_means.1, func_type_numeric, "icpt"),
+    beta_func_type_seen = f_get_func_effect(posterior_means.1, func_type_numeric, "slope"),
+    max_p =  f_get_func_effect(posterior_means.1, func_type_numeric, "asymptote"))
+
+stan_df.1 <- stan_df.1 %>%
+  group_by(func.type) %>%
+  mutate(
+    beta_func_type = f_get_func_effect(posterior_means.1, func_type_numeric, "icpt"),
+    beta_func_type_seen = f_get_func_effect(posterior_means.1, func_type_numeric, "slope"),
+    max_p =  f_get_func_effect(posterior_means.1, func_type_numeric, "asymptote"),
+    p_true =  max_p*inv_logit(beta_func_type_seen * func_examples_std + beta_func_type),
+    p_prev = (1 - p_true) * posterior_means.1[[paste0("p_rand_strategy.", func_type_numeric[1], ".1")]],
+    p_rand = (1 - p_true) * posterior_means.1[[paste0("p_rand_strategy.", func_type_numeric[1], ".2")]]
+)
+
+fit.2 <- readRDS(paste0(preprocessed_data_dir, "/inferred_accuracy/stan_fits/Monkey_2_train.rds"))
+
+posterior_samples_lst.2 <- rstan::extract(fit.2)
+posterior_samples.2 <- as.data.frame(posterior_samples_lst.2)
+
+posterior_sample_means.2 <- summarize(posterior_samples.2)
+posterior_means.2 <- posterior_samples.2 %>%
+  summarize(across(everything(), mean))
+
+stan_df.2$use_true_icpt <- posterior_means.2$use_true_icpt
+stan_df.2$beta_seen <- posterior_means.2$beta_seen
+stan_df.2$p_prev <- posterior_means.2$p_rand_strategy.1
+stan_df.2$p_rand <- posterior_means.2$p_rand_strategy.2
+stan_df.2$sd_motor <- posterior_means.2$sd_motor
+
+stan_df.2 <- stan_df.2 %>%
+  group_by(func.type) %>%
+  mutate(
+    beta_func_type = f_get_func_effect(posterior_means.2, func_type_numeric, "icpt"),
+    beta_func_type_seen = f_get_func_effect(posterior_means.2, func_type_numeric, "slope"),
+    max_p =  f_get_func_effect(posterior_means.2, func_type_numeric, "asymptote"),
+    p_true = max_p * inv_logit(beta_func_type_seen * func_examples_std + beta_func_type),
+    p_prev = (1 - p_true) * posterior_means.2[[paste0("p_rand_strategy.", func_type_numeric[1], ".1")]],
+    p_rand = (1 - p_true) * posterior_means.2[[paste0("p_rand_strategy.", func_type_numeric[1], ".2")]],
+  )
+
+labels <- as.character(unique(stan_df.1$func.type))
+names(labels) <- unique(stan_df.1$func.type)
+labels <- gsub("\\bline2\\b", "line_left", labels)
+labels <- gsub("\\bline\\b", "line_right", labels)
+labels <- gsub("repeat_pts", "repeating_points", labels)
+labels <- gsub("repeat_line", "repeating_line", labels)
+labels <- gsub("alternating_diffs", "alternation", labels)
+labels <- gsub("zigzag_increasing", "increasing_zigzag", labels)
+labels <- gsub("polygon_spiral", "increasing_polygon", labels)
+labels <- gsub("_", " ", labels)
+labels <- sapply(labels, capitalize_words)
+
+# Fix the pivot_longer operation to handle the correct naming pattern
+posterior_samples.1.long <- posterior_samples.1 %>%
+  # First pivot the main parameters
+  pivot_longer(
+    cols = c(starts_with("beta_func_type"), starts_with("max_p")),
+    names_to = c(".value", "func_type"),
+    names_pattern = "(.*)\\.(\\d+)"
+  ) %>%
+  # Then add the p_rand_strategy columns manually
+  bind_cols(
+    # Extract p_rand_strategy.X.1 columns (strategy 1)
+    posterior_samples.1 %>%
+      select(matches("p_rand_strategy\\.\\d+\\.1")) %>%
+      pivot_longer(
+        cols = everything(),
+        names_to = "func_type_temp",
+        values_to = "p_rand_strategy_1",
+        names_pattern = "p_rand_strategy\\.(\\d+)\\.1"
+      ) %>%
+      select(p_rand_strategy_1),
+    
+    # Extract p_rand_strategy.X.2 columns (strategy 2)  
+    posterior_samples.1 %>%
+      select(matches("p_rand_strategy\\.\\d+\\.2")) %>%
+      pivot_longer(
+        cols = everything(),
+        names_to = "func_type_temp",
+        values_to = "p_rand_strategy_2", 
+        names_pattern = "p_rand_strategy\\.(\\d+)\\.2"
+      ) %>%
+      select(p_rand_strategy_2)
+  )
+
+posterior_samples.2.long <- posterior_samples.2 %>%
+  # First pivot the main parameters
+  pivot_longer(
+    cols = c(starts_with("beta_func_type"), starts_with("max_p")),
+    names_to = c(".value", "func_type"),
+    names_pattern = "(.*)\\.(\\d+)"
+  ) %>%
+  # Then add the p_rand_strategy columns manually
+  bind_cols(
+    # Extract p_rand_strategy.X.1 columns (strategy 1)
+    posterior_samples.2 %>%
+      select(matches("p_rand_strategy\\.\\d+\\.1")) %>%
+      pivot_longer(
+        cols = everything(),
+        names_to = "func_type_temp",
+        values_to = "p_rand_strategy_1",
+        names_pattern = "p_rand_strategy\\.(\\d+)\\.1"
+      ) %>%
+      select(p_rand_strategy_1),
+    # Extract p_rand_strategy.X.2 columns (strategy 2)  
+    posterior_samples.2 %>%
+      select(matches("p_rand_strategy\\.\\d+\\.2")) %>%
+      pivot_longer(
+        cols = everything(),
+        names_to = "func_type_temp",
+        values_to = "p_rand_strategy_2", 
+        names_pattern = "p_rand_strategy\\.(\\d+)\\.2"
+      ) %>%
+      select(p_rand_strategy_2)
+  )
+
+posterior_samples.1.long$func.type <- unique(df_modeled_train$func.type)[as.numeric(posterior_samples.1.long$func_type)]
+posterior_samples.2.long$func.type <- unique(df_modeled_train$func.type)[as.numeric(posterior_samples.2.long$func_type)]
+
+slope <- sd(df_modeled_train$func_examples)
+intercept <- mean(df_modeled_train$func_examples)
+func_examples_std_vals <- seq(min(df_modeled_train$func_examples_std), max(df_modeled_train$func_examples_std), length.out=50)
+
+expanded_func_examples_1 <- expand.grid(
+  func_examples_std = func_examples_std_vals,
+  sample = 1:nrow(posterior_samples.1.long)
+) %>%
+  mutate(beta_func_type = posterior_samples.1.long$beta_func_type[sample],
+         beta_func_type_seen = posterior_samples.1.long$beta_func_type_seen[sample],
+         max_p = posterior_samples.1.long$max_p[sample],
+         p_prev = posterior_samples.1.long$p_rand_strategy_1[sample],  
+         p_rand = posterior_samples.1.long$p_rand_strategy_2[sample],  
+         func.type = posterior_samples.1.long$func.type[sample]) %>%
+  
+  mutate(p_true = max_p * plogis(beta_func_type_seen * func_examples_std + beta_func_type)) %>%
+  mutate(p_prev=(1-p_true)*p_prev, p_rand = (1-p_true)*p_rand) %>%
+  mutate(func_examples = func_examples_std * slope + intercept) %>%
+  
+  left_join(stan_df.1 %>% select(func.type, linear_func, p_func_linear) %>% distinct(), by = "func.type")
+
+expanded_func_examples_2 <- expand.grid(
+  func_examples_std = func_examples_std_vals,
+  sample = 1:nrow(posterior_samples.2.long)
+) %>%
+  mutate(beta_func_type = posterior_samples.2.long$beta_func_type[sample],
+         beta_func_type_seen = posterior_samples.2.long$beta_func_type_seen[sample],
+         max_p = posterior_samples.2.long$max_p[sample],  # Added max_p
+         p_prev = posterior_samples.2.long$p_rand_strategy_1[sample],  
+         p_rand = posterior_samples.2.long$p_rand_strategy_2[sample],  
+         func.type = posterior_samples.2.long$func.type[sample]) %>%
+  
+  mutate(p_true = max_p * plogis(beta_func_type_seen * func_examples_std + beta_func_type)) %>%
+  mutate(p_prev=(1-p_true)*p_prev, p_rand = (1-p_true)*p_rand) %>%
+  mutate(func_examples = func_examples_std * slope + intercept) %>%
+  
+  left_join(stan_df.2 %>% select(func.type, linear_func, p_func_linear) %>% distinct(), by = "func.type")
+
+posterior_summary_1 <- expanded_func_examples_1 %>%
+  group_by(func.type, func_examples_std, func_examples) %>%
+  summarize(p_true_mean = mean(p_true),
+            p_true_lower = quantile(p_true, probs = 0.025),
+            p_true_upper = quantile(p_true, probs = 0.975))
+
+posterior_summary_2 <- expanded_func_examples_2 %>%
+  group_by(func.type, func_examples_std, func_examples) %>%
+  summarize(p_true_mean = mean(p_true),
+            p_true_lower = quantile(p_true, probs = 0.025),
+            p_true_upper = quantile(p_true, probs = 0.975))
+
+
+```
+
+```{r, fig.width=9, fig.height=6}
+xmin <- min(df_modeled_train$func_examples)
+xmax <- max(df_modeled_train$func_examples)
+xscale <- xmax - xmin
+ggplot() +
+    geom_line(data = posterior_summary_1, aes(x = func_examples, y = p_true_mean, color = "Monkey A")) +
+    geom_ribbon(data = posterior_summary_1, aes(x = func_examples, ymin = p_true_lower, ymax = p_true_upper, fill= "Monkey A"), alpha = 0.2) +
+    geom_line(data = posterior_summary_2, aes(x = func_examples, y = p_true_mean, color = "Monkey B")) +
+    geom_ribbon(data = posterior_summary_2, aes(x = func_examples, ymin = p_true_lower, ymax = p_true_upper, fill="Monkey B"), alpha = 0.2) +
+    geom_path(data=df_canonical_seqs, aes(x=true_x*xscale*0.2, y= 0.8 + true_y * 0.3), size=0.8, color="black", alpha=0.5) +
+    geom_point(data=df_canonical_seqs, aes(x=true_x*xscale*0.2, y= 0.8 + true_y * 0.3, alpha=n), color="black", size=0.9) +
+    scale_color_manual(values = c("dodgerblue", "orange"), labels=c("Monkey 1", "Monkey 2")) +
+    scale_fill_manual(values = c("dodgerblue", "orange")) +
+    scale_x_continuous(breaks=c(0,100, 200)) +
+    scale_y_continuous(breaks=c(0,0.5,1)) +
+    guides(alpha="none", fill="none") +
+    coord_cartesian(xlim=c(xmin, xmax+10), ylim=c(0,1.08)) +
+
+    facet_wrap(~func.type, nrow = 4, labeller = labeller(func.type = labels)) +
+    paper_theme +         
+    paper_theme+ theme(legend.title = element_blank(),
+                   strip.background = element_blank(),
+                   strip.text = element_blank(), legend.position="top") +
+    labs(x = "Pattern examples", y = "Modeled accuracy")
+
+#ggsave(paste0(fig_dir, "modeled_accuracy_curves_training.png"), width=9, height=6, dpi=400)
+
+
+```
+
+```{r, fig.width=5, fig.height=4}
+pattern_overlay_data <- df_canonical_seqs %>%
+  group_by(func.name) %>%
+  mutate(
+    func.type = str_replace(func.name, "\\.\\d+$", "")
+  ) %>%
+  select(func.name, func.type, n, true_x, true_y)
+
+linear_monkey_comparison <- rbind(
+  stan_df.1 %>%
+    mutate(lin_dist = sqrt((x_lin - x_next)^2 + (y_lin - y_next)^2) * screen_w) %>%
+    mutate(linear_success_120 = as.numeric(lin_dist < 120)) %>%
+    group_by(func.type) %>%
+    summarise(
+      p_linear_success = mean(linear_success_120, na.rm = TRUE),
+      p_monkey_success = mean(correct_120, na.rm = TRUE),
+      max_p = mean(max_p, na.rm=TRUE),
+      monkey = "Monkey_1",
+      .groups = 'drop'
+    ),
+  
+  stan_df.2 %>%
+    mutate(lin_dist = sqrt((x_lin - x_next)^2 + (y_lin - y_next)^2) * screen_w) %>%
+    mutate(linear_success_120 = as.numeric(lin_dist < 120)) %>%
+    group_by(func.type) %>%
+    summarise(
+      p_linear_success = mean(linear_success_120, na.rm = TRUE),
+      p_monkey_success = mean(correct_120, na.rm = TRUE),
+      max_p = mean(max_p, na.rm=TRUE),
+
+      monkey = "Monkey_2",
+      .groups = 'drop'
+    )
+)
+
+pattern_shapes <- pattern_overlay_data %>%
+  filter(func.name %in% canonical_seqs) %>%
+  group_by(func.type) %>%
+  slice(1) %>%
+  select(func.type, func.name) %>%
+  left_join(pattern_overlay_data, by = c("func.type", "func.name"))
+
+plot_data <- linear_monkey_comparison %>%
+  left_join(pattern_shapes, by = "func.type")
+
+scale_fn <- 0.07 
+aspect_ratio <- 1.2  
+
+end_training_posterior <- rbind(
+  stan_df.1 %>%
+    group_by(func.type) %>%
+    filter(func_examples == max(func_examples)) %>%
+    slice(1) %>%
+    select(func.type, p_true, max_p) %>%
+    mutate(monkey = "Monkey_1"),
+  
+  stan_df.2 %>%
+    group_by(func.type) %>%
+    filter(func_examples == max(func_examples)) %>%
+    slice(1) %>%
+    select(func.type, p_true, max_p) %>%
+    mutate(monkey = "Monkey_2")
+) %>%
+  ungroup()
+
+posterior_plot_data <- linear_monkey_comparison %>%
+  select(func.type, p_linear_success, monkey) %>%
+  left_join(end_training_posterior, by = c("func.type", "monkey")) %>%
+  left_join(pattern_shapes, by = "func.type")
+
+Monkey_1_posterior_data <- posterior_plot_data[posterior_plot_data$monkey == "Monkey_1" & !is.na(posterior_plot_data$p_linear_success), ]
+Monkey_2_posterior_data <- posterior_plot_data[posterior_plot_data$monkey == "Monkey_2" & !is.na(posterior_plot_data$p_linear_success), ]
+
+r_Monkey_1_posterior <- cor(Monkey_1_posterior_data$p_linear_success, Monkey_1_posterior_data$p_true, use = "complete.obs")
+r_Monkey_2_posterior <- cor(Monkey_2_posterior_data$p_linear_success, Monkey_2_posterior_data$p_true, use = "complete.obs")
+
+ggplot(data = Monkey_1_posterior_data) + 
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", alpha = 0.5) +
+  geom_path(aes(x = p_linear_success + true_x * scale_fn, 
+                y = p_true + true_y * scale_fn * aspect_ratio, 
+                group = func.name, color = func.type), 
+            alpha = 0.7, size = 0.4) +
+  geom_point(aes(x = p_linear_success + true_x * scale_fn, 
+                 y = p_true + true_y * scale_fn * aspect_ratio, 
+                 group = func.name, color = func.type), 
+             alpha = 0.8, size = 0.3) +
+  geom_point(aes(x = p_linear_success + true_x * scale_fn, 
+                 y = p_true + true_y * scale_fn * aspect_ratio, 
+                 group = func.name), 
+             color = "black", alpha = 0.05, size = 0.1) +
+  annotate("text", x = 0.12, y = 0.9, 
+           label = paste("R^2 == ", sprintf("%.2f", r_Monkey_1_posterior^2)), 
+           size = 6, family = "Georgia", parse = TRUE) +
+  labs(x =  "P(approximately linear)",  
+       y = "Final accuracy (inferred)",
+       title = "Monkey 1") +
+  coord_cartesian(xlim = c(-0.02, 1.03), ylim = c(-0.02, 1.02)) +
+  guides(color = "none") +
+  paper_theme + theme(plot.title = element_text(hjust = 0.5, size=16))
+
+
+ggplot(data = Monkey_2_posterior_data) + 
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", alpha = 0.5) +
+  geom_path(aes(x = p_linear_success + true_x * scale_fn, 
+                y = p_true + true_y * scale_fn * aspect_ratio, 
+                group = func.name, color = func.type), 
+            alpha = 0.7, size = 0.4) +
+  geom_point(aes(x = p_linear_success + true_x * scale_fn, 
+                 y = p_true + true_y * scale_fn * aspect_ratio, 
+                 group = func.name, color = func.type), 
+             alpha = 0.8, size = 0.3) +
+  geom_point(aes(x = p_linear_success + true_x * scale_fn, 
+                 y = p_true + true_y * scale_fn * aspect_ratio, 
+                 group = func.name), 
+             color = "black", alpha = 0.05, size = 0.1) +
+  annotate("text", x = 0.12, y = 0.9, 
+           label = paste("R^2 == ", sprintf("%.2f", r_Monkey_2_posterior^2)), 
+           size = 6, family = "Georgia", parse = TRUE) +
+  labs(x = "P(approximately linear)", 
+       y = "Final accuracy (inferred)",
+       title = "Monkey 2") +
+  coord_cartesian(xlim = c(-0.02, 1.03), ylim = c(-0.02, 1.02)) +
+  guides(color = "none") +
+  paper_theme + theme(plot.title = element_text(hjust = 0.5, size=16))
+
+```
+
+```{r}
+
+monkey_final_performance <- rbind(
+  stan_df.1 %>%
+    group_by(func.type) %>%
+    filter(func_examples == max(func_examples)) %>%
+    slice(1) %>%
+    select(func.type, p_true) %>%
+    mutate(monkey = "Monkey_1"),
+  
+  stan_df.2 %>%
+    group_by(func.type) %>%
+    filter(func_examples == max(func_examples)) %>%
+    slice(1) %>%
+    select(func.type, p_true) %>%
+    mutate(monkey = "Monkey_2")
+) %>%
+  ungroup()
+
+monkey_observed_performance <- rbind(
+  stan_df.1 %>%
+    group_by(func.type) %>%
+    summarise(
+      observed_accuracy = mean(correct_120, na.rm = TRUE),
+      monkey = "Monkey_1",
+      .groups = 'drop'
+    ),
+  
+  stan_df.2 %>%
+    group_by(func.type) %>%
+    summarise(
+      observed_accuracy = mean(correct_120, na.rm = TRUE),
+      monkey = "Monkey_2", 
+      .groups = 'drop'
+    )
+)
+
+linear_success <- linear_monkey_comparison %>%
+  select(func.type, p_linear_success, monkey)
+
+performance_comparison <- monkey_final_performance %>%
+  left_join(monkey_observed_performance, by = c("func.type", "monkey")) %>%
+  left_join(linear_success, by = c("func.type", "monkey")) %>%
+  mutate(
+    modeled_advantage = p_true - p_linear_success,
+    observed_advantage = observed_accuracy - p_linear_success,
+    
+    modeled_effect_size = modeled_advantage / sqrt(p_linear_success * (1 - p_linear_success)),
+    observed_effect_size = observed_advantage / sqrt(p_linear_success * (1 - p_linear_success))
+  )
+
+end_training_posterior_samples <- rbind(
+  # For Monkey_1
+  expanded_func_examples_1 %>%
+    filter(abs(func_examples_std - max(df_modeled_train$func_examples_std)) < 0.01) %>%  # End of training
+    group_by(func.type) %>%
+    slice(1:min(1000, n())) %>%  # Sample up to 1000 for each pattern
+    select(func.type, p_true) %>%
+    mutate(monkey = "Monkey_1"),
+  
+  expanded_func_examples_2 %>%
+    filter(abs(func_examples_std - max(df_modeled_train$func_examples_std)) < 0.01) %>%  
+    group_by(func.type) %>%
+    slice(1:min(1000, n())) %>%  
+    select(func.type, p_true) %>%
+    mutate(monkey = "Monkey_2")
+)
+
+advantage_probabilities <- end_training_posterior_samples %>%
+  left_join(linear_success, by = c("func.type", "monkey")) %>%
+  mutate(exceeds_linear = p_true > p_linear_success) %>%
+  group_by(func.type, monkey, p_linear_success) %>%
+  summarise(
+    prob_exceeds_linear = mean(exceeds_linear),
+    mean_p_true = mean(p_true),
+    .groups = 'drop'
+  )
+
+cat("MONKEY PERFORMANCE vs LINEAR EXTRAPOLATION STRATEGY\n")
+cat("===================================================\n\n")
+
+cat("Testing whether monkeys performed better than pure linear extrapolation...\n\n")
+
+# Test each monkey
+for(m in c("Monkey_1", "Monkey_2")) {
+  monkey_name <- ifelse(m == "Monkey_1", "Monkey 1", "Monkey 2")
+  cat(paste(monkey_name, "\n"))
+  cat(paste(rep("=", nchar(monkey_name)), collapse = ""), "\n")
+  
+  monkey_data <- performance_comparison[performance_comparison$monkey == m, ]
+  monkey_probs <- advantage_probabilities[advantage_probabilities$monkey == m, ]
+  
+  monkey_analysis <- monkey_data %>%
+    left_join(monkey_probs, by = c("func.type", "monkey", "p_linear_success"))
+  
+  
+  monkey_analysis <- monkey_analysis %>%
+    arrange(desc(prob_exceeds_linear))
+  
+  for(i in 1:nrow(monkey_analysis)) {
+    pattern <- monkey_analysis$func.type[i]
+    linear_perf <- monkey_analysis$p_linear_success[i]
+    modeled_perf <- monkey_analysis$p_true[i]
+    observed_perf <- monkey_analysis$observed_accuracy[i]
+    prob_better <- monkey_analysis$prob_exceeds_linear[i]
+    
+    significance <- ifelse(prob_better > 0.95, "***", 
+                          ifelse(prob_better > 0.90, "**", 
+                                ifelse(prob_better > 0.80, "*", "")))
+    
+    cat(sprintf("%-20s: Linear=%.3f, Modeled=%.3f, Observed=%.3f, P(better)=%.3f %s\n",
+                pattern, linear_perf, modeled_perf, observed_perf, prob_better, significance))
+  }
+  cat("\n")
+}
+
+cat("SUMMARY ANALYSIS\n")
+cat("================\n\n")
+
+summary_by_monkey <- performance_comparison %>%
+  left_join(advantage_probabilities, by = c("func.type", "monkey", "p_linear_success")) %>%
+  group_by(monkey) %>%
+  summarise(
+    n_patterns = n(),
+    
+    n_prob_better_80 = sum(prob_exceeds_linear > 0.80, na.rm = TRUE),
+    n_prob_better_90 = sum(prob_exceeds_linear > 0.90, na.rm = TRUE), 
+    n_prob_better_95 = sum(prob_exceeds_linear > 0.95, na.rm = TRUE),
+    
+    mean_modeled_advantage = mean(modeled_advantage, na.rm = TRUE),
+    mean_observed_advantage = mean(observed_advantage, na.rm = TRUE),
+    
+    mean_modeled_effect_size = mean(modeled_effect_size, na.rm = TRUE),
+    mean_observed_effect_size = mean(observed_effect_size, na.rm = TRUE),
+    
+    .groups = 'drop'
+  )
+
+for(i in 1:nrow(summary_by_monkey)) {
+  m <- summary_by_monkey$monkey[i]
+  monkey_name <- ifelse(m == "Monkey_1", "Monkey 1", "Monkey 2")
+  
+  cat(monkey_name, ":\n")
+  cat(sprintf("  Total patterns analyzed: %d\n", summary_by_monkey$n_patterns[i]))
+  cat(sprintf("  Patterns likely better than linear (P>0.80): %d (%.1f%%)\n", 
+              summary_by_monkey$n_prob_better_80[i],
+              100 * summary_by_monkey$n_prob_better_80[i] / summary_by_monkey$n_patterns[i]))
+  cat(sprintf("  Patterns strongly better than linear (P>0.90): %d (%.1f%%)\n", 
+              summary_by_monkey$n_prob_better_90[i],
+              100 * summary_by_monkey$n_prob_better_90[i] / summary_by_monkey$n_patterns[i]))
+  cat(sprintf("  Patterns very strongly better than linear (P>0.95): %d (%.1f%%)\n", 
+              summary_by_monkey$n_prob_better_95[i],
+              100 * summary_by_monkey$n_prob_better_95[i] / summary_by_monkey$n_patterns[i]))
+  cat(sprintf("  Average modeled advantage over linear: %.3f\n", summary_by_monkey$mean_modeled_advantage[i]))
+  cat(sprintf("  Average observed advantage over linear: %.3f\n", summary_by_monkey$mean_observed_advantage[i]))
+  cat(sprintf("  Average modeled effect size: %.3f\n", summary_by_monkey$mean_modeled_effect_size[i]))
+  cat("\n")
+}
+
+
+
+```
+
+
 
 # Test sequences, raw accuracy
 ## Load data
@@ -291,21 +1115,6 @@ df_monkey_test <- preprocess_df_monkey(read.csv(paste0(data_dir,  "participants/
 
 df_all <- bind_rows(df_adult, df_monkey_test, df_kid)
 ```
-
-## Accuracy of uniform sampling strategy
-```{r}
-acc_df <- df_kid %>% distinct(func.name, acceptance_dist)
-
-tmp <- df_monkey_test %>%
-       merge(acc_df, by="func.name") %>%
-       distinct(func.name, min_x, max_x, min_y, max_y, acceptance_dist) %>%
-       mutate(acceptance_area = pi*(acceptance_dist^2),
-              screen_area = (max_x-min_x)*(max_y-min_y),
-              p_accept = acceptance_area / screen_area)
-
-
-```
-
 
 ## Plot stimuli
 ```{r}
@@ -382,6 +1191,21 @@ p <- grid.arrange(grobs=plots, nrow=3)
 ggsave(paste0(fig_dir, "stimuli.png"), p, width=8, height=3)
 ```
 
+## Accuracy of uniform sampling strategy
+```{r}
+acc_df <- df_kid %>% distinct(func.name, acceptance_dist)
+
+print(df_monkey_test %>%
+       merge(acc_df, by="func.name") %>%
+       distinct(func.name, min_x, max_x, min_y, max_y, acceptance_dist) %>%
+       mutate(acceptance_area = pi*(acceptance_dist^2),
+              screen_area = (max_x-min_x)*(max_y-min_y),
+              p_accept = acceptance_area / screen_area) %>%
+      pull(p_accept) %>%
+      unique())
+
+```
+
 ## Overall and final timepoint accuracy by agent 
 ```{r}
 mean_df <- df_all %>%
@@ -453,8 +1277,6 @@ for (x in 3:7) {
 ```
 
 ```{r, fig.width=15, fig.height=3.5}
-
-
 df_path <- df_stim %>%
   rename(func.name = seq_id) %>%
   filter(tpt < 15) %>%
@@ -532,8 +1354,11 @@ ggplot(data = age_comparison) +
 df_path_hm <- df_path
 
 monkey_acc <- df_monkey_test %>%
-  group_by(func.name, subj_id) %>%
+  group_by(func.name, subj_id, tpt) %>%
   summarize(acc = mean(correct, na.rm = TRUE), .groups = "drop") %>%
+  
+  group_by(func.name, subj_id) %>%
+  summarize(acc = mean(acc, na.rm = TRUE), .groups = "drop") %>%
   group_by(func.name) %>%
   summarize(mean_correct_monkey = mean(acc, na.rm = TRUE), .groups = "drop")
 
@@ -604,8 +1429,82 @@ ggplot(data = human_vs_monkey) +
                       axis.title.y=element_text(size=21),
                       strip.text=element_text(size=19)) 
 
-# ggsave(paste0(fig_dir, "human_vs_monkeys.png"), dpi=400, width=17, height=3.5)
+ggsave(paste0(fig_dir, "human_vs_monkeys.png"), dpi=400, width=17, height=3.5)
 ```
+
+## Relationship between humans and monkeys
+```{r}
+df_comp <- bind_rows(df_adult, df_monkey_test, df_kid %>% mutate(agent=paste0(as.character(age), "yo"))) %>%
+           group_by(agent, subj_id, func.name) %>%
+           summarize(accuracy=mean(correct, na.rm=T), .groups="drop") %>%
+           group_by(agent, func.name) %>%
+           summarize(accuracy=mean(accuracy, na.rm=T), .groups="drop") %>%
+           pivot_wider(names_from="agent", values_from=accuracy) %>%
+           na.omit()
+
+print("Adults")
+print(cor.test(df_comp$Monkeys, df_comp$Adults, method="pearson"))
+for (x in 3:7) {
+  print(paste0("age ", x))
+  print(cor.test(df_comp$Monkeys, df_comp[[paste0(as.character(x), "yo")]], method="pearson"))
+}
+
+```
+## Correlation matrix
+```{r}
+cor_matrix <- cor(df_comp %>% select(-func.name), use = "complete.obs")
+
+cor_long_all <- as.data.frame(cor_matrix) %>%
+  mutate(group1 = rownames(cor_matrix)) %>%
+  pivot_longer(
+    cols = -group1,
+    names_to = "group2",
+    values_to = "correlation"
+  )
+
+group_levels <- c("Monkeys","3yo", "4yo", "5yo", "6yo", "7yo", "Adults")
+
+cor_long_filtered <- cor_long_all %>%
+  mutate(
+    group1_num = match(group1, group_levels),
+    group2_num = match(group2, group_levels)
+  ) %>%
+  mutate(
+    group1 = factor(group1, levels = group_levels),
+    group2 = factor(group2, levels = rev(group_levels))
+  )
+
+ggplot(cor_long_filtered, aes(x = group2, y = group1, fill = correlation)) +
+  geom_tile() +
+  geom_text(aes(label = sprintf("%.2f", correlation)),
+  color = "black", size = 3, family = "Georgia") +
+
+  scale_fill_gradientn(colors=c("white", "#F0E3E1", "#E6A5B7", "#C40222", "darkred"), limits=c(0,1), breaks=c(0,0.5,1)) +
+  #scale_fill_gradientn(colors=c("white","darkred"), limits=c(0,1), breaks=c(0,0.5,1)) +
+
+  scale_x_discrete(limits = group_levels, drop = FALSE) +
+  scale_y_discrete(limits = rev(group_levels), drop = FALSE) +
+  labs(x = "", y = "", fill = "Correlation") +
+  paper_theme +
+  theme(
+    axis.title.x=element_blank(),
+    axis.title.y=element_blank(),
+    axis.line.x=element_blank(),
+    axis.line.y=element_blank(),
+    axis.line=element_blank(),
+   # legend.position = c(0.85,0.77),
+    legend.title=element_text(vjust=1, size=15),
+    legend.text=element_text(size=12),
+    panel.grid = element_blank(),
+    panel.border = element_blank(),
+    axis.text.x  = element_text(size = 16, color="black", family="Georgia", angle=45, hjust=0.9),
+    axis.text.y  = element_text(size = 16, color="black", family="Georgia")
+
+  )
+
+ggsave(paste0(fig_dir, "correlation_matrix.png"), width=6,height=4.4,dpi=1000)
+```
+
 
 ## Monkey test accuracy by individual
 ```{r}
@@ -623,26 +1522,59 @@ func_accuracy_df <- mean_df %>% group_by(subj_id, func.name) %>% summarize(accur
 ## Relationship between monkeys
 ```{r}
 print(cor.test(func_accuracy_df$"Monkey 1", func_accuracy_df$"Monkey 2", method="pearson"))
+
+summary_monkey_test0 <- df_monkey_test %>%
+                       group_by(func.name, tpt, true_x, true_y, subj_id) %>%
+                       summarize(correct_monkey = mean(correct, na.rm=TRUE)) %>%
+                       pivot_wider(id_cols = c(func.name,  tpt, true_x, true_y),
+                                   names_from = subj_id,
+                                   values_from = correct_monkey,
+                                   names_prefix = "correct_monkey_") %>%
+              ungroup() %>%
+              group_by(func.name) %>%
+              summarize(mean_correct_Monkey_1 = mean(.data[["correct_monkey_Monkey 1"]], na.rm=TRUE),
+                       mean_correct_Monkey_2 = mean(.data[["correct_monkey_Monkey 2"]], na.rm=TRUE)) 
+
+
+summary_monkey_test <- read.csv(paste0(data_dir, "participants/kids.csv")) %>%
+                        rename(func.name=seq_id) %>%
+                        #rename(tpt = n, true_x=x_next, true_y=y_next, prev_x=x_curr, prev_y=y_curr, pred_x=x_pred,
+                        #subj_id = monkey_name, pred_y = y_pred, func.name = func_id) %>%
+                        distinct(func.name, tpt, true_x, true_y) %>%
+                        group_by(func.name) %>%
+                        mutate(true_y = -true_y) %>%
+                        mutate(xrng = max(true_x) - min(true_x),
+                               yrng = max(true_y) - min(true_y)) %>%
+                        mutate(true_x = ifelse(xrng > 0, (true_x - min(true_x))/xrng, 0.5),
+                               true_y = ifelse(yrng > 0, (true_y - min(true_y))/yrng, 0.5)) %>%
+                        distinct(func.name, tpt, true_x, true_y) %>%
+                        left_join(summary_monkey_test0, by = c("func.name")) %>%
+                        filter(!is.na(mean_correct_Monkey_1) & !is.na(mean_correct_Monkey_1)) %>%
+                        arrange(func.name, tpt) %>%
+                        rowwise() %>%
+                        group_by(func.name)
+
+r_monkey_test <- cor(summary_monkey_test$mean_correct_Monkey_1, summary_monkey_test$mean_correct_Monkey_2, use="complete.obs")
+
+ggplot(data=summary_monkey_test) +
+          geom_abline() +
+          geom_path(aes(x=mean_correct_Monkey_1 + true_x*scale_fn, y=mean_correct_Monkey_2 + true_y*scale_fn*aspect_ratio, group=func.name, color=func.name), alpha=0.7, size=0.4) +
+          geom_point(aes(x=mean_correct_Monkey_1 + true_x*scale_fn, y=mean_correct_Monkey_2 + true_y*scale_fn*aspect_ratio, group=func.name, color=func.name), alpha=0.8, size=0.7) +
+          geom_point(aes(x=mean_correct_Monkey_1 + true_x*scale_fn,
+                 y=mean_correct_Monkey_2 + true_y*scale_fn*aspect_ratio,
+                  group=func.name), color="black",
+             alpha=0.05, size=0.1) +
+          annotate("text", x=0.1, y=0.9, label=paste("italic(r) == ", sprintf("%.2f", r_monkey_test)), size=6, family="Georgia", parse=TRUE) +
+          labs(x="Monkey 1 Accuracy (Test)", y="Monkey 2 Accuracy (Test)") +
+          coord_cartesian(xlim=c(-0.02, 1.02), ylim=c(-0.02, 1.02)) +
+          guides(color="none") +
+          paper_theme
+
+ggsave(paste0(fig_dir, "monkey_corr_test.png"), width=5, height=4, dpi=1000)
+
 ```
 
-## Relationship between humans and monkeys
-```{r}
-df_comp <- bind_rows(df_adult, df_monkey_test, df_kid %>% mutate(agent=as.character(age))) %>%
-           group_by(agent, subj_id, func.name) %>%
-           summarize(accuracy=mean(correct, na.rm=T), .groups="drop") %>%
-           group_by(agent, func.name) %>%
-           summarize(accuracy=mean(accuracy, na.rm=T), .groups="drop") %>%
-           pivot_wider(names_from="agent", values_from=accuracy) %>%
-           na.omit()
 
-print("Adults")
-print(cor.test(df_comp$Monkeys, df_comp$Adults, method="pearson"))
-for (x in 3:7) {
-  print(paste0("age ", x))
-  print(cor.test(df_comp$Monkeys, df_comp[[as.character(x)]], method="pearson"))
-}
-
-```
 
 ## Learning within patterns
 ```{r}
@@ -650,7 +1582,7 @@ compute_fit <- function(df) {
   m <- glmer(
             correct ~ 1 +                          # fixed intercept
                       tpt_std +                    # fixed slope 
-                      (1 + tpt_std | subj_id) +    # random intercept + slope for subject
+                      (1 + tpt | subj_id) +    # random intercept + slope for subject
                       (1 + tpt_std | func.name),   # random intercept + slope for function
             data = df,
             family = binomial(link = "logit"),
@@ -672,6 +1604,33 @@ for (agent_df in split(df_std, df_std$agent)) {
 }
 
 ```
+```{r}
+compute_fit <- function(df) {
+  m <- glmer(
+            correct ~ 1 +                          # fixed intercept
+                      tpt_std +                    # fixed slope 
+                      (1 + tpt_std | func.name),   # random intercept + slope for function
+            data = df,
+            family = binomial(link = "logit"),
+            control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5))
+  )
+  return(m)
+}
+
+df_std <- df_all %>%
+          filter(agent=="Monkeys") %>%
+          filter(tpt>2) %>%
+          select(c("agent", "correct", "tpt", "func.name", "subj_id")) %>%
+          mutate(tpt_std = scale(tpt)[,1])
+
+for (subj_df in split(df_std, df_std$subj_id)) {
+  print(unique(subj_df$subj_id))
+  m <- compute_fit(subj_df)
+  print(summary(m))
+}
+
+```
+
 
 ## Meta-learning in kids
 ```{r}
@@ -769,48 +1728,6 @@ func_accuracy_df <- mean_df %>%
                     pivot_wider(names_from=agent, values_from=accuracy)
 ```
 
-## Accuracy vs linearity
-```{r, fig.width=15}
-lin_df <- preprocess_df_children(read.csv(paste0(data_dir, "participants/kids.csv"))) %>%
-          distinct(tpt, true_x, true_y, prev_x, prev_y, func.name, acceptance_dist) %>%
-          group_by(func.name) %>%
-          arrange(tpt) %>%
-          mutate(delta_x = prev_x - lag(prev_x),
-                 delta_y = prev_y - lag(prev_y),
-                 lin_x = prev_x + delta_x,
-                 lin_y = prev_y + delta_y, 
-                 lin_error = ((lin_x-true_x)^2 + (lin_y-true_y)^2)^0.5,
-                 lin_correct = as.numeric(lin_error <= acceptance_dist)) %>%
-          filter(tpt>2) %>%
-          summarize(lin_accuracy = mean(lin_correct))
-
-func_accuracy_df <- df_all_modeled %>%
-                    #df_all %>%
-  
-                    mutate(agent = ifelse(agent=="Kids", paste0(agent, "_", age), agent)) %>%
-                    group_by(agent, func.name, tpt, subj_id) %>%
-                    summarize(accuracy=mean(prob_true, na.rm=T), .groups="drop") %>%
-                    #summarize(accuracy=mean(correct, na.rm=T), .groups="drop") %>%
-  
-                    group_by(agent, func.name, tpt) %>%
-                    summarize(accuracy=mean(accuracy, na.rm=T)) %>%
-                    group_by(agent, func.name) %>%
-                    summarize(accuracy=mean(accuracy), .groups="drop") %>%
-                    merge(lin_df, by="func.name")
-
-corr_df <- func_accuracy_df %>%
-           group_by(agent) %>%
-           summarize(r=cor.test(accuracy, lin_accuracy)[["estimate"]],
-                     p=cor.test(accuracy, lin_accuracy)[["p.value"]])
-
-ggplot(func_accuracy_df,
-       aes(x=lin_accuracy, y=accuracy)) +
-  geom_text(aes(label=func.name)) +
-  facet_wrap(~agent)
-
-```
-
-
 
 ## Inferred accuracy by age
 ```{r}
@@ -887,7 +1804,6 @@ for (x in 3:7) {
 ```
 
 ## Learning curves
-
 ```{r, fig.width=15, fig.height=5, warning=FALSE}
 common_patterns <- Reduce(intersect, list(
   unique(df_adult$func.name),
@@ -895,9 +1811,9 @@ common_patterns <- Reduce(intersect, list(
   unique(df_monkey_test$func.name)
 ))
 
-df_adult_filtered <- df_adult #%>% filter(func.name %in% common_patterns)
-df_kid_filtered <- df_kid# %>% filter(func.name %in% common_patterns)
-df_monkey_test_filtered <- df_monkey_test #%>% filter(func.name %in% common_patterns)
+df_adult_filtered <- df_adult 
+df_kid_filtered <- df_kid
+df_monkey_test_filtered <- df_monkey_test
 
 unique_kid_patterns <- df_kid %>%
   distinct(func.name) %>%
@@ -1182,11 +2098,6 @@ common_patterns <- Reduce(union, list(
   unique(df_monkey_test$func.name)
 ))
 
-
-#if (!dir.exists("figs/func_predictions_tpt")) {
-#  dir.create("figs/func_predictions_tpt", recursive = TRUE)
-#}
-
 for (func in common_patterns) {
   max_n_adult <- if (any(df_adult$func.name == func)) max(df_adult$tpt[df_adult$func.name == func], na.rm = TRUE) else NA_real_
   max_n_kid <- if (any(df_kid$func.name == func)) max(df_kid$tpt[df_kid$func.name == func], na.rm = TRUE) else NA_real_
@@ -1213,3 +2124,197 @@ for (func in common_patterns) {
 ```
 
 
+# Giant correlation matrix
+```{r}
+groups <- c("Monkeys", "3yo", "4yo", "5yo", "6yo", "7yo", "Adults")
+group_labels <- c("Monkey Accuracy", 
+                  "3yo Accuracy", 
+                  "4yo Accuracy",
+                  "5yo Accuracy", 
+                  "6yo Accuracy", 
+                  "7yo Accuracy",
+                  "Adult Accuracy")
+group_cols <- c("correct_Monkeys", "correct_3yo", "correct_4yo", 
+                "correct_5yo", "correct_6yo", "correct_7yo", "correct_Adults")
+
+
+tmp0 <- df_all %>%
+        mutate(agent=ifelse(agent=="Kids", paste0(age,"yo"), agent)) %>%
+        group_by(func.name, subj_id, agent) %>%
+        summarize(correct = mean(correct, na.rm=TRUE)) %>%
+        group_by(func.name, agent) %>%
+        summarize(correct = mean(correct, na.rm=TRUE)) %>%
+        pivot_wider(id_cols = c(func.name),
+                   names_from = agent,
+                   values_from = correct,
+                   names_prefix = "correct_") %>%
+        ungroup()
+
+
+tmp <- read.csv(paste0(data_dir, "participants/kids.csv")) %>%
+        rename(func.name=seq_id) %>%
+        distinct(func.name, tpt, true_x, true_y) %>%
+        group_by(func.name) %>%
+        mutate(true_y = -true_y) %>%
+        mutate(xrng = max(true_x) - min(true_x),
+               yrng = max(true_y) - min(true_y)) %>%
+        mutate(true_x = ifelse(xrng > 0, (true_x - min(true_x))/xrng, 0.5),
+               true_y = ifelse(yrng > 0, (true_y - min(true_y))/yrng, 0.5)) %>%
+        distinct(func.name, tpt, true_x, true_y) %>%
+        left_join(tmp0, by = c("func.name")) %>%
+        filter(!is.na(correct_Monkeys)) %>%
+        arrange(func.name, tpt) %>%
+        rowwise() %>%
+        group_by(func.name)
+      
+  
+```
+
+```{r}
+
+plot_list <- list()
+scale_fn <- 0.06
+aspect_ratio <- 1
+
+for(i in 1:length(groups)) {
+  for(j in 1:length(groups)) {
+    
+    if(i == j) {
+      p <- ggplot() + 
+        theme_void() +
+        theme(panel.border = element_rect(color="black", fill=NA, size=0.5))
+    } else {
+      x_col <- group_cols[j]
+      y_col <- group_cols[i]
+      
+      plot_data <- tmp %>%
+        select(func.name, true_x, true_y, all_of(c(x_col, y_col))) %>%
+        rename(x_val = !!sym(x_col), y_val = !!sym(y_col))
+      
+      r_val <- cor(plot_data$x_val, plot_data$y_val, use="complete.obs")
+      
+      p <- ggplot(data=plot_data) +
+        geom_abline(color="grey70") +
+        geom_path(aes(x=x_val + true_x*scale_fn, 
+                      y=y_val + true_y*scale_fn*aspect_ratio, 
+                      group=func.name, color=func.name), 
+                 alpha=0.7, size=0.3) +
+        geom_point(aes(x=x_val + true_x*scale_fn, 
+                       y=y_val + true_y*scale_fn*aspect_ratio, 
+                       group=func.name, color=func.name), 
+                   alpha=0.8, size=0.2) +
+        geom_point(aes(x=x_val + true_x*scale_fn, 
+                       y=y_val + true_y*scale_fn*aspect_ratio, 
+                       group=func.name), 
+                   color="black", alpha=0.05, size=0.1) +
+        annotate("text", x=0.15, y=0.97, 
+                 label=paste("r == ", sprintf("%.2f", r_val)), 
+                 size=3.5, family="Georgia", parse=TRUE) +
+        coord_cartesian(xlim=c(-0.02, 1.02), ylim=c(-0.02, 1.02)) +
+        scale_x_continuous(breaks=c(0, 0.5, 1)) +
+        scale_y_continuous(breaks=c(0, 0.5, 1)) +
+        guides(color="none") +
+        theme_light() + 
+        theme(
+          axis.text.x = element_text(colour="#292929", size=10, family="Georgia"), 
+          axis.text.y = element_text(colour="#292929", size=10, family="Georgia"),
+          axis.title = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.ticks.y = element_blank(),
+          axis.line.x = element_line(colour="black", size=0.3), 
+          axis.line.y = element_line(colour="black", size=0.3),
+          panel.background = element_rect(fill="white", colour="grey50"),
+          panel.border = element_rect(color="black", fill=NA, size=0.5),
+          panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank()
+        )
+    }
+    
+    if(i == 1) {
+      p <- p + labs(title = group_labels[j]) + 
+        theme(plot.title = element_text(size=12, family="Georgia", hjust=0.5))
+    }
+    if(j == 1) {
+      p <- p + labs(y = group_labels[i]) + 
+        theme(axis.title.y = element_text(size=12, family="Georgia", angle=90, vjust=0.5))
+    }
+    
+    plot_list[[(i-1)*length(groups) + j]] <- p
+  }
+}
+
+final_plot <- wrap_plots(plot_list, ncol = length(groups), nrow = length(groups))
+final_plot
+# 
+ggsave(paste0(fig_dir, "all_pairwise_accuracy_correlations.png"), width=15, height=14, dpi=400)
+```
+
+
+# Relationship bt accuracy and linearity
+## Mixed effect model
+```{r, fig.width=15}
+lin_df <- preprocess_df_children(read.csv(paste0(data_dir, "participants/kids.csv"))) %>%
+          distinct(tpt, true_x, true_y, prev_x, prev_y, func.name, acceptance_dist) %>%
+          group_by(func.name) %>%
+          arrange(tpt) %>%
+          mutate(delta_x = prev_x - lag(prev_x),
+                 delta_y = prev_y - lag(prev_y),
+                 lin_x = prev_x + delta_x,
+                 lin_y = prev_y + delta_y, 
+                 lin_error = ((lin_x-true_x)^2 + (lin_y-true_y)^2)^0.5,
+                 lin_accuracy = as.numeric(lin_error <= acceptance_dist),
+                 dist_from_prev = (((true_x-prev_x)^2 + (true_y-prev_y)^2)^0.5)/acceptance_dist,
+                 lin_error=lin_error/acceptance_dist) %>%
+          filter(tpt>2) %>%
+          select(c(tpt, func.name, acceptance_dist, lin_error, lin_accuracy, dist_from_prev))
+
+comp_df <- df_all %>%
+                   mutate(agent = ifelse(agent=="Kids", paste0(agent, "_", age), agent),
+                          r_id = ifelse(agent=="Monkeys", r_id, subj_id)) %>%
+                   select(c(subj_id, r_id, tpt, func.name, correct, agent)) %>%
+            merge(lin_df, by=c("func.name", "tpt")) 
+
+for (ag in c("Monkeys", "Kids_3", "Kids_4", "Kids_5", "Kids_6", "Kids_7", "Adults")) {
+  mod_df <- comp_df %>%
+         filter(agent==ag) %>%
+         filter(tpt>2) %>%
+         # standardize
+         mutate(dist_from_prev = as.numeric(scale(dist_from_prev)),
+                dist_from_lin = as.numeric(scale(lin_error)),
+                tpt=tpt-3,
+                tpt =tpt-mean(tpt),
+                )
+  
+  model <- glm(
+    correct ~ tpt * dist_from_lin + dist_from_prev,
+    data = mod_df,
+    family = binomial
+  )
+  print("========================================================")
+  print(paste0("Agent: ", ag))
+  print("========================================================")
+  print(summary(model))
+}
+
+```
+
+```{r}
+# Without subj random effects
+mod_df <- comp_df %>%
+       filter(agent=="Monkeys") %>%
+       filter(subj_id=="Monkey 1") %>%
+       filter(tpt>2) %>%
+       # standardize
+       mutate(dist_from_prev = as.numeric(scale(dist_from_prev)),
+              dist_from_lin = as.numeric(scale(lin_error)),
+              tpt = as.numeric(scale(tpt)),
+              )
+model <- glmer(
+  correct ~ tpt * dist_from_lin + (1 + dist_from_lin | dist_from_prev),
+  data = mod_df,
+  family = binomial
+)
+
+
+summary(model)
+```
